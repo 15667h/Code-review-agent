@@ -75,6 +75,10 @@
       '<svg class="space__icon" width="14" height="14" viewBox="0 0 16 16" aria-hidden="true" focusable="false"><path d="M2 3.5A1.5 1.5 0 0 1 3.5 2h3.2c.4 0 .78.16 1.06.44l1.3 1.3c.28.28.66.44 1.06.44h2.38A1.5 1.5 0 0 1 14 5.68v6.82A1.5 1.5 0 0 1 12.5 14h-9A1.5 1.5 0 0 1 2 12.5z" fill="none" stroke="currentColor" stroke-width="1.3"/></svg>',
     branch:
       '<svg width="11" height="11" viewBox="0 0 12 12" aria-hidden="true" focusable="false"><path d="M3 2.5v5.2M9 2.5v2.1c0 1-.8 1.8-1.8 1.8H4.8" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/><circle cx="3" cy="9.4" r="1.4" fill="currentColor"/><circle cx="9" cy="2.4" r="1.4" fill="currentColor"/></svg>',
+    plus:
+      '<svg width="13" height="13" viewBox="0 0 12 12" aria-hidden="true" focusable="false"><path d="M6 2.2v7.6M2.2 6h7.6" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg>',
+    close:
+      '<svg width="9" height="9" viewBox="0 0 10 10" aria-hidden="true" focusable="false"><path d="M2 2l6 6M8 2l-6 6" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>',
   };
 
   /* ==========================================================================
@@ -687,17 +691,39 @@
       li.dataset.open = String(!!space.open);
       li.dataset.space = space.id;
 
-      var row = el('button', 'space__row');
-      row.type = 'button';
-      row.setAttribute('aria-expanded', String(!!space.open));
-      row.setAttribute('aria-controls', 'space-' + space.id);
-      row.insertAdjacentHTML('beforeend', ICON.chevronRight);
-      row.insertAdjacentHTML('beforeend', ICON.folder);
+      /* 行是容器而不是按钮：主按钮负责「选中 / 展开」，右侧加号负责
+         「在这个仓库下开一次新审查」。HTML 不允许按钮嵌套，所以拆成两个。 */
+      var row = el('div', 'space__row');
+      row.dataset.space = space.id;
+
+      var main = el('button', 'space__main');
+      main.type = 'button';
+      main.setAttribute('aria-expanded', String(!!space.open));
+      main.setAttribute('aria-controls', 'space-' + space.id);
+      main.insertAdjacentHTML('beforeend', ICON.chevronRight);
+      main.insertAdjacentHTML('beforeend', ICON.folder);
 
       var name = el('span', 'space__name', space.name);
       name.setAttribute('translate', 'no');
-      row.appendChild(name);
-      row.appendChild(el('span', 'space__count num', String(space.sessions.length)));
+      main.appendChild(name);
+      main.appendChild(el('span', 'space__count num', String(space.sessions.length)));
+
+      main.addEventListener('click', function () {
+        selectSpace(space);
+      });
+
+      var add = el('button', 'space__add');
+      add.type = 'button';
+      add.setAttribute('aria-label', '在 ' + space.name + ' 新建审查');
+      add.title = '在 ' + space.name + ' 新建审查';
+      add.insertAdjacentHTML('beforeend', ICON.plus);
+      add.addEventListener('click', function (event) {
+        event.stopPropagation();
+        startDraft(space);
+      });
+
+      row.appendChild(main);
+      row.appendChild(add);
       li.appendChild(row);
 
       var ul = el('ul', 'sessions');
@@ -728,13 +754,6 @@
 
       li.appendChild(ul);
 
-      row.addEventListener('click', function () {
-        var isOpen = li.dataset.open === 'true';
-        li.dataset.open = String(!isOpen);
-        row.setAttribute('aria-expanded', String(!isOpen));
-        ul.hidden = isOpen;
-      });
-
       if (holdsCurrent(space)) {
         row.classList.add('is-current');
       }
@@ -764,6 +783,7 @@
   }
 
   function selectSession(space, session) {
+    draftSpace = null;
     applyContext(space, session);
 
     // 只有「用户点击」这条路径才通知外部，程序化选中走 applyContext
@@ -773,7 +793,58 @@
     closeDrawer();
   }
 
+  /* 点击空间行：切换到这个仓库并展开；再点一次已选中的行则收起。
+     之前这里只做展开/收起，于是「点了别的空间但顶栏没反应」——
+     因为顶栏只由 session 点击驱动，而大部分空间下一条记录都没有。 */
+  function selectSpace(space) {
+    var isCurrent = activeSpace && activeSpace.id === space.id;
+
+    if (isCurrent) {
+      space.open = !space.open;
+      renderRail();
+      applyContext(activeSpace, activeSession);
+      return;
+    }
+
+    space.open = true;
+    draftSpace = null;
+    var latest = space.sessions[0] || null;
+    renderRail();
+    applyContext(space, latest);
+
+    if (latest && onSessionSelect) {
+      onSessionSelect(space, latest);
+    } else if (!latest && onSpaceSelect) {
+      onSpaceSelect(space);
+    }
+    closeDrawer();
+  }
+
+  /* 在指定仓库下新建一次审查：把它设为当前目标并把焦点交给输入框。
+     这是「没法在单个仓库下添加新任务」的直接解法。 */
+  function startDraft(space) {
+    if (!space) {
+      return;
+    }
+    space.open = true;
+    draftSpace = space;
+    renderRail();
+    applyContext(space, null);
+    if (onDraft) {
+      onDraft(space);
+    }
+    try {
+      input.focus();
+    } catch (error) {
+      /* 有些环境不允许程序化聚焦，忽略 */
+    }
+    closeDrawer();
+  }
+
   var onSessionSelect = null;
+  var onSpaceSelect = null;
+  var onDraft = null;
+  var draftSpace = null;
 
   /* 顶栏上下文：字段是**按可用性**渲染的。
      本地仓库没有 owner / PR / 分支 / 增删统计，这些位置必须消失而不是
@@ -820,6 +891,17 @@
 
     activeSpace = space || null;
     activeSession = session || null;
+
+    // 审查范围是「相对某个仓库」的路径，换了仓库就必须清空 ——
+    // 否则会把上一个仓库的 app/x.py 提交给这一仓库，后端只能整批忽略。
+    var spacePath = activeSpace ? activeSpace.path || activeSpace.id : '';
+    if (spacePath !== scopeRepo) {
+      scopeRepo = spacePath;
+      scope = [];
+      renderScopeChips();
+    }
+
+    renderComposerTarget();
   }
 
   /* 只更新展示层（顶栏 + 侧栏高亮），不触发 onSessionSelect ——
@@ -854,6 +936,464 @@
 
     updateContext(space, session);
   }
+
+  /* ==========================================================================
+     输入坞：目标仓库提示 / 审查范围 / 两个浮层
+
+     这三样对应三条真实反馈：
+     ① 不知道新审查会落到哪个仓库；
+     ② 没法在单个仓库下开新审查（配合侧栏的加号）；
+     ③ 回形针与筛选按钮此前是纯装饰，点了没反应。
+     ========================================================================== */
+
+  var composerTarget = document.getElementById('composerTarget');
+  var scopeChips = document.getElementById('scopeChips');
+  var attachBtn = document.getElementById('attachBtn');
+  var attachPop = document.getElementById('attachPop');
+  var scopeBtn = document.getElementById('scopeBtn');
+  var scopePop = document.getElementById('scopePop');
+
+  /* 本次审查限定的路径（仓库内相对路径）。换仓库时清空。 */
+  var scope = [];
+  var scopeRepo = '';
+  /* 由 live.js 注入：仓库候选、加入/移出、文件清单。演示模式下为空。 */
+  var workspaceProvider = null;
+
+  function renderComposerTarget() {
+    if (!composerTarget) {
+      return;
+    }
+    if (!activeSpace) {
+      composerTarget.hidden = true;
+      return;
+    }
+
+    composerTarget.hidden = false;
+    composerTarget.classList.toggle('is-draft', !!draftSpace);
+    composerTarget.textContent = '';
+
+    composerTarget.appendChild(
+      document.createTextNode(draftSpace ? '新建审查 → ' : '当前目标 → ')
+    );
+    var strong = el('b', null, activeSpace.name);
+    strong.setAttribute('translate', 'no');
+    composerTarget.appendChild(strong);
+
+    var bits = [];
+    if (draftSpace) {
+      bits.push('尚未开始');
+    } else if (activeSession) {
+      bits.push('已有记录');
+    }
+    if (scope.length) {
+      bits.push('限定 ' + scope.length + ' 项');
+    }
+    if (bits.length) {
+      composerTarget.appendChild(document.createTextNode('（' + bits.join(' · ') + '）'));
+    }
+
+    var title = '本次审查提交到：' + (activeSpace.path || activeSpace.name);
+    if (scope.length) {
+      title += '\n限定范围：\n' + scope.join('\n');
+    }
+    composerTarget.title = title;
+  }
+
+  function renderScopeChips() {
+    if (!scopeChips) {
+      return;
+    }
+    scopeChips.textContent = '';
+    scopeChips.hidden = !scope.length;
+
+    scope.forEach(function (path) {
+      var chip = el('span', 'chip');
+      chip.appendChild(el('span', 'chip__text', path));
+
+      var remove = el('button', 'chip__x');
+      remove.type = 'button';
+      remove.setAttribute('aria-label', '从审查范围移除 ' + path);
+      remove.insertAdjacentHTML('beforeend', ICON.close);
+      remove.addEventListener('click', function () {
+        scope = scope.filter(function (item) {
+          return item !== path;
+        });
+        renderScopeChips();
+        renderComposerTarget();
+        if (scopePop && !scopePop.hidden) {
+          renderScopePop();
+        }
+      });
+
+      chip.appendChild(remove);
+      scopeChips.appendChild(chip);
+    });
+  }
+
+  /* ---------- 浮层的开合与通用零件 ---------- */
+
+  function closePop(pop, btn) {
+    if (!pop) {
+      return;
+    }
+    pop.hidden = true;
+    if (btn) {
+      btn.setAttribute('aria-expanded', 'false');
+    }
+  }
+
+  function openPop(pop, btn) {
+    if (!pop) {
+      return;
+    }
+    // 两个浮层互斥：否则会叠在一起，看起来像渲染错乱
+    if (pop === attachPop) {
+      closePop(scopePop, scopeBtn);
+    } else {
+      closePop(attachPop, attachBtn);
+    }
+    pop.hidden = false;
+    if (btn) {
+      btn.setAttribute('aria-expanded', 'true');
+    }
+  }
+
+  function popHead(title, hint) {
+    var head = el('div', 'pop__head');
+    head.appendChild(el('div', 'pop__title', title));
+    if (hint) {
+      head.appendChild(el('div', 'pop__hint', hint));
+    }
+    return head;
+  }
+
+  function popEmpty(text) {
+    return el('div', 'pop__empty', text);
+  }
+
+  /* ---------- 回形针：把仓库加入工作区 ---------- */
+
+  function renderAttachPop(state) {
+    if (!attachPop) {
+      return;
+    }
+    attachPop.textContent = '';
+    attachPop.appendChild(
+      popHead(
+        '添加到工作区',
+        '把仓库目录加入左侧工作区。相对路径按项目根解析；加入后可以随时移除。'
+      )
+    );
+
+    if (!workspaceProvider) {
+      attachPop.appendChild(
+        popEmpty(
+          '当前是演示模式（直接打开的本地文件），没有后端可连接。' +
+            '用 python -m harness.server 启动后再打开这个页面即可添加。'
+        )
+      );
+      return;
+    }
+
+    if (state.loading) {
+      attachPop.appendChild(popEmpty('正在读取候选目录…'));
+      return;
+    }
+
+    var list = el('div', 'pop__list');
+    var candidates = state.candidates || [];
+
+    if (!candidates.length) {
+      list.appendChild(popEmpty('项目根下没有可加入的目录，直接在下面填路径。'));
+    }
+
+    candidates.forEach(function (item) {
+      var row = el('button', 'pop__item');
+      row.type = 'button';
+      row.setAttribute('aria-pressed', String(!!item.added));
+      if (item.in_workspace && !item.added) {
+        row.disabled = true;
+      }
+
+      var name = el('span', 'pop__name', item.name);
+      name.setAttribute('translate', 'no');
+      row.appendChild(name);
+
+      var meta = item.added
+        ? '已在工作区'
+        : item.in_workspace
+          ? '内置样本'
+          : item.files + ' 文件';
+      row.appendChild(el('span', 'pop__meta num', meta));
+
+      if (!item.added && !item.in_workspace) {
+        row.addEventListener('click', function () {
+          addWorkspacePath(item.path);
+        });
+      }
+      list.appendChild(row);
+    });
+
+    attachPop.appendChild(list);
+
+    /* 这里刻意用 div 而不是 form：它嵌在输入坞的 <form> 里，
+       表单嵌套是无效结构 —— 内层提交会冒泡到外层，点「加入」会顺带触发
+       一次审查提交。改成 div 并自己处理 Enter。 */
+    var row = el('div', 'pop__row');
+    var text = el('input', 'pop__input');
+    text.type = 'text';
+    text.placeholder = '或输入路径，例如 backend 或 D:/code/app';
+    text.setAttribute('aria-label', '仓库路径');
+    text.spellcheck = false;
+    var submit = el('button', 'pop__btn', '加入');
+    submit.type = 'button';
+    row.appendChild(text);
+    row.appendChild(submit);
+
+    function commit() {
+      addWorkspacePath(text.value);
+    }
+    submit.addEventListener('click', commit);
+    text.addEventListener('keydown', function (event) {
+      if (event.key === 'Enter') {
+        event.preventDefault();
+        commit();
+      }
+    });
+    attachPop.appendChild(row);
+
+    if (state.error) {
+      attachPop.appendChild(el('div', 'pop__error', state.error));
+    }
+
+    var inWorkspace = state.repos || [];
+    var removable = inWorkspace.filter(function (item) {
+      return item.removable;
+    });
+    if (removable.length) {
+      var actions = el('div', 'pop__actions');
+      removable.forEach(function (item) {
+        var btn = el('button', 'pop__ghost', '移除 ' + item.name);
+        btn.type = 'button';
+        btn.addEventListener('click', function () {
+          removeWorkspacePath(item.path);
+        });
+        actions.appendChild(btn);
+      });
+      attachPop.appendChild(actions);
+    }
+  }
+
+  function loadAttachPop() {
+    if (!workspaceProvider) {
+      renderAttachPop({});
+      return;
+    }
+    renderAttachPop({ loading: true });
+    workspaceProvider.list().then(function (data) {
+      renderAttachPop({
+        candidates: (data && data.candidates) || [],
+        repos: (data && data.repos) || [],
+      });
+    });
+  }
+
+  function addWorkspacePath(path) {
+    if (!workspaceProvider || !path) {
+      return;
+    }
+    renderAttachPop({ loading: true });
+    workspaceProvider.add(path).then(function (result) {
+      if (result && result.error) {
+        renderAttachPop({ error: result.error });
+        return;
+      }
+      loadAttachPop();
+      // 侧栏要立刻出现新空间，所以让 live.js 重新拉一次仓库列表，
+      // 并把「刚加入的仓库」告诉它，好让 refresh 完自动选中
+      if (onWorkspaceChange) {
+        onWorkspaceChange((result && result.repo && result.repo.path) || '');
+      }
+    });
+  }
+
+  function removeWorkspacePath(path) {
+    if (!workspaceProvider) {
+      return;
+    }
+    renderAttachPop({ loading: true });
+    workspaceProvider.remove(path).then(function (result) {
+      if (result && result.error) {
+        renderAttachPop({ error: result.error });
+        return;
+      }
+      loadAttachPop();
+      if (onWorkspaceChange) {
+        onWorkspaceChange('');
+      }
+    });
+  }
+
+  var onWorkspaceChange = null;
+
+  /* ---------- 筛选图标：限定本次审查的文件范围 ---------- */
+
+  function renderScopePop(state) {
+    if (!scopePop) {
+      return;
+    }
+    scopePop.textContent = '';
+    scopePop.appendChild(
+      popHead(
+        '本次审查的范围',
+        '勾选后，本次审查只覆盖这些路径；不选则审整个仓库。'
+      )
+    );
+
+    if (!activeSpace) {
+      scopePop.appendChild(popEmpty('请先在左侧选择一个仓库。'));
+      return;
+    }
+    if (!workspaceProvider) {
+      scopePop.appendChild(
+        popEmpty('当前是演示模式，没有后端可列文件。启动后端后可用。')
+      );
+      return;
+    }
+    if (state.loading) {
+      scopePop.appendChild(popEmpty('正在读取文件清单…'));
+      return;
+    }
+
+    var files = state.files || [];
+    if (!files.length) {
+      scopePop.appendChild(
+        popEmpty(state.error || '这个仓库下没有列出任何文件。')
+      );
+      return;
+    }
+
+    var list = el('div', 'pop__list');
+    files.forEach(function (path) {
+      var picked = scope.indexOf(path) !== -1;
+      var row = el('button', 'pop__item');
+      row.type = 'button';
+      row.setAttribute('aria-pressed', String(picked));
+
+      var name = el('span', 'pop__name', path);
+      name.setAttribute('translate', 'no');
+      row.appendChild(name);
+      row.appendChild(el('span', 'pop__meta', picked ? '已选' : ''));
+
+      row.addEventListener('click', function () {
+        scope = picked
+          ? scope.filter(function (item) {
+              return item !== path;
+            })
+          : scope.concat([path]);
+        renderScopePop({ files: files });
+        renderScopeChips();
+        renderComposerTarget();
+      });
+
+      list.appendChild(row);
+    });
+    scopePop.appendChild(list);
+
+    var actions = el('div', 'pop__actions');
+    var all = el('button', 'pop__ghost', '全选');
+    all.type = 'button';
+    all.addEventListener('click', function () {
+      scope = files.slice();
+      renderScopePop({ files: files });
+      renderScopeChips();
+      renderComposerTarget();
+    });
+    var none = el('button', 'pop__ghost', '清空（审整个仓库）');
+    none.type = 'button';
+    none.addEventListener('click', function () {
+      scope = [];
+      renderScopePop({ files: files });
+      renderScopeChips();
+      renderComposerTarget();
+    });
+    actions.appendChild(all);
+    actions.appendChild(none);
+    scopePop.appendChild(actions);
+  }
+
+  function loadScopePop() {
+    if (!activeSpace || !workspaceProvider) {
+      renderScopePop({});
+      return;
+    }
+    renderScopePop({ loading: true });
+    workspaceProvider.files(activeSpace.path || activeSpace.name).then(function (data) {
+      renderScopePop({
+        files: (data && data.files) || [],
+        error: data && data.error,
+      });
+    });
+  }
+
+  if (attachBtn) {
+    attachBtn.addEventListener('click', function () {
+      if (attachPop.hidden) {
+        openPop(attachPop, attachBtn);
+        loadAttachPop();
+      } else {
+        closePop(attachPop, attachBtn);
+      }
+    });
+  }
+
+  if (scopeBtn) {
+    scopeBtn.addEventListener('click', function () {
+      if (scopePop.hidden) {
+        openPop(scopePop, scopeBtn);
+        loadScopePop();
+      } else {
+        closePop(scopePop, scopeBtn);
+      }
+    });
+  }
+
+  /* 浮层容器上截断冒泡。
+     原因是实测出来的：点浮层里的选项 → 处理函数里重绘整个列表 →
+     event.target 变成脱离文档的旧节点 → 冒泡到 document 时
+     `pop.contains(event.target)` 判定为 false → 浮层被当成「点了外面」误关。
+     表现就是「点一次选项浮层就没了，没法连续勾选」。 */
+  [attachPop, scopePop].forEach(function (pop) {
+    if (!pop) {
+      return;
+    }
+    pop.addEventListener('click', function (event) {
+      event.stopPropagation();
+    });
+  });
+
+  document.addEventListener('click', function (event) {
+    if (attachPop && !attachPop.hidden && !attachPop.contains(event.target) && event.target !== attachBtn) {
+      closePop(attachPop, attachBtn);
+    }
+    if (scopePop && !scopePop.hidden && !scopePop.contains(event.target) && event.target !== scopeBtn) {
+      closePop(scopePop, scopeBtn);
+    }
+  });
+
+  document.addEventListener('keydown', function (event) {
+    if (event.key !== 'Escape') {
+      return;
+    }
+    if (attachPop && !attachPop.hidden) {
+      closePop(attachPop, attachBtn);
+      attachBtn.focus();
+    }
+    if (scopePop && !scopePop.hidden) {
+      closePop(scopePop, scopeBtn);
+      scopeBtn.focus();
+    }
+  });
 
   /* ---------- 抽屉（窄屏）/ 折叠（宽屏） ---------- */
 
@@ -893,6 +1433,14 @@
   NARROW.addEventListener('change', closeDrawer);
 
   newReview.addEventListener('click', function () {
+    /* 之前这里只做 input.focus()，于是「新建审查」和「切换仓库」是脱钩的，
+       用户不知道这次审查会落到哪个仓库。现在明确绑到一个仓库：
+       优先当前选中的，没有就取第一个。 */
+    var target = activeSpace || SPACES[0] || null;
+    if (target) {
+      startDraft(target);
+      return;
+    }
     input.focus();
     closeDrawer();
   });
@@ -1119,6 +1667,31 @@
     onSessionSelect: function (fn) {
       onSessionSelect = fn;
     },
+    onSpaceSelect: function (fn) {
+      onSpaceSelect = fn;
+    },
+    onDraft: function (fn) {
+      onDraft = fn;
+    },
+    onWorkspaceChange: function (fn) {
+      onWorkspaceChange = fn;
+    },
+    startDraft: startDraft,
+    selectSpace: selectSpace,
+
+    /* 本次审查的范围（仓库内相对路径）。live.js 提交时带上。 */
+    getScope: function () {
+      return scope.slice();
+    },
+    clearScope: function () {
+      scope = [];
+      renderScopeChips();
+      renderComposerTarget();
+    },
+    setWorkspaceProvider: function (provider) {
+      workspaceProvider = provider || null;
+    },
+    renderComposerTarget: renderComposerTarget,
 
     /* 实时模式钩子 */
     setLiveHandlers: function (handlers) {
@@ -1171,6 +1744,9 @@
           return item.current;
         })[0] || bootSpace.sessions[0];
       applyContext(bootSpace, bootSession);
+    } else if (bootSpace) {
+      // 没有历史记录也要把顶栏和「目标仓库」填上，否则界面像坏了
+      applyContext(bootSpace, null);
     }
 
     // 配置中心里改过的模型选择，回到工作台继续沿用

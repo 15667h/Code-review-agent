@@ -22,6 +22,63 @@ class PathEscape(PermissionError):
     """路径越出工作区。"""
 
 
+class SecretFileBlocked(PathEscape):
+    """目标文件是密钥类文件，一律拒绝。
+
+    继承 ``PathEscape`` 是刻意的：调用方都已在处理越界异常，
+    这样新护栏不需要改动任何调用点就能生效（也不会漏成 500）。
+
+    为什么必须拦：审计工具的读结果会进入模型上下文和最终报告。
+    工作区里如果有一份 ``.env``，Agent 读一次就可能把真实密钥
+    写进报告或上传的轨迹里。而静态 HTTP 路由只挡浏览器，
+    挡不住 Agent 自己 —— 这条护栏加在工具层才算数。
+    """
+
+
+# 密钥文件名（整体匹配或前缀匹配）。宁可少审一个文件，也不要把真密钥带进报告。
+_SECRET_NAMES = {
+    ".env",
+    ".netrc",
+    ".htpasswd",
+    ".npmrc",
+    ".pypirc",
+    "credentials",
+    "credentials.json",
+    "credentials.yaml",
+    "credentials.yml",
+    "secrets.json",
+    "secrets.yaml",
+    "secrets.yml",
+    "secrets.toml",
+    "shadow",
+}
+
+_SECRET_PREFIXES = ("id_rsa", "id_dsa", "id_ecdsa", "id_ed25519", ".env.")
+
+_SECRET_SUFFIXES = (".pem", ".key", ".p12", ".pfx", ".jks", ".keystore", ".ppk", ".kdbx")
+
+# 模板文件是**唯一的例外**：里面只有占位符，不含真密钥，而且是排查
+# 「密钥该放哪」的有用线索。不豁免的话 `.env.example` 会被当成密钥文件挡掉。
+_SECRET_EXEMPT = {".env.example", ".env.sample", ".env.template", ".env.dist"}
+
+# 这些目录整棵跳过：里面几乎只放凭据
+_SECRET_DIRS = {".ssh", ".aws", ".gnupg"}
+
+
+def is_secret_path(name: str, parts: tuple[str, ...] = ()) -> bool:
+    """判断一个文件名（连同它所在的路径片段）是否属于密钥类。"""
+    lowered = name.lower()
+    if lowered in _SECRET_EXEMPT:
+        return False
+    if any(part.lower() in _SECRET_DIRS for part in parts):
+        return True
+    if lowered in _SECRET_NAMES:
+        return True
+    if lowered.startswith(_SECRET_PREFIXES):
+        return True
+    return lowered.endswith(_SECRET_SUFFIXES)
+
+
 DEFAULT_SKIP_DIRS = {
     ".git",
     ".hg",
@@ -77,6 +134,14 @@ class Workspace:
             raise PathEscape(
                 f"路径越出工作区：{path} -> {resolved}（工作区根目录 {self.root}）"
             ) from exc
+
+        # 越界检查通过之后再拦密钥文件 —— 顺序反了的话，工作区外的
+        # `.env` 会先被报成「越界」，信息误导。
+        if is_secret_path(resolved.name, resolved.parts):
+            raise SecretFileBlocked(
+                f"拒绝访问密钥类文件：{self.relative(resolved)}。"
+                "审计产出的报告与轨迹会流出工作区，密钥文件不参与审计。"
+            )
         return resolved
 
     def relative(self, path: Path) -> str:
@@ -105,7 +170,22 @@ class Workspace:
         iterator = base.rglob(pattern) if recursive else base.glob(pattern)
 
         for item in iterator:
-            if any(part in self.skip_dirs for part in item.parts):
+            # 只看**相对工作区根**的那几段。用绝对路径的 parts 会连根目录一起看进
+            # 去：工作区根若位于 `C:/Users/me/.workbuddy/proj` 这类路径下，
+            # 所有文件的 parts 都含 `.workbuddy`，会把整棵树误跳过。
+            try:
+                relative_parts = item.relative_to(base).parts
+            except ValueError:
+                relative_parts = item.parts
+
+            # 只跳过点**目录**，不跳过点文件 —— `.gitignore` / `.eslintrc` /
+            # `.env.example` 都是仓库的一部分，审查时应该看得到。
+            directories = relative_parts[:-1]
+            if any(part.startswith(".") or part in self.skip_dirs for part in directories):
+                continue
+            # `.runs` / `.workbuddy` 这类不在 skip_dirs 里的点目录已由上面覆盖；
+            # 密钥文件按文件名单独拦（`.env` 是文件不是目录）。
+            if is_secret_path(item.name):
                 continue
             if item.is_file():
                 results.append(item)

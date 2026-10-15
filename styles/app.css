@@ -927,6 +927,7 @@
 }
 
 .composer {
+  position: relative;
   width: min(100%, 880px);
   margin-inline: auto;
 }
@@ -1010,6 +1011,9 @@
   display: inline-flex;
   align-items: center;
   gap: var(--sp-2);
+  /* flex 子项默认会被压缩：不锁住的话窄屏上「开始审查」四个字会竖着排 */
+  flex: none;
+  white-space: nowrap;
   min-height: 36px;
   padding: 0 var(--sp-4);
   border-radius: var(--r-md);
@@ -1128,6 +1132,21 @@ kbd {
 
   .finding {
     grid-template-columns: 3px minmax(0, 1fr);
+  }
+
+  /* 输入坞在窄屏本来就紧：收紧内边距并让模型名早点截断，
+     给「开始审查」留出完整宽度（它已 nowrap，不会自己缩）。 */
+  .composer__row {
+    gap: var(--sp-2);
+    padding: var(--sp-2) var(--sp-2) var(--sp-3);
+  }
+
+  .model-btn__name {
+    max-width: 88px;
+  }
+
+  .send-btn {
+    padding: 0 var(--sp-3);
   }
 
   .finding__gutter {
@@ -1256,13 +1275,27 @@ kbd {
 
 /* ---- 空间 ---- */
 
+/* 行本身是容器：主按钮（选中/展开）+ 新建按钮（在该空间下开一次审查）。
+   原来整行是一个 button，塞不进第二个按钮 —— HTML 不允许按钮嵌套。 */
 .space__row {
   display: flex;
   align-items: center;
-  gap: var(--sp-2);
-  width: 100%;
+  gap: 2px;
+  border-radius: var(--r-md);
+  transition-property: background-color, color;
+  transition-duration: var(--dur-fast);
+  transition-timing-function: var(--ease-out);
+}
+
+.space__main {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 1 1 auto;
+  min-width: 0;
   min-height: 40px;
-  padding: 0 var(--sp-2);
+  /* 右侧留 2px 即可：加号自己带内边距，多留会把仓库名挤成省略号 */
+  padding: 0 2px 0 var(--sp-2);
   border-radius: var(--r-md);
   color: var(--ink-2);
   font-size: 13.5px;
@@ -1274,16 +1307,63 @@ kbd {
 
 .space__row:hover {
   background: var(--surface);
+}
+
+.space__row:hover .space__main {
   color: var(--ink);
 }
 
-.space__row:active {
+.space__main:active {
   transform: scale(0.99);
 }
 
+/* 「当前正在审的仓库」——用批注边 + 加粗，和发现卡片是同一套语言 */
 .space__row.is-current {
-  color: var(--ink);
+  background: var(--accent-soft);
+}
+
+.space__row.is-current .space__main {
+  color: var(--accent-deep);
   font-weight: 500;
+}
+
+.space__row.is-current .space__name {
+  color: var(--accent-deep);
+}
+
+/* 每个空间下的「新建审查」。默认透明，hover / 键盘聚焦才显现，
+   避免 9 个空间挂 9 个加号把侧栏塞满。 */
+.space__add {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 24px;
+  height: 24px;
+  margin-inline-end: 2px;
+  border-radius: var(--r-sm);
+  color: var(--ink-3);
+  opacity: 0;
+  transition-property: opacity, background-color, color;
+  transition-duration: var(--dur-fast);
+  transition-timing-function: var(--ease-out);
+}
+
+.space__row:hover .space__add,
+.space__add:focus-visible,
+.space.is-current .space__add {
+  opacity: 1;
+}
+
+.space__add:hover {
+  background: var(--accent);
+  color: var(--surface);
+}
+
+/* 触屏没有 hover，加号必须常显，否则功能等于不存在 */
+@media (hover: none) {
+  .space__add {
+    opacity: 1;
+  }
 }
 
 .space__icon {
@@ -1887,4 +1967,310 @@ kbd {
   line-height: 1.6;
   white-space: pre-wrap;
   word-break: break-word;
+}
+
+/* ==========================================================================
+   16. 输入坞：目标仓库提示 / 审查范围 chip / 两个浮层
+
+   这一节对应三个真实反馈：
+   ① 不知道该往哪个仓库发新审查  → .composer__target
+   ② 没法在单个仓库下开新审查    → 侧栏 .space__add + 这里的目标提示
+   ③ 回形针与筛选按钮是死的      → .pop 系列浮层
+   ========================================================================== */
+
+/* ---- 「本次审查将提交到」提示 ---- */
+
+.composer__context {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  padding: 0 var(--sp-2) var(--sp-2);
+  min-height: 0;
+}
+
+.composer__target {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+  max-width: 100%;
+  padding: 2px var(--sp-3) 3px;
+  border: 1px solid var(--rule);
+  border-radius: var(--r-sm);
+  background: var(--surface);
+  color: var(--ink-2);
+  font-size: 12px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.composer__target[hidden] {
+  display: none;
+}
+
+.composer__target b {
+  color: var(--ink);
+  font-family: var(--font-mono);
+  font-weight: 500;
+}
+
+.composer__target.is-draft {
+  border-color: color-mix(in oklab, var(--accent) 40%, var(--rule));
+  background: var(--accent-soft);
+  color: var(--accent-deep);
+}
+
+/* ---- 已附加的审查范围 ---- */
+
+.composer__chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-2);
+  padding: var(--sp-3) var(--sp-4) 0;
+}
+
+.composer__chips[hidden] {
+  display: none;
+}
+
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+  max-width: 100%;
+  padding: 2px var(--sp-2) 3px var(--sp-3);
+  border: 1px solid var(--rule-strong);
+  border-radius: 999px;
+  background: var(--surface-quiet);
+  color: var(--ink-2);
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+}
+
+.chip__text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.chip__x {
+  display: grid;
+  place-items: center;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  color: var(--ink-3);
+  transition-property: background-color, color;
+  transition-duration: var(--dur-fast);
+  transition-timing-function: var(--ease-out);
+}
+
+.chip__x:hover {
+  background: var(--blocker-soft);
+  color: var(--blocker);
+}
+
+/* ---- 浮层 ---- */
+
+.pop-host {
+  display: inline-flex;
+}
+
+/* 浮层锚定整个 .composer（它在上面设了 position: relative），
+   底边贴在输入坞上方 —— 挂在按钮上会压住输入框和范围 chip。 */
+.pop {
+  position: absolute;
+  left: 0;
+  bottom: calc(100% + 10px);
+  z-index: 46;
+  width: 320px;
+  max-width: min(380px, calc(100vw - var(--sp-5) * 2));
+  padding: var(--sp-3);
+  border: 1px solid var(--rule);
+  border-radius: var(--r-lg);
+  background: var(--surface);
+  box-shadow: var(--shadow-pop);
+}
+
+.pop--wide {
+  width: 380px;
+  max-width: min(380px, calc(100vw - var(--sp-5) * 2));
+}
+
+.pop[hidden] {
+  display: none;
+}
+
+.pop__head {
+  padding: 0 var(--sp-1) var(--sp-3);
+}
+
+.pop__title {
+  color: var(--ink);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.pop__hint {
+  margin-top: 2px;
+  color: var(--ink-3);
+  font-size: 11.5px;
+  line-height: 1.5;
+}
+
+.pop__list {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  max-height: 268px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  margin: 0 calc(var(--sp-1) * -1);
+  padding: 0 var(--sp-1);
+}
+
+.pop__item {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: var(--sp-3);
+  width: 100%;
+  min-height: 42px;
+  padding: var(--sp-1) var(--sp-2);
+  border-radius: var(--r-md);
+  color: var(--ink-2);
+  text-align: left;
+  transition-property: background-color, color;
+  transition-duration: var(--dur-fast);
+  transition-timing-function: var(--ease-out);
+}
+
+.pop__item:hover {
+  background: var(--surface-sunk);
+  color: var(--ink);
+}
+
+.pop__item[aria-pressed="true"] {
+  background: var(--accent-soft);
+  color: var(--accent-deep);
+}
+
+.pop__item[disabled] {
+  opacity: 0.55;
+  cursor: default;
+}
+
+.pop__name {
+  min-width: 0;
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pop__meta {
+  flex: none;
+  color: var(--ink-3);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+.pop__row {
+  display: flex;
+  gap: var(--sp-2);
+  margin-top: var(--sp-3);
+}
+
+.pop__input {
+  flex: 1 1 auto;
+  min-width: 0;
+  height: 32px;
+  padding: 0 var(--sp-3);
+  border: 1px solid var(--rule);
+  border-radius: var(--r-sm);
+  background: var(--surface-quiet);
+  color: var(--ink);
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+
+.pop__input:focus {
+  outline: 2px solid var(--accent);
+  outline-offset: -1px;
+  background: var(--surface);
+}
+
+.pop__btn {
+  flex: none;
+  height: 32px;
+  padding: 0 var(--sp-4);
+  border: 1px solid var(--accent);
+  border-radius: var(--r-sm);
+  background: var(--accent);
+  color: var(--surface);
+  font-size: 12.5px;
+  transition-property: filter;
+  transition-duration: var(--dur-fast);
+  transition-timing-function: var(--ease-out);
+}
+
+.pop__btn:hover {
+  filter: brightness(1.08);
+}
+
+.pop__btn[disabled] {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.pop__empty {
+  padding: var(--sp-4) var(--sp-2);
+  color: var(--ink-3);
+  font-size: 12.5px;
+  line-height: 1.6;
+}
+
+.pop__error {
+  margin-top: var(--sp-2);
+  padding: var(--sp-2) var(--sp-3);
+  border-radius: var(--r-sm);
+  background: var(--blocker-soft);
+  color: color-mix(in oklab, var(--blocker) 82%, var(--ink));
+  font-size: 11.5px;
+  line-height: 1.55;
+}
+
+.pop__foot {
+  margin-top: var(--sp-3);
+  padding-top: var(--sp-3);
+  border-top: 1px solid var(--rule);
+  color: var(--ink-3);
+  font-size: 11.5px;
+  line-height: 1.55;
+}
+
+.pop__actions {
+  display: flex;
+  gap: var(--sp-2);
+  margin-top: var(--sp-3);
+}
+
+.pop__ghost {
+  height: 30px;
+  padding: 0 var(--sp-3);
+  border: 1px solid var(--rule-strong);
+  border-radius: var(--r-sm);
+  background: var(--surface);
+  color: var(--ink-2);
+  font-size: 12px;
+  transition-property: background-color, color;
+  transition-duration: var(--dur-fast);
+  transition-timing-function: var(--ease-out);
+}
+
+.pop__ghost:hover {
+  background: var(--surface-sunk);
+  color: var(--ink);
 }

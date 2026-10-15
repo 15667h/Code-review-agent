@@ -96,6 +96,28 @@
       });
     },
 
+    /* ---- 工作区：加入 / 移出 / 文件清单 ---- */
+
+    candidates: function () {
+      return jsonFetch('/api/workspace/candidates').catch(function () {
+        return { candidates: [] };
+      });
+    },
+
+    addRepo: function (path) {
+      return jsonFetch('/api/repos', { method: 'POST', body: { path: path } });
+    },
+
+    removeRepo: function (path) {
+      return jsonFetch('/api/repos/remove', { method: 'POST', body: { path: path } });
+    },
+
+    repoFiles: function (repo) {
+      return jsonFetch('/api/repo-files?repo=' + encodeURIComponent(repo)).catch(function () {
+        return { files: [] };
+      });
+    },
+
     /* ---- 审计运行 ---- */
 
     startAudit: function (options) {

@@ -58,7 +58,7 @@ from .loop import resolve_workspace, run_audit
 from .model import DeepSeekModel, ModelError
 from .offline import HeuristicModel
 from .report import render_markdown
-from .sandbox import PathEscape
+from .sandbox import DEFAULT_SKIP_DIRS, PathEscape, Workspace, is_secret_path
 from .types import Message
 
 # --------------------------------------------------------------------------- #
@@ -68,6 +68,10 @@ from .types import Message
 BACKEND_ROOT = Path(__file__).resolve().parent.parent
 PROJECT_ROOT = BACKEND_ROOT.parent
 RUNS_DIR = BACKEND_ROOT / ".runs"
+
+# 「已加入工作区」的目录记录。放在 .runs 下（已 gitignore）——
+# 这是本机的使用状态，不是项目配置。
+WORKSPACE_FILE = RUNS_DIR / "workspace.json"
 
 # 前端静态文件的扩展名白名单。宁可白名单收窄，也不要让服务顺手把 .env 发出去 ——
 # 静态目录包含 backend/，而 backend/.env 里放着真实密钥。
@@ -109,6 +113,11 @@ class RunRecord:
     model: str
     offline: bool
     allow_high_risk: bool
+    # 本次审查限定的路径（仓库内相对路径）。
+    # 记进记录是为了可审计：事后能看出这次审查到底覆盖了哪些文件。
+    scope: list[str] = field(default_factory=list)
+    # 实际注入给模型的上下文附注（范围提示也拼在这里）。
+    context_note: str = ""
     created_at: float = field(default_factory=time.time)
     status: str = "queued"  # queued | running | finished | error | stopped
     stop_requested: bool = False
@@ -153,6 +162,9 @@ class RunRecord:
                 "goal": self.goal,
                 "model": self.model,
                 "offline": self.offline,
+                "allow_high_risk": self.allow_high_risk,
+                "scope": list(self.scope),
+                "context_note": self.context_note,
                 "status": self.status,
                 "created_at": self.created_at,
                 "finished_at": self.finished_at,
@@ -223,7 +235,9 @@ class RunRegistry:
                 goal=str(payload.get("goal", "")),
                 model=str(payload.get("model", "")),
                 offline=bool(payload.get("offline")),
-                allow_high_risk=False,
+                allow_high_risk=bool(payload.get("allow_high_risk")),
+                scope=[str(s) for s in (payload.get("scope") or [])],
+                context_note=str(payload.get("context_note") or ""),
                 created_at=float(payload.get("created_at") or 0.0),
                 status=str(payload.get("status", "finished")),
                 finished_at=payload.get("finished_at"),
@@ -393,6 +407,7 @@ def _worker(record: RunRecord, options: dict[str, Any]) -> None:
             "model": record.model,
             "offline": record.offline,
             "allow_high_risk": record.allow_high_risk,
+            "scope": list(record.scope),
         },
     )
 
@@ -465,6 +480,8 @@ def start_run(options: dict[str, Any]) -> RunRecord:
         model=str(options.get("model") or options["config"].model),
         offline=bool(options.get("offline")),
         allow_high_risk=bool(options.get("allow_high_risk")),
+        scope=[str(s) for s in (options.get("scope") or [])],
+        context_note=str(options.get("context_note") or ""),
     )
     REGISTRY.add(record)
     thread = threading.Thread(target=_worker, args=(record, options), daemon=True)
@@ -503,40 +520,212 @@ def _looks_like_repo(path: Path) -> bool:
     return False
 
 
+def _load_registered() -> list[Path]:
+    """读「已加入工作区」的目录清单。
+
+    存在 ``.runs/workspace.json``（该目录已被 gitignore）—— 这是本机的使用状态，
+    不是项目配置，不该入库。
+    """
+    if not WORKSPACE_FILE.is_file():
+        return []
+    try:
+        data = json.loads(WORKSPACE_FILE.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return []
+
+    roots: list[Path] = []
+    for raw in data.get("roots", []):
+        try:
+            candidate = _resolve_user_path(str(raw))
+        except ValueError:
+            continue
+        if candidate.is_dir():
+            roots.append(candidate)
+    return roots
+
+
+def _save_registered(roots: list[Path]) -> None:
+    WORKSPACE_FILE.parent.mkdir(parents=True, exist_ok=True)
+    WORKSPACE_FILE.write_text(
+        json.dumps({"roots": [str(p) for p in roots]}, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+
+
+def _resolve_user_path(raw: str) -> Path:
+    """把用户给出的路径归一化：相对路径按**项目根**解析，然后 resolve。"""
+    text = (raw or "").strip().strip('"').strip("'")
+    if not text:
+        raise ValueError("路径不能为空")
+    candidate = Path(text).expanduser()
+    if not candidate.is_absolute():
+        candidate = PROJECT_ROOT / candidate
+    return candidate.resolve()
+
+
+def add_repo(raw_path: str) -> tuple[dict[str, Any] | None, str]:
+    """把一个目录加入工作区。返回 ``(条目, 错误信息)``，二者必有其一为空。"""
+    try:
+        target = _resolve_user_path(raw_path)
+    except ValueError as exc:
+        return None, str(exc)
+
+    if not target.is_dir():
+        return None, f"不是一个已存在的目录：{target}"
+    if any(part in DENY_PARTS for part in target.parts):
+        return None, "该路径位于被禁止访问的目录内。"
+    if target == target.anchor or len(target.parts) <= 1:
+        return None, "不能把磁盘根目录加入工作区。"
+
+    if not any(
+        p.is_file() and not is_secret_path(p.name)
+        for p in target.rglob("*")
+        if p.is_file()
+    ):
+        return None, f"该目录下没有任何可审的文件：{target}"
+
+    roots = _load_registered()
+    if target not in roots:
+        roots.append(target)
+        _save_registered(roots)
+    return _repo_entry(target.name, target, source="added"), ""
+
+
+def remove_repo(raw_path: str) -> tuple[bool, str]:
+    """把目录移出工作区。只能移出「手动加入」的，``examples/`` 下的样本不能移。"""
+    try:
+        target = _resolve_user_path(raw_path)
+    except ValueError as exc:
+        return False, str(exc)
+
+    roots = _load_registered()
+    if target not in roots:
+        return False, "该目录不在手动加入的清单里（examples/ 下的样本不能移除）。"
+    roots.remove(target)
+    _save_registered(roots)
+    return True, ""
+
+
+def list_repo_files(repo_path: str, *, limit: int = 300) -> tuple[list[str], str]:
+    """列出某仓库内的可审文件（相对路径），供「审查范围」勾选。
+
+    刻意复用 ``Workspace`` 而不是自己 rglob：密钥文件与点目录的排除规则
+    只应该有一处实现，否则筛选器里能看到 `.env`、而 Agent 读不到，两边对不上。
+    """
+    try:
+        target = _resolve_user_path(repo_path)
+    except ValueError as exc:
+        return [], str(exc)
+    if not target.is_dir():
+        return [], f"目录不存在：{target}"
+
+    workspace = Workspace(target, max_read_bytes=64)
+    files, _truncated = workspace.iter_files(limit=limit)
+    return [workspace.relative(p) for p in files], ""
+
+
+def workspace_candidates() -> list[dict[str, Any]]:
+    """列出「可以加入工作区」的候选目录，供前端选择器使用。
+
+    候选来源：项目根下的一级目录（排除被禁目录）。每个都带上是否已在工作区，
+    这样前端不必自己合并两份数据。
+    """
+    added = {str(p) for p in _load_registered()}
+    existing = {item["path"] for item in list_repos()}
+    candidates: list[dict[str, Any]] = []
+
+    if PROJECT_ROOT.is_dir():
+        for child in sorted(PROJECT_ROOT.iterdir()):
+            if not child.is_dir() or child.name.startswith("."):
+                continue
+            if any(part in DENY_PARTS for part in child.parts):
+                continue
+            resolved = child.resolve()
+            candidates.append(
+                {
+                    "name": child.name,
+                    "path": str(resolved),
+                    "files": _count_files(resolved),
+                    "added": str(resolved) in added,
+                    "in_workspace": str(resolved) in existing,
+                }
+            )
+    return candidates
+
+
 def list_repos(root: Path | None = None) -> list[dict[str, Any]]:
     """列出可审计的仓库。
 
-    默认看 ``examples/``，那是最安全的默认值 —— 绝不会把用户的私人目录
-    莫名其妙地列出来。要审别的地方就传 root 或用 --repo。
+    两个来源合并：
+    1. ``examples/`` 下扫描出来的样本（默认来源，最安全 —— 它绝不会把用户的
+       私人目录莫名其妙地列出来）；
+    2. 用户手动「加入工作区」的目录，记录在 ``.runs/workspace.json``。
 
     样本目录里可能有一层 ``repo/`` 作为真正的审计根（标注放在它的外面），
     有就用它 —— 否则会把 ``labels.json`` 一起列进被审范围，等于把答案交给模型。
     """
     base = root or (BACKEND_ROOT / "examples")
-    if not base.is_dir():
-        return []
     repos: list[dict[str, Any]] = []
-    for child in sorted(base.iterdir()):
-        if child.name.startswith((".", "_")):
+    seen: set[str] = set()
+
+    if base.is_dir():
+        for child in sorted(base.iterdir()):
+            if child.name.startswith((".", "_")):
+                continue
+            audit_root = child / "repo" if (child / "repo").is_dir() else child
+            if not _looks_like_repo(audit_root):
+                continue
+            seen.add(str(audit_root.resolve()))
+            repos.append(_repo_entry(child.name, audit_root, source="examples"))
+
+    for extra in _load_registered():
+        if str(extra) in seen:
             continue
-        audit_root = child / "repo" if (child / "repo").is_dir() else child
-        if not _looks_like_repo(audit_root):
-            continue
-        files = sum(
-            1
-            for p in audit_root.rglob("*")
-            if p.is_file() and not any(part in DENY_PARTS for part in p.parts)
-        )
-        repos.append(
-            {
-                "id": child.name,
-                "name": child.name,
-                "path": str(audit_root),
-                "files": files,
-                "runs": len(REGISTRY.list(repo=str(audit_root), limit=500)),
-            }
-        )
+        seen.add(str(extra))
+        repos.append(_repo_entry(extra.name, extra, source="added"))
+
     return repos
+
+
+def _count_files(root: Path, cap: int = 20000) -> int:
+    """数可审文件。规则必须与 ``Workspace.iter_files`` 一致。
+
+    之前这里和「选择审查范围」各写了一套过滤逻辑，结果同一个仓库在候选列表里
+    显示 61 个文件、在范围清单里却列出 71 个 —— 两个数字对不上，用户没法信任。
+    现在两处共用这一份实现（范围清单直接调 ``Workspace.iter_files``）。
+    """
+    total = 0
+    for item in root.rglob("*"):
+        try:
+            relative = item.relative_to(root)
+        except ValueError:
+            continue
+        # 只看相对根的部分：根目录自身路径含点目录时不该把整棵树判掉
+        if any(
+            part.startswith(".") or part in DENY_PARTS or part in DEFAULT_SKIP_DIRS
+            for part in relative.parts[:-1]
+        ):
+            continue
+        if not item.is_file():
+            continue
+        if is_secret_path(item.name):
+            continue
+        total += 1
+        if total >= cap:
+            break
+    return total
+
+
+def _repo_entry(name: str, audit_root: Path, *, source: str) -> dict[str, Any]:
+    return {
+        "id": name,
+        "name": name,
+        "path": str(audit_root),
+        "files": _count_files(audit_root),
+        "runs": len(REGISTRY.list(repo=str(audit_root), limit=500)),
+        "source": source,
+        "removable": source == "added",
+    }
 
 
 def _probe_models(config: Config) -> tuple[bool, list[dict[str, Any]], str]:
@@ -794,6 +983,19 @@ class Handler(BaseHTTPRequestHandler):
             self._send_json({"repos": list_repos(Path(root) if root else None), "root": root})
             return
 
+        if path == "/api/workspace/candidates":
+            self._send_json({"candidates": workspace_candidates()})
+            return
+
+        if path == "/api/repo-files":
+            repo = query.get("repo", [""])[0]
+            files, error = list_repo_files(repo)
+            if error:
+                self._send_json({"error": error}, 400)
+                return
+            self._send_json({"repo": repo, "files": files})
+            return
+
         if path == "/api/runs":
             repo = query.get("repo", [""])[0]
             self._send_json({"runs": REGISTRY.list(repo=repo or None)})
@@ -861,6 +1063,22 @@ class Handler(BaseHTTPRequestHandler):
 
         if path == "/api/audit":
             self._start_audit(body)
+            return
+
+        if path == "/api/repos":
+            entry, error = add_repo(str(body.get("path") or ""))
+            if error:
+                self._send_json({"error": error}, 400)
+                return
+            self._send_json({"repo": entry, "repos": list_repos()}, 201)
+            return
+
+        if path == "/api/repos/remove":
+            ok, error = remove_repo(str(body.get("path") or ""))
+            if not ok:
+                self._send_json({"error": error}, 400)
+                return
+            self._send_json({"removed": True, "repos": list_repos()})
             return
 
         if path.startswith("/api/audit/") and path.endswith("/stop"):
@@ -975,13 +1193,48 @@ class Handler(BaseHTTPRequestHandler):
         goal = str(body.get("goal") or "").strip() or (
             "审查这个仓库中的缺陷，重点是会导致错误行为、资源泄漏或安全问题的实现。"
         )
+
+        # 本次审查的限定范围（用户在输入坞里勾选的文件/目录）。
+        # 校验放在服务端：前端传什么都不能让范围越出仓库根。
+        scope_note = ""
+        raw_scope = body.get("scope")
+        if isinstance(raw_scope, list) and raw_scope:
+            workspace = Workspace(repo)
+            accepted: list[str] = []
+            rejected: list[str] = []
+            for item in raw_scope[:200]:
+                try:
+                    resolved = workspace.resolve(str(item))
+                except PathEscape:
+                    rejected.append(str(item))
+                    continue
+                accepted.append(workspace.relative(resolved))
+            if accepted:
+                scope_note = (
+                    "本次审查**限定在以下路径**，其余文件可跳过（但若发现跨文件的因果关系，"
+                    "可以扩大范围并说明理由）：\n"
+                    + "\n".join(f"- {path}" for path in accepted)
+                )
+            if rejected:
+                # 只报个数，不回显路径本身：被拒的路径在仓库之外，
+                # 没有任何理由把它写进模型上下文（原始值已留在运行记录里可查）。
+                scope_note = (
+                    (scope_note + "\n\n" if scope_note else "")
+                    + f"（另有 {len(rejected)} 个路径超出仓库范围，已忽略。）"
+                )
+
+        context_note = str(body.get("context") or "").strip()
+        if scope_note:
+            context_note = (context_note + "\n\n" + scope_note).strip()
+
         record = start_run(
             {
                 "repo": str(repo.resolve()),
                 "goal": goal,
                 "offline": offline,
                 "allow_high_risk": bool(body.get("allow_high_risk")),
-                "context_note": str(body.get("context") or ""),
+                "context_note": context_note,
+                "scope": [str(s) for s in (raw_scope or [])][:200] if isinstance(raw_scope, list) else [],
                 "config": config,
             }
         )

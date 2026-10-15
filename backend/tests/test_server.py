@@ -369,3 +369,163 @@ def test_stop_is_idempotent_on_finished_run(live_server: str) -> None:
     status, body = post(live_server, f"/api/audit/{run_id}/stop", {})
     assert status == 200
     assert json.loads(body)["stop_requested"] is True
+
+
+# ===========================================================================
+# 工作区：加入 / 移出 / 文件清单 / 审查范围
+#
+# 这组测试守两件事：
+# ① 「加入工作区」不是一个纯 UI 动作 —— 它真的会扩大 Agent 能读的范围，
+#    所以相关的密钥护栏必须有回归测试；
+# ② 范围（scope）由前端提交，服务端必须自己校验，不能让前端决定边界。
+# ===========================================================================
+
+
+def test_secret_files_are_blocked_from_agent_reads(tmp_path: Path) -> None:
+    """把含 .env 的目录加为工作区后，Agent 也不能读到它。
+
+    这是「允许加入任意目录」带来的真实风险：报告与轨迹会流出工作区，
+    一次 read_file 就可能把真实密钥写进产物里。HTTP 静态路由只挡浏览器，
+    挡不住 Agent 自己，所以护栏必须在工具层。
+    """
+    from harness.sandbox import SecretFileBlocked, Workspace
+
+    (tmp_path / ".env").write_text("DEEPSEEK_API_KEY=sk-real-secret\n", encoding="utf-8")
+    (tmp_path / "app.py").write_text("x = 1\n", encoding="utf-8")
+
+    workspace = Workspace(tmp_path)
+    with pytest.raises(SecretFileBlocked):
+        workspace.read_text(".env")
+
+    # 模板文件是刻意豁免的：只有占位符，且是排查配置的有用线索
+    (tmp_path / ".env.example").write_text("DEEPSEEK_API_KEY=sk-xxxx\n", encoding="utf-8")
+    text, _ = workspace.read_text(".env.example")
+    assert "sk-xxxx" in text
+
+    # 清单里不该出现 .env（列出来但读不了只会让 Agent 白跑几轮）
+    listed = [workspace.relative(p) for p in workspace.iter_files()[0]]
+    assert ".env" not in listed
+    assert "app.py" in listed
+
+
+def test_iter_files_skips_dot_dirs_but_not_dot_files(tmp_path: Path) -> None:
+    """点目录跳过，点文件保留 —— 且工作区根自身含点目录时不能整棵判掉。"""
+    from harness.sandbox import Workspace
+
+    (tmp_path / ".hidden").mkdir()
+    (tmp_path / ".hidden" / "secret_state.json").write_text("{}", encoding="utf-8")
+    (tmp_path / ".gitignore").write_text("x\n", encoding="utf-8")
+    (tmp_path / "app.py").write_text("x = 1\n", encoding="utf-8")
+
+    nested = tmp_path / ".workbuddy" / "proj"
+    nested.mkdir(parents=True)
+    (nested / "app.py").write_text("y = 2\n", encoding="utf-8")
+
+    listed = [Workspace(tmp_path).relative(p) for p in Workspace(tmp_path).iter_files()[0]]
+    assert "app.py" in listed
+    assert ".gitignore" in listed, "点文件属于仓库的一部分，不该被跳过"
+    assert not any(".hidden" in item for item in listed), "点目录应跳过"
+
+    # 根路径自身位于点目录下：不能因为 parts 里含 .workbuddy 就把整棵树判掉
+    inner = [Workspace(nested).relative(p) for p in Workspace(nested).iter_files()[0]]
+    assert inner == ["app.py"]
+
+
+def test_workspace_add_and_remove_round_trip(tmp_path: Path) -> None:
+    workspace = tmp_path / "another-repo"
+    (workspace / "app").mkdir(parents=True)
+    (workspace / "app" / "main.py").write_text("x = 1\n", encoding="utf-8")
+
+    entry, error = server.add_repo(str(workspace))
+    assert error == ""
+    assert entry is not None
+    assert entry["source"] == "added"
+    assert entry["removable"] is True
+    assert entry["files"] == 1
+
+    # 重复加入不应产生两条记录
+    server.add_repo(str(workspace))
+    matched = [r for r in server.list_repos() if r["path"] == str(workspace.resolve())]
+    assert len(matched) == 1
+
+    ok, error = server.remove_repo(str(workspace))
+    assert ok is True and error == ""
+    assert all(r["path"] != str(workspace.resolve()) for r in server.list_repos())
+
+
+def test_workspace_add_rejects_bad_paths(tmp_path: Path) -> None:
+    # 空路径
+    entry, error = server.add_repo("")
+    assert entry is None and "不能为空" in error
+
+    # 不存在的目录
+    entry, error = server.add_repo(str(tmp_path / "nope"))
+    assert entry is None and "不是" in error
+
+    # 文件而不是目录
+    blob = tmp_path / "file.py"
+    blob.write_text("x = 1\n", encoding="utf-8")
+    entry, error = server.add_repo(str(blob))
+    assert entry is None
+
+    # 空目录（没有任何可审文件）
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    entry, error = server.add_repo(str(empty))
+    assert entry is None and "没有任何可审的文件" in error
+
+
+def test_builtin_samples_cannot_be_removed() -> None:
+    """examples/ 下的样本是内置的，不该被「移出工作区」误删。"""
+    sample = server.BACKEND_ROOT / "examples" / "s3-input-paths" / "repo"
+    ok, error = server.remove_repo(str(sample))
+    assert ok is False
+    assert "不能移除" in error
+
+
+def test_repo_file_list_matches_repo_file_count() -> None:
+    """候选列表的文件数必须与「选择审查范围」列出的条数一致。
+
+    这两处曾经各写一套过滤规则，同一个仓库一个显示 61、一个列出 71，
+    用户没法信任任何一边。
+    """
+    for repo in server.list_repos():
+        files, error = server.list_repo_files(repo["path"], limit=5000)
+        assert error == ""
+        assert len(files) == repo["files"], (
+            f"{repo['id']} 的文件数不一致：候选 {repo['files']} vs 清单 {len(files)}"
+        )
+
+
+def test_audit_records_scope_and_rejects_escaping_paths(live_server: str) -> None:
+    """scope 会写进运行记录；越界路径被服务端丢弃，不交给前端决定边界。"""
+    status, body = post(
+        live_server,
+        "/api/audit",
+        {
+            "repo": "backend/examples/s3-input-paths/repo",
+            "goal": "只看 app/files.py",
+            "offline": True,
+            "scope": ["app/files.py", "../../../etc/passwd"],
+        },
+    )
+    assert status == 201
+    run_id = json.loads(body)["run_id"]
+
+    deadline = time.time() + 90
+    record = None
+    while time.time() < deadline:
+        _, raw = get(live_server, f"/api/audit/{run_id}")
+        record = json.loads(raw)
+        if record.get("status") in ("finished", "error", "stopped"):
+            break
+        time.sleep(0.2)
+
+    assert record is not None
+    assert record["scope"] == ["app/files.py", "../../../etc/passwd"], "原始 scope 应原样留档"
+
+    # 越界项必须被丢掉，且不能把仓库外的路径原文喂给模型
+    note = record["context_note"]
+    assert "app/files.py" in note
+    assert "passwd" not in note, "越界路径的原文不应出现在模型上下文里"
+    assert "1 个路径超出仓库范围" in note, "只报个数，不回显路径"

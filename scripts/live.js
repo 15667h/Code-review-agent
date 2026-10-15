@@ -113,6 +113,47 @@
     ui.onSessionSelect(function (space, session) {
       openSession(session);
     });
+
+    /* 点击空间行但该空间下还没有记录：清掉正文，只把顶栏切过去。
+       否则用户点了别的仓库，看到的还是上一个仓库的旧内容。 */
+    ui.onSpaceSelect(function (space) {
+      showEmptyWorkspace(space);
+    });
+
+    /* 在某个仓库下开新审查：清正文 + 清空范围 chip，等用户输入 */
+    ui.onDraft(function (space) {
+      showEmptyWorkspace(space);
+      ui.clearScope();
+      ui.setStatus('待开始', space.name);
+    });
+
+    /* 回形针里加入/移出仓库后，侧栏要立刻反映出来 */
+    ui.setWorkspaceProvider({
+      list: function () {
+        return Promise.all([api.candidates(), api.repos()]).then(function (results) {
+          return {
+            candidates: (results[0] && results[0].candidates) || [],
+            repos: (results[1] && results[1].repos) || [],
+          };
+        });
+      },
+      add: function (path) {
+        return api.addRepo(path);
+      },
+      remove: function (path) {
+        return api.removeRepo(path);
+      },
+      files: function (repoPath) {
+        return api.repoFiles(repoPath);
+      },
+    });
+
+    ui.onWorkspaceChange(function (addedPath) {
+      // 传了路径说明是「刚加入这个仓库」——refresh 完要选中它
+      selectAfterRefresh = addedPath || '';
+      refresh();
+    });
+
     ui.setLiveHandlers({
       send: function (text) {
         return startAudit(text);
@@ -124,6 +165,20 @@
 
     await refresh();
     return true;
+  }
+
+  /* 切换到一个还没有审查记录的仓库时的空态 */
+  function showEmptyWorkspace(space) {
+    var wrap = el('div', 'turn turn--agent');
+    wrap.appendChild(el('p', 'run__intro', '还没有审查记录。在下面写明审查重点并回车，就会为 ' + space.name + ' 新建一次审查。'));
+
+    var note = el('p', 'run__note');
+    note.textContent =
+      '只审某几个文件时，用输入框左侧的筛选按钮勾选范围；' +
+      '要把别的仓库加进工作区，用回形针按钮。';
+    wrap.appendChild(note);
+
+    ui.replaceThread(wrap);
   }
 
   /* 顶栏连接指示：一眼看出当前数据是真实的还是演示的 */
@@ -218,16 +273,43 @@
     ui.renderModels();
     ui.renderRail();
 
-    /* 默认选中最近一次运行：顶栏上下文完全由数据驱动，
-       不选的话顶栏只会是空的（HTML 里刻意没有静态默认值）。 */
-    var first = spaces[0];
-    if (first) {
-      var target = first.sessions[0] || null;
-      ui.applyContext(first, target);
-      if (target) {
-        openSession(target);
-      }
+    /* 选中项的处理顺序（这决定了「切换仓库后顶栏有没有变」）：
+       1. 刚加入工作区的那个仓库 → 直接选中它，让用户看到加入的结果；
+       2. 当前的选中项还在 → 保留，不要因为一次 refresh 就把用户甩回第一个；
+       3. 否则退回第一个仓库（即使它没有历史记录，也要把顶栏填上）。 */
+    var active = ui.getActive();
+    var wanted =
+      pickScope(spaces, selectAfterRefresh) ||
+      pickScope(spaces, active.space && (active.space.path || active.space.name)) ||
+      spaces[0] ||
+      null;
+
+    selectAfterRefresh = '';
+
+    if (!wanted) {
+      return;
     }
+    // 选中项被移出工作区之后，原来是第几条就已经不重要了
+    var target = wanted.sessions[0] || null;
+    ui.applyContext(wanted, target);
+    if (target) {
+      openSession(target);
+    } else {
+      showEmptyWorkspace(wanted);
+    }
+  }
+
+  function pickScope(spaces, key) {
+    if (!key) {
+      return null;
+    }
+    var found = null;
+    spaces.forEach(function (space) {
+      if (space.path === key || space.id === key || space.name === key) {
+        found = space;
+      }
+    });
+    return found;
   }
 
   function sessionTitle(run) {
@@ -244,6 +326,8 @@
      ========================================================================== */
 
   var replaying = false;
+  /* 加入工作区之后要在 refresh 完成时自动选中的仓库路径 */
+  var selectAfterRefresh = '';
 
   async function openSession(session, silent) {
     if (replaying || (ui.isBusy() && !silent)) {
@@ -305,12 +389,16 @@
     }
 
     var model = ui.currentModel();
+    var scope = (ui.getScope && ui.getScope()) || [];
     var payload = {
       repo: space.path,
       goal: text,
       model: model ? model.id : undefined,
       max_iterations: 40,
     };
+    if (scope.length) {
+      payload.scope = scope;
+    }
 
     var handle = createView({
       repo_name: space.name,
@@ -318,6 +406,10 @@
       goal: text,
       offline: false,
     });
+
+    if (scope.length) {
+      handle.note('本次审查限定 ' + scope.length + ' 个路径：' + scope.join('、'));
+    }
 
     ui.setBusy(true);
     setConnection('busy', space.name);
