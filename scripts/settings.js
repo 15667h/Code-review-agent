@@ -1,6 +1,11 @@
 /* ==========================================================================
    Margin · 模型配置中心
-   纯前端演示：所有保存动作都只改本地状态，不发出真实请求。
+   接入后端时，「测试连接」与「保存更改」打的是真实接口
+   （POST /api/config/test 与 POST /api/config）；
+   用 file:// 直接打开时退回纯前端演示，不发任何请求。
+
+   会落盘的字段由后端的白名单决定（见 harness/server.py 的 WRITABLE_KEYS），
+   界面上有一部分字段目前只是演示，保存时不会写入 —— 这一点在页面上明确标注了。
    ========================================================================== */
 
 (function () {
@@ -144,12 +149,135 @@
   var fields = Array.prototype.slice.call(
     document.querySelectorAll('.settings input, .settings select')
   );
-  var snapshot = fields.map(function (node) {
-    return node.type === 'checkbox' || node.type === 'radio' ? node.checked : node.value;
-  });
+
+  function captureSnapshot() {
+    return fields.map(function (node) {
+      return node.type === 'checkbox' || node.type === 'radio' ? node.checked : node.value;
+    });
+  }
+
+  var snapshot = captureSnapshot();
 
   /* ==========================================================================
-     读取上次的默认模型
+     后端接入
+     ========================================================================== */
+
+  var api = window.MARGIN_API;
+  var live = false;
+
+  var apiKeyField = document.getElementById('apiKey');
+  var saveBtn = document.getElementById('saveBtn');
+  var saveLabel = document.getElementById('saveLabel');
+  var saveState = document.getElementById('saveState');
+  var resetBtn = document.getElementById('resetBtn');
+
+  function setConnState(text, kind) {
+    if (!connState) {
+      return;
+    }
+    connState.className = kind ? 'conn-state conn-state--' + kind : 'conn-state';
+    connState.textContent = text || '';
+  }
+
+  function setBadge(state, text) {
+    var badge = document.getElementById('backendBadge');
+    var label = document.getElementById('backendBadgeText');
+    if (badge) {
+      badge.dataset.state = state;
+      badge.hidden = false;
+    }
+    if (label) {
+      label.textContent = text;
+    }
+  }
+
+  function checkedModel() {
+    var node = document.querySelector('input[name="default-model"]:checked');
+    return node ? node.value : '';
+  }
+
+  function numberOr(node, fallback) {
+    if (!node) {
+      return fallback;
+    }
+    var value = parseFloat(node.value);
+    return isNaN(value) ? fallback : value;
+  }
+
+  /* 用后端配置回填表单。密钥不回显，只在 placeholder 里显示掩码。 */
+  function hydrate(config) {
+    if (baseUrl && config.base_url) {
+      baseUrl.value = config.base_url;
+    }
+    if (provider && config.provider) {
+      // 提供商名会同时命中多个选项（OpenAI 兼容 / Anthropic 兼容），
+      // 必须再用 base_url 区分一次，否则会被列表里靠后的那个覆盖掉。
+      var want = config.base_url.indexOf("/anthropic") !== -1 ? "Anthropic 兼容" : "OpenAI 兼容";
+      var options = Array.prototype.slice.call(provider.options);
+      var matches = options.filter(function (option) {
+        return option.textContent.indexOf(config.provider) !== -1;
+      });
+      var exact = matches.filter(function (option) {
+        return option.textContent.indexOf(want) !== -1;
+      });
+      var chosen = exact[0] || matches[0];
+      if (chosen) {
+        provider.value = chosen.value;
+      }
+    }
+    if (apiKeyField) {
+      apiKeyField.value = '';
+      apiKeyField.placeholder = config.api_key_set
+        ? config.api_key_masked + '　已保存；留空则不改动'
+        : 'sk-...';
+    }
+    if (config.model) {
+      var radio = document.querySelector(
+        'input[name="default-model"][value="' + config.model + '"]'
+      );
+      if (radio) {
+        radio.checked = true;
+      }
+    }
+    var temperature = document.getElementById('temperature');
+    if (temperature && config.temperature != null) {
+      temperature.value = String(config.temperature);
+    }
+    var timeout = document.getElementById('timeout');
+    if (timeout && config.timeout != null) {
+      timeout.value = String(config.timeout);
+    }
+    document.querySelectorAll('.range[data-out]').forEach(syncRange);
+  }
+
+  async function bootBackend() {
+    if (!api || !api.served) {
+      setBadge('demo', '演示数据');
+      return;
+    }
+    var config = await api.config();
+    if (!config || config.error) {
+      setBadge('error', '后端不可达');
+      return;
+    }
+    live = true;
+    hydrate(config);
+    // 回填之后再取快照，否则「重置」会退回 HTML 里的演示初值
+    snapshot = captureSnapshot();
+    setBadge(config.ready ? 'live' : 'error', config.provider || '后端已连接');
+    setConnState(
+      '已读取后端配置 · ' + config.provider + ' · ' +
+        (config.api_key_set ? '密钥已配置' : '未配置密钥'),
+      config.api_key_set ? 'ok' : 'warn'
+    );
+    var notice = document.getElementById('persistNotice');
+    if (notice) {
+      notice.hidden = false;
+    }
+  }
+
+  /* ==========================================================================
+     读取上次的默认模型（演示模式用；实时模式由后端配置决定）
      ========================================================================== */
 
   try {
@@ -173,26 +301,45 @@
 
   if (testBtn && connState) {
     testBtn.addEventListener('click', function () {
-      testBtn.disabled = true;
-      connState.className = 'conn-state conn-state--testing';
-      connState.textContent = '正在连接 ' + (baseUrl ? baseUrl.value : '') + ' …';
+      var payload = {
+        base_url: baseUrl ? baseUrl.value.trim() : '',
+        model: checkedModel(),
+      };
+      // 只在用户真的填了新密钥时才带上；留空表示沿用已保存的
+      if (apiKeyField && apiKeyField.value.trim()) {
+        payload.api_key = apiKeyField.value.trim();
+      }
 
-      window.setTimeout(function () {
+      if (!live) {
+        testBtn.disabled = true;
+        setConnState('正在连接 ' + payload.base_url + ' …', 'testing');
+        window.setTimeout(function () {
+          testBtn.disabled = false;
+          setConnState('连接正常 · 3 个模型已启用（演示结果，未发出真实请求）', 'ok');
+        }, 1200);
+        return;
+      }
+
+      testBtn.disabled = true;
+      setConnState('正在连接 ' + payload.base_url + ' …', 'testing');
+      api.testConfig(payload).then(function (result) {
         testBtn.disabled = false;
-        connState.className = 'conn-state conn-state--ok';
-        connState.textContent = '连接正常 · 3 个模型已启用（演示结果，未发出真实请求）';
-      }, 1200);
+        if (result && result.ok) {
+          setConnState(
+            '连接正常 · ' + result.latency_ms + 'ms · 可用模型 ' +
+              (result.model_ids || []).join('、'),
+            'ok'
+          );
+        } else {
+          setConnState('连接失败：' + ((result && result.error) || '未知错误'), 'fail');
+        }
+      });
     });
   }
 
   /* ==========================================================================
      保存 / 重置
      ========================================================================== */
-
-  var saveBtn = document.getElementById('saveBtn');
-  var saveLabel = document.getElementById('saveLabel');
-  var saveState = document.getElementById('saveState');
-  var resetBtn = document.getElementById('resetBtn');
 
   function setSaving(state) {
     if (!saveBtn) {
@@ -208,32 +355,78 @@
     }
   }
 
+  function flashSaveState(text) {
+    if (!saveState) {
+      return;
+    }
+    saveState.textContent = text;
+    window.setTimeout(function () {
+      if (saveState.textContent === text) {
+        saveState.textContent = '';
+      }
+    }, 3200);
+  }
+
+  function rememberModel() {
+    var model = checkedModel();
+    if (!model) {
+      return;
+    }
+    try {
+      window.localStorage.setItem('margin.demo.model', model);
+    } catch (error) {
+      /* 忽略 */
+    }
+  }
+
   if (saveBtn) {
     saveBtn.addEventListener('click', function () {
       setSaving(true);
 
-      window.setTimeout(function () {
+      if (!live) {
+        window.setTimeout(function () {
+          setSaving(false);
+          rememberModel();
+          flashSaveState('已保存（演示，未写入文件）');
+        }, 900);
+        return;
+      }
+
+      var patch = {};
+      if (baseUrl && baseUrl.value.trim()) {
+        patch.DEEPSEEK_BASE_URL = baseUrl.value.trim();
+      }
+      if (checkedModel()) {
+        patch.DEEPSEEK_MODEL = checkedModel();
+      }
+      var temperature = numberOr(document.getElementById('temperature'), null);
+      if (temperature !== null) {
+        patch.AUDIT_TEMPERATURE = temperature;
+      }
+      var timeout = numberOr(document.getElementById('timeout'), null);
+      if (timeout !== null) {
+        patch.AUDIT_TIMEOUT = timeout;
+      }
+      if (apiKeyField && apiKeyField.value.trim()) {
+        patch.DEEPSEEK_API_KEY = apiKeyField.value.trim();
+      }
+
+      api.saveConfig(patch).then(function (result) {
         setSaving(false);
-
-        // 把默认模型带回工作台
-        var checked = document.querySelector('input[name="default-model"]:checked');
-        if (checked && checked.value) {
-          try {
-            window.localStorage.setItem('margin.demo.model', checked.value);
-          } catch (error) {
-            /* 忽略 */
-          }
+        if (!result || result.error) {
+          flashSaveState('保存失败：' + ((result && result.error) || '未知错误'));
+          return;
         }
-
-        if (saveState) {
-          saveState.textContent = '已保存';
-          window.setTimeout(function () {
-            if (saveState.textContent === '已保存') {
-              saveState.textContent = '';
-            }
-          }, 2600);
-        }
-      }, 900);
+        rememberModel();
+        hydrate(result.config);
+        snapshot = captureSnapshot();
+        flashSaveState(
+          '已写入 backend/.env：' +
+            (result.updated && result.updated.length
+              ? result.updated.join('、')
+              : '（本次没有字段变化）')
+        );
+      });
     });
   }
 
@@ -250,19 +443,11 @@
       // 值变了，滑块的数值显示要跟着回位
       document.querySelectorAll('.range[data-out]').forEach(syncRange);
 
-      if (connState) {
-        connState.className = 'conn-state';
-        connState.textContent = '';
-      }
+      setConnState('', '');
 
-      if (saveState) {
-        saveState.textContent = '已恢复为打开页面时的设置';
-        window.setTimeout(function () {
-          if (saveState.textContent === '已恢复为打开页面时的设置') {
-            saveState.textContent = '';
-          }
-        }, 2600);
-      }
+      flashSaveState(live ? '已恢复为后端当前配置' : '已恢复为打开页面时的设置');
     });
   }
+
+  bootBackend();
 })();

@@ -153,13 +153,18 @@
 
             <span class="context__divider" aria-hidden="true"></span>
 
-            <span class="context__repo" id="wsRepo" translate="no">meridian-labs/payments-api</span>
-            <span class="context__pr" id="wsPr" translate="no">#482</span>
+            <span class="context__repo" id="wsRepo" translate="no"></span>
+            <span class="context__pr" id="wsPr" translate="no" hidden></span>
           </div>
 
           <div class="topbar__right">
+            <span class="conn" id="conn" data-state="demo" hidden>
+              <span class="conn__dot" aria-hidden="true"></span>
+              <span class="conn__text" id="connText">演示数据</span>
+            </span>
+
             <div class="context__meta" id="wsMeta">
-              <span class="tag" translate="no" id="wsBranch">
+              <span class="tag" translate="no" id="wsBranch" hidden>
                 <svg width="11" height="11" viewBox="0 0 12 12" aria-hidden="true" focusable="false">
                   <path
                     d="M3 2.5v5.2M9 2.5v2.1c0 1-.8 1.8-1.8 1.8H4.8"
@@ -171,12 +176,11 @@
                   <circle cx="3" cy="9.4" r="1.4" fill="currentColor" />
                   <circle cx="9" cy="2.4" r="1.4" fill="currentColor" />
                 </svg>
-                feat/rate-limit-refactor
               </span>
               <span class="meta-dot" aria-hidden="true"></span>
-              <span class="meta num" id="wsFiles">7 个文件</span>
-              <span class="meta num stat-add" id="wsAdd">+312</span>
-              <span class="meta num stat-del" id="wsDel">−148</span>
+              <span class="meta num" id="wsFiles" hidden></span>
+              <span class="meta num stat-add" id="wsAdd" hidden></span>
+              <span class="meta num stat-del" id="wsDel" hidden></span>
             </div>
 
             <div class="brand">
@@ -361,6 +365,8 @@
     </div>
 
     <script src="scripts/mock-data.js"></script>
+    <script src="scripts/api.js"></script>
+    <script src="scripts/live.js"></script>
     <script src="scripts/app.js"></script>
   </body>
 </html>

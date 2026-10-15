@@ -502,7 +502,12 @@ def _tool_lint_file(workspace: Workspace, runner: CommandRunner) -> Tool:
                     f"[语法错误] 第 {exc.lineno} 行第 {exc.offset} 列：{exc.msg}"
                 )
             if tool in {"auto", "ruff"}:
-                ruff = runner.run(["ruff", "check", "--output-format", "concise", path])
+                # --no-cache 是必须的：ruff 默认会把缓存写到被检查的项目里
+                # （.ruff_cache/），于是「审计」这个只读动作在别人的仓库里留下了文件。
+                # 审计工具不该有这种副作用，实测已经踩到过。
+                ruff = runner.run(
+                    ["ruff", "check", "--no-cache", "--output-format", "concise", path]
+                )
                 if ruff.ok and str(ruff.data or "").strip():
                     findings.append(str(ruff.data).strip()[:4000])
 

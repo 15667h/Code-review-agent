@@ -884,3 +884,69 @@
     transform: rotate(360deg);
   }
 }
+
+/* ==========================================================================
+   后端接入相关
+   .conn 与工作台用的是同一套视觉（app.css 里也有一份），
+   之所以在 settings.css 里再写一遍：本页没有引入 app.css，
+   为了一个 6px 的指示点去加载整份工作台样式不划算。
+   ========================================================================== */
+
+.conn {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+  padding: 2px var(--sp-2) 3px;
+  border: 1px solid var(--rule);
+  border-radius: var(--r-sm);
+  background: var(--surface);
+  color: var(--ink-2);
+  font-size: 11.5px;
+  white-space: nowrap;
+}
+
+.conn__dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--rule-strong);
+}
+
+.conn[data-state="live"] .conn__dot {
+  background: var(--pass);
+}
+
+.conn[data-state="error"] .conn__dot {
+  background: var(--blocker);
+}
+
+.conn-state--warn {
+  color: var(--warn);
+}
+
+/* 保存范围说明：明确哪些字段真的会落盘 */
+.settings__notice {
+  max-width: 1180px;
+  margin: 0 auto var(--sp-3);
+  padding: var(--sp-3) var(--sp-4);
+  border: 1px solid color-mix(in oklab, var(--warn) 26%, var(--rule));
+  border-radius: var(--r-md);
+  background: var(--warn-soft);
+  color: color-mix(in oklab, var(--warn) 78%, var(--ink));
+  font-size: 12.5px;
+  line-height: 1.65;
+}
+
+.settings__notice code {
+  padding: 1px 4px;
+  border-radius: 3px;
+  background: color-mix(in oklab, var(--warn) 12%, var(--surface));
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+}
+
+@media (max-width: 720px) {
+  .settings__notice {
+    margin-inline: var(--sp-4);
+  }
+}

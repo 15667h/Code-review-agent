@@ -55,6 +55,7 @@ from .tools_audit import build_toolbox, tool_report
 from .types import Finding, Message, RunState, Usage
 
 EventHook = Callable[[str, dict[str, Any]], None]
+StopHook = Callable[[], bool]
 
 
 @dataclass
@@ -127,8 +128,15 @@ def run_audit(
     approve: ApprovalFn | None = None,
     allow_high_risk: bool = False,
     max_model_retries: int = 2,
+    should_stop: Callable[[], bool] | None = None,
 ) -> AuditResult:
-    """跑完一次完整审计。"""
+    """跑完一次完整审计。
+
+    ``should_stop`` 是给交互式前端用的外部中断开关：每轮开始时询问一次，
+    返回 True 就停在这一轮并将 ``stop_reason`` 置为 ``stopped``。
+    刻意做成轮询式而不是抛异常 —— 中断要停在一个干净的边界上，
+    让已经产生的发现和轨迹保持完整，而不是把上下文撕成一半。
+    """
     started = time.time()
 
     state = RunState(goal=goal, max_iterations=config.max_iterations)
@@ -163,6 +171,11 @@ def run_audit(
     _emit(on_event, "start", {"prefix": result.prefix_trace, "goal": goal})
 
     while state.iteration < state.max_iterations:
+        # 外部中断：停在干净边界上，已产生的发现与轨迹保持完整
+        if should_stop is not None and should_stop():
+            result.stop_reason = "stopped"
+            break
+
         state.iteration += 1
 
         # ---- 预算：临近上限先压缩，避免溢出硬失败 ----
@@ -241,6 +254,7 @@ def run_audit(
         for call in decision.tool_calls:
             state.note_tool(call.signature())
             check = constrainer.check(call, state)
+            findings_before = len(state.findings)
 
             if check.allowed:
                 # 一次正常工具被放行 → 说明模型已经找到可行路径，连续被拒计数归零。
@@ -285,6 +299,12 @@ def run_audit(
                 "tool",
                 {"call": call, "result": tool_result, "verification": verification.notes},
             )
+
+            # 发现边录边推：交互式前端可以逐条渲染，而不用等到整轮结束。
+            # 用「长度变化」判断而不是「工具名是 record_finding」——
+            # 重复发现会被去重吞掉，那时不能凭空推一条并不存在的发现。
+            for finding in state.findings[findings_before:]:
+                _emit(on_event, "finding", {"finding": finding, "iteration": state.iteration})
 
             if call.name == "finish" and tool_result.ok:
                 result.summary = str(call.arguments.get("summary", ""))

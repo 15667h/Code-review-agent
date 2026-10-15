@@ -12,6 +12,9 @@ desktop.ini
 # ---- WorkBuddy 本地项目数据（记忆 / 本地配置） ----
 .workbuddy/
 
+# harness HTTP 服务的运行归档（每次审计一份 JSON，属运行时数据）
+backend/.runs/
+
 # ---- Python ----
 __pycache__/
 *.py[cod]

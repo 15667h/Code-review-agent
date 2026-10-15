@@ -1,16 +1,30 @@
 /* ==========================================================================
    Margin · 交互层
-   纯原生 JS，无构建步骤。演示数据来自 scripts/mock-data.js。
-   设计约束：动效只用于状态变化；所有可交互元素具备完整状态；键盘可达。
+   纯原生 JS，无构建步骤。
+
+   数据有两个来源，由 scripts/live.js 在启动时决定走哪一个：
+   - **实时模式**：页面由 backend/harness/server.py 托管时，空间/会话/审计流
+     全部来自后端真实接口；
+   - **演示模式**：用 file:// 直接双击打开时，数据来自 scripts/mock-data.js。
+   两个模式共用下面这套渲染原语，所以视觉与交互不会有第二套实现。
    ========================================================================== */
 
 (function () {
   'use strict';
 
-  var DATA = window.MARGIN_DATA;
-  if (!DATA) {
-    return;
-  }
+  var DATA = window.MARGIN_DATA || {};
+
+  /* 可变的数据源：演示模式取 mock，实时模式由 live.js 灌入 */
+  var SPACES = (DATA.spaces || []).slice();
+  var MODELS = (DATA.models || []).slice();
+
+  /* 由 live.js 注入的实时模式钩子；为空即表示当前是演示模式 */
+  var liveSend = null;
+  var liveStop = null;
+
+  /* 当前选中的空间与记录，供实时模式发起审计时取仓库路径 */
+  var activeSpace = null;
+  var activeSession = null;
 
   /* ---------- DOM 引用 ---------- */
   var thread = document.getElementById('thread');
@@ -99,6 +113,10 @@
   }
 
   function stopAll() {
+    /* 实时模式：协作式中断，服务端会在轮次边界停下 */
+    if (liveStop) {
+      liveStop();
+    }
     cancelled = true;
     pending.forEach(function (resolve, id) {
       clearTimeout(id);
@@ -137,6 +155,20 @@
     follow(true);
   }
 
+  function makeStep(step) {
+    var li = el('li', 'step is-pending');
+    var mark = el('span', 'step__mark');
+    mark.setAttribute('aria-hidden', 'true');
+    var label = el('span', 'step__label', step.label);
+    var meta = el('span', 'step__meta', step.meta || '');
+    var dur = el('span', 'step__dur num', '');
+    li.appendChild(mark);
+    li.appendChild(label);
+    li.appendChild(meta);
+    li.appendChild(dur);
+    return { el: li, mark: mark, dur: dur, meta: meta };
+  }
+
   function buildPlan(steps) {
     var root = el('section', 'plan is-animated');
     root.setAttribute('aria-label', '审查计划');
@@ -152,23 +184,14 @@
     var items = [];
 
     steps.forEach(function (step) {
-      var li = el('li', 'step is-pending');
-      var mark = el('span', 'step__mark');
-      mark.setAttribute('aria-hidden', 'true');
-      var label = el('span', 'step__label', step.label);
-      var meta = el('span', 'step__meta', step.meta);
-      var dur = el('span', 'step__dur num', '');
-      li.appendChild(mark);
-      li.appendChild(label);
-      li.appendChild(meta);
-      li.appendChild(dur);
-      list.appendChild(li);
-      items.push({ el: li, mark: mark, dur: dur, meta: meta });
+      var item = makeStep(step);
+      list.appendChild(item.el);
+      items.push(item);
     });
 
     root.appendChild(list);
 
-    return { root: root, items: items, total: total };
+    return { root: root, items: items, total: total, list: list };
   }
 
   function setStepState(item, state, duration) {
@@ -312,23 +335,26 @@
     return card;
   }
 
-  function buildFindings(findings) {
-    var root = el('section', 'findings is-animated');
-    root.setAttribute('aria-label', '审查发现');
-
+  function countSeverities(findings) {
     var counts = { blocker: 0, warn: 0, note: 0, pass: 0 };
     findings.forEach(function (f) {
       counts[f.severity] = (counts[f.severity] || 0) + 1;
     });
+    return counts;
+  }
 
+  /* 表头（标题 + 筛选 chip）单独成函数：实时模式下发现是逐条推来的，
+     计数必须跟着涨，不能只在建面板那一刻算一次。 */
+  function buildFindingsHead(findings) {
     var head = el('header', 'findings__head');
+    head.dataset.head = 'findings';
     head.appendChild(el('h3', 'findings__title', '发现'));
 
+    var counts = countSeverities(findings);
     var filter = el('div', 'sev-filter');
     filter.setAttribute('role', 'group');
     filter.setAttribute('aria-label', '按严重级别筛选');
 
-    var chips = [];
     var options = [{ key: 'all', label: '全部', count: findings.length }];
     SEV_ORDER.forEach(function (key) {
       if (counts[key]) {
@@ -336,16 +362,19 @@
       }
     });
 
+    var active = 'all';
+    if (head.parentNode && head.parentNode.dataset) {
+      /* 重建时沿用当前筛选 */
+    }
+
     options.forEach(function (option, index) {
       var chip = el('button', 'sev-chip');
       chip.type = 'button';
       chip.dataset.sev = option.key;
       chip.setAttribute('aria-pressed', index === 0 ? 'true' : 'false');
       chip.appendChild(el('span', null, option.label));
-      var count = el('span', 'num', String(option.count));
-      chip.appendChild(count);
+      chip.appendChild(el('span', 'num', String(option.count)));
       filter.appendChild(chip);
-      chips.push(chip);
     });
 
     filter.addEventListener('click', function (event) {
@@ -353,16 +382,38 @@
       if (!chip) {
         return;
       }
-      applyFilter(root, chip.dataset.sev);
+      applyFilter(head.parentNode, chip.dataset.sev);
     });
 
     head.appendChild(filter);
-    root.appendChild(head);
+    return head;
+  }
+
+  /* 发现数变化时重建表头，并保留用户已经选中的筛选级别 */
+  function refreshFindingsHead(root, findings) {
+    var previous = root.querySelector('[data-head="findings"] .sev-chip[aria-pressed="true"]');
+    var keep = previous ? previous.dataset.sev : 'all';
+    var old = root.querySelector('[data-head="findings"]');
+    var fresh = buildFindingsHead(findings);
+    if (old) {
+      root.replaceChild(fresh, old);
+    } else {
+      root.insertBefore(fresh, root.firstChild);
+    }
+    if (keep && keep !== 'all') {
+      applyFilter(root, keep);
+    }
+  }
+
+  function buildFindings(findings) {
+    var root = el('section', 'findings is-animated');
+    root.setAttribute('aria-label', '审查发现');
+    root.appendChild(buildFindingsHead(findings));
 
     var list = el('div', 'findings__list');
     root.appendChild(list);
 
-    return { root: root, list: list, chips: chips };
+    return { root: root, list: list };
   }
 
   function applyFilter(root, severity) {
@@ -561,6 +612,12 @@
      ========================================================================== */
 
   async function send(text) {
+    /* 实时模式：这句话就是一次真实审计的审计目标 */
+    if (liveSend) {
+      await liveSend(text);
+      return;
+    }
+
     renderUserTurn(text);
     sentOnce = true;
 
@@ -610,9 +667,20 @@
      ========================================================================== */
 
   function renderRail() {
-    var spaces = DATA.spaces || [];
+    var spaces = SPACES;
     spaceCount.textContent = String(spaces.length);
     spaceList.textContent = '';
+
+    if (!spaces.length) {
+      var empty = el('li', 'space-empty');
+      empty.appendChild(el('p', null, '还没有可审查的仓库。'));
+      empty.appendChild(
+        el('p', 'space-empty__hint', '把仓库放到 backend/examples/ 下，或重启服务时用 --repo 指定。')
+      );
+      spaceList.appendChild(empty);
+      updateRailNote();
+      return;
+    }
 
     spaces.forEach(function (space) {
       var li = el('li', 'space');
@@ -684,51 +752,107 @@
   }
 
   function updateRailNote() {
-    var spaces = DATA.spaces || [];
+    var spaces = SPACES;
     var total = spaces.reduce(function (sum, space) {
       return sum + space.sessions.length;
     }, 0);
-    railUserNote.textContent = spaces.length + ' 个空间 · ' + total + ' 次审查';
+    var note = spaces.length + ' 个空间 · ' + total + ' 次审查';
+    if (liveSend) {
+      note += ' · 已连接后端';
+    }
+    railUserNote.textContent = note;
   }
 
   function selectSession(space, session) {
-    (DATA.spaces || []).forEach(function (item) {
+    applyContext(space, session);
+
+    // 只有「用户点击」这条路径才通知外部，程序化选中走 applyContext
+    if (onSessionSelect) {
+      onSessionSelect(space, session);
+    }
+    closeDrawer();
+  }
+
+  var onSessionSelect = null;
+
+  /* 顶栏上下文：字段是**按可用性**渲染的。
+     本地仓库没有 owner / PR / 分支 / 增删统计，这些位置必须消失而不是
+     显示 "undefined" —— 宁可少显示，也不要显示假数据。
+     注意：这里也是顶栏唯一的写入点，HTML 里刻意不留静态默认值，
+     否则一旦取数失败，界面会显示一个看起来很真实的假仓库。 */
+  function show(id, value, formatter) {
+    var node = document.getElementById(id);
+    if (!node) {
+      return;
+    }
+    var missing = value === null || value === undefined || value === '';
+    node.hidden = missing;
+    if (!missing) {
+      node.textContent = formatter ? formatter(value) : String(value);
+    }
+  }
+
+  function updateContext(space, session) {
+    var label = space ? (space.owner ? space.owner + '/' + space.name : space.name) : '';
+    show('wsRepo', label);
+    show('wsPr', session && session.pr ? '#' + session.pr : '');
+    show('wsFiles', (session && session.files) || (space && space.files) || '', function (v) {
+      return v + ' 个文件';
+    });
+    show('wsAdd', (session && session.add) || '', function (v) {
+      return '+' + v;
+    });
+    show('wsDel', (session && session.del) || '', function (v) {
+      return '\u2212' + v;
+    });
+
+    var branch = document.getElementById('wsBranch');
+    if (branch) {
+      if (session && session.branch) {
+        branch.hidden = false;
+        branch.textContent = '';
+        branch.insertAdjacentHTML('beforeend', ICON.branch);
+        branch.appendChild(document.createTextNode(session.branch));
+      } else {
+        branch.hidden = true;
+      }
+    }
+
+    activeSpace = space || null;
+    activeSession = session || null;
+  }
+
+  /* 只更新展示层（顶栏 + 侧栏高亮），不触发 onSessionSelect ——
+     供实时模式在「程序化选中」时使用，避免和用户的点击路径互相递归。 */
+  function applyContext(space, session) {
+    (SPACES || []).forEach(function (item) {
       item.sessions.forEach(function (entry) {
         entry.current = false;
       });
     });
-    session.current = true;
+    if (session) {
+      session.current = true;
+    }
 
     spaceList.querySelectorAll('.session').forEach(function (node) {
-      node.removeAttribute('aria-current');
+      if (session && node.dataset.session === session.id) {
+        node.setAttribute('aria-current', 'true');
+      } else {
+        node.removeAttribute('aria-current');
+      }
     });
-    var active = spaceList.querySelector('[data-session="' + session.id + '"]');
-    if (active) {
-      active.setAttribute('aria-current', 'true');
-    }
 
     spaceList.querySelectorAll('.space__row').forEach(function (node) {
       node.classList.remove('is-current');
     });
-    var spaceNode = spaceList.querySelector('[data-space="' + space.id + '"] .space__row');
-    if (spaceNode) {
-      spaceNode.classList.add('is-current');
+    if (space) {
+      var spaceNode = spaceList.querySelector('[data-space="' + space.id + '"] .space__row');
+      if (spaceNode) {
+        spaceNode.classList.add('is-current');
+      }
     }
 
     updateContext(space, session);
-    closeDrawer();
-  }
-
-  function updateContext(space, session) {
-    wsRepo.textContent = space.owner + '/' + space.name;
-    wsPr.textContent = '#' + session.pr;
-
-    wsBranch.innerHTML = ICON.branch;
-    wsBranch.appendChild(document.createTextNode(session.branch));
-
-    wsFiles.textContent = session.files + ' 个文件';
-    wsAdd.textContent = '+' + session.add;
-    wsDel.textContent = '\u2212' + session.del;
   }
 
   /* ---------- 抽屉（窄屏）/ 折叠（宽屏） ---------- */
@@ -802,14 +926,13 @@
     '<svg class="model-item__check" width="15" height="15" viewBox="0 0 16 16" aria-hidden="true" focusable="false"><path d="M3.2 8.4 6.4 11.6 12.8 4.4" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>';
 
   function currentModel() {
-    var list = DATA.models || [];
     var found = null;
-    list.forEach(function (model) {
+    MODELS.forEach(function (model) {
       if (model.current) {
         found = model;
       }
     });
-    return found || list[0] || null;
+    return found || MODELS[0] || null;
   }
 
   /* 当前模型名同时出现在输入坞和侧栏入口上 */
@@ -827,7 +950,7 @@
   }
 
   function renderModels() {
-    var models = DATA.models || [];
+    var models = MODELS;
     if (!modelMenu || !modelBtnName || !models.length) {
       return;
     }
@@ -871,7 +994,7 @@
   }
 
   function selectModel(id) {
-    (DATA.models || []).forEach(function (model) {
+    MODELS.forEach(function (model) {
       model.current = model.id === id;
     });
 
@@ -889,7 +1012,13 @@
     } catch (error) {
       /* file:// 下可能不可用，忽略 */
     }
+
+    if (onModelChange) {
+      onModelChange(id);
+    }
   }
+
+  var onModelChange = null;
 
   function closeModelMenu() {
     if (!modelMenu || modelMenu.hidden) {
@@ -930,22 +1059,130 @@
   }
 
   /* ==========================================================================
+     对外接口（给 scripts/live.js 用的渲染原语）
+     刻意只暴露原语与状态开关，不暴露内部实现细节 ——
+     两个数据源共用同一套渲染，视觉与交互不会出现第二套实现。
+     ========================================================================== */
+
+  var MARGIN_UI = {
+    /* 渲染原语 */
+    esc: esc,
+    el: el,
+    ICON: ICON,
+    SEV_LABEL: SEV_LABEL,
+    makeStep: makeStep,
+    buildPlan: buildPlan,
+    setStepState: setStepState,
+    buildTool: buildTool,
+    buildFindings: buildFindings,
+    buildFinding: buildFinding,
+    refreshFindingsHead: refreshFindingsHead,
+    renderUserTurn: renderUserTurn,
+    follow: follow,
+
+    /* 运行状态 */
+    setBusy: setBusy,
+    isBusy: function () {
+      return busy;
+    },
+    markSent: function () {
+      sentOnce = true;
+    },
+    setStatus: function (label, step) {
+      runbarLabel.textContent = label;
+      runbarStep.textContent = step || '';
+    },
+
+    /* 侧栏与模型 */
+    renderRail: renderRail,
+    renderModels: renderModels,
+    syncModelLabel: syncModelLabel,
+    currentModel: currentModel,
+    selectSession: selectSession,
+    applyContext: applyContext,
+    setSpaces: function (list) {
+      SPACES = list || [];
+    },
+    getSpaces: function () {
+      return SPACES;
+    },
+    setModels: function (list) {
+      MODELS = list || [];
+    },
+    getActive: function () {
+      return { space: activeSpace, session: activeSession };
+    },
+    selectModel: selectModel,
+    onModelChange: function (fn) {
+      onModelChange = fn;
+    },
+    onSessionSelect: function (fn) {
+      onSessionSelect = fn;
+    },
+
+    /* 实时模式钩子 */
+    setLiveHandlers: function (handlers) {
+      liveSend = (handlers && handlers.send) || null;
+      liveStop = (handlers && handlers.stop) || null;
+    },
+    setPlaceholder: function (text) {
+      input.placeholder = text;
+    },
+    replaceThread: function (node) {
+      thread.textContent = '';
+      if (node) {
+        thread.appendChild(node);
+      }
+    },
+    thread: thread,
+    closeDrawer: closeDrawer,
+  };
+
+  window.MARGIN_UI = MARGIN_UI;
+
+  /* ==========================================================================
      启动
      ========================================================================== */
 
   async function boot() {
+    /* 优先尝试实时模式：页面由后端托管、且后端可达时才成立 */
+    if (window.MARGIN_LIVE && typeof window.MARGIN_LIVE.tryBoot === 'function') {
+      try {
+        var tookOver = await window.MARGIN_LIVE.tryBoot(MARGIN_UI);
+        if (tookOver) {
+          return;
+        }
+      } catch (error) {
+        /* 后端不可用或中途出错：安静降级到演示数据，不把用户卡在白屏 */
+        if (window.console && console.warn) {
+          console.warn('[margin] 实时模式启动失败，已降级到演示数据：', error);
+        }
+      }
+    }
+
     renderRail();
+
+    /* 顶栏上下文一律由数据驱动：HTML 里不再留静态默认值，
+       所以两种模式都必须显式选中一条记录，否则顶栏是空的。 */
+    var bootSpace = SPACES[0];
+    if (bootSpace && bootSpace.sessions.length) {
+      var bootSession =
+        bootSpace.sessions.filter(function (item) {
+          return item.current;
+        })[0] || bootSpace.sessions[0];
+      applyContext(bootSpace, bootSession);
+    }
 
     // 配置中心里改过的模型选择，回到工作台继续沿用
     try {
       var savedModel = window.localStorage.getItem('margin.demo.model');
       if (
         savedModel &&
-        (DATA.models || []).some(function (model) {
+        MODELS.some(function (model) {
           return model.id === savedModel;
         })
       ) {
-        (DATA.models || []).forEach(function (model) {
+        MODELS.forEach(function (model) {
           model.current = model.id === savedModel;
         });
       }

@@ -47,6 +47,10 @@
       </div>
 
       <div class="topbar__right">
+        <span class="conn" id="backendBadge" data-state="demo" hidden>
+          <span class="conn__dot" aria-hidden="true"></span>
+          <span class="conn__text" id="backendBadgeText">演示数据</span>
+        </span>
         <span class="save-state" id="saveState" role="status"></span>
         <button class="btn-ghost" type="button" id="resetBtn">重置</button>
         <button class="btn-primary" type="button" id="saveBtn">
@@ -54,6 +58,12 @@
         </button>
       </div>
     </header>
+
+    <p class="settings__notice" id="persistNotice" hidden>
+      接入后端后，<strong>只有下面列出的字段会真正落盘</strong>到
+      <code translate="no">backend/.env</code>：API 地址、API Key、默认模型、温度、超时。
+      其余字段（组织 ID、生成参数、并发、代理、自定义请求头等）当前为界面演示，不参与保存。
+    </p>
 
     <main class="settings" id="settings-main">
       <!-- ================= 1. 服务端点 ================= -->
@@ -124,7 +134,8 @@
                 class="input input--mono"
                 id="apiKey"
                 type="password"
-                value="sk-2f8c4a91b7e34d0fa6c5e8b2d9174a3f"
+                value="sk-demo-placeholder-not-a-real-key"
+                placeholder="sk-..."
                 spellcheck="false"
                 autocomplete="off"
                 aria-describedby="apiKey-hint"
@@ -545,6 +556,7 @@
       </section>
     </main>
 
+    <script src="scripts/api.js"></script>
     <script src="scripts/settings.js"></script>
   </body>
 </html>
