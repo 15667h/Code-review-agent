@@ -1,0 +1,831 @@
+/* ==========================================================================
+   Margin 原型 · 两个房间的产出面板
+   审查 = 校样台（批注边 + 行号列）
+   架构 = 制图室（网格图纸 + 分层色阶 + 可点选连线）
+   ========================================================================== */
+
+.thread {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-5);
+  width: min(100% - var(--sp-5) * 2, 1080px);
+  margin-inline: auto;
+  padding-block: var(--sp-5) var(--sp-7);
+}
+
+.card {
+  border: 1px solid var(--rule);
+  border-radius: var(--r-lg);
+  background: var(--surface);
+}
+
+.card__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  /* 换行：窄屏下标题和右侧的筛选/操作挤在一行时，
+     标题会被压成一字一行（实测 375px 下「发现」竖着排下来）。 */
+  flex-wrap: wrap;
+  gap: var(--sp-2) var(--sp-4);
+  padding: var(--sp-3) var(--sp-4);
+  border-block-end: 1px solid var(--rule);
+  background: var(--surface-quiet);
+  border-radius: var(--r-lg) var(--r-lg) 0 0;
+}
+
+.card__title {
+  font-size: 13.5px;
+  font-weight: 600;
+}
+
+.card__sub {
+  color: var(--ink-3);
+  font-size: 11.5px;
+}
+
+/* --------------------------------------------------------------------------
+   校样台：发现列表
+   -------------------------------------------------------------------------- */
+
+.filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-2);
+}
+
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+  /* 按钮文字不拆行（「导出方案」曾被折成两行） */
+  flex: none;
+  white-space: nowrap;
+  min-height: 28px;
+  padding: 0 var(--sp-3);
+  border: 1px solid var(--rule);
+  border-radius: 999px;
+  background: var(--surface);
+  color: var(--ink-2);
+  font-size: 12px;
+  transition-property: background-color, border-color, color;
+  transition-duration: var(--dur-fast);
+  transition-timing-function: var(--ease-out);
+}
+
+.chip:hover {
+  border-color: var(--rule-strong);
+  color: var(--ink);
+}
+
+.chip[aria-pressed="true"] {
+  border-color: var(--agent);
+  background: var(--agent-soft);
+  color: var(--agent-deep);
+}
+
+.chip .num {
+  color: var(--ink-3);
+}
+
+.chip[aria-pressed="true"] .num {
+  color: inherit;
+}
+
+.findings {
+  display: flex;
+  flex-direction: column;
+}
+
+.finding {
+  display: grid;
+  grid-template-columns: 3px 46px minmax(0, 1fr);
+  gap: var(--sp-4);
+  padding: var(--sp-4) var(--sp-4) var(--sp-4) 0;
+  border-block-end: 1px solid var(--rule);
+  text-align: left;
+  width: 100%;
+}
+
+.finding:last-child {
+  border-block-end: 0;
+}
+
+/* 批注边：整个产品的标记语言，颜色跟随当前助手 */
+.finding__rule {
+  background: var(--blocker);
+}
+
+.finding[data-sev="warn"] .finding__rule {
+  background: var(--warn);
+}
+
+.finding[data-sev="note"] .finding__rule {
+  background: var(--note);
+}
+
+.finding[data-sev="pass"] .finding__rule {
+  background: var(--pass);
+}
+
+.finding__lines {
+  padding-block-start: 2px;
+  color: var(--ink-3);
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
+.finding__body {
+  min-width: 0;
+}
+
+.finding__path {
+  color: var(--ink-3);
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+}
+
+.finding__title {
+  margin-block-start: 2px;
+  font-size: 14px;
+  font-weight: 500;
+  line-height: 1.45;
+}
+
+.finding__detail {
+  margin-block-start: var(--sp-2);
+  color: var(--ink-2);
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.finding__ev {
+  margin-block-start: var(--sp-3);
+  padding: var(--sp-2) var(--sp-3);
+  border-radius: var(--r-sm);
+  background: var(--surface-sunk);
+  color: var(--ink-2);
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  line-height: 1.6;
+}
+
+.sev-tag {
+  display: inline-block;
+  margin-inline-end: var(--sp-2);
+  padding: 0 6px 1px;
+  border-radius: var(--r-sm);
+  background: var(--blocker-soft);
+  color: var(--blocker);
+  font-size: 11px;
+  font-weight: 500;
+}
+
+.finding[data-sev="warn"] .sev-tag {
+  background: var(--warn-soft);
+  color: var(--warn);
+}
+
+.finding[data-sev="note"] .sev-tag {
+  background: var(--note-soft);
+  color: var(--note);
+}
+
+/* --------------------------------------------------------------------------
+   制图室：目标与约束
+   -------------------------------------------------------------------------- */
+
+.brief {
+  padding: var(--sp-4);
+}
+
+.brief__goal {
+  font-family: var(--font-display);
+  font-size: 20px;
+  line-height: 1.4;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  text-wrap: balance;
+}
+
+.constraints {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: var(--sp-3);
+  margin-block-start: var(--sp-4);
+}
+
+.constraint {
+  padding: var(--sp-3);
+  border: 1px solid var(--rule);
+  border-radius: var(--r-md);
+  background: var(--surface-quiet);
+}
+
+.constraint dt {
+  color: var(--ink-3);
+  font-size: 11.5px;
+}
+
+.constraint dd {
+  margin: 2px 0 0;
+  font-size: 13.5px;
+  line-height: 1.45;
+}
+
+/* --------------------------------------------------------------------------
+   制图室：分层架构图
+   -------------------------------------------------------------------------- */
+
+.blueprint {
+  display: grid;
+  grid-template-columns: minmax(0, 1.55fr) minmax(0, 1fr);
+}
+
+.bp-side {
+  min-width: 0;
+  padding: var(--sp-4);
+}
+
+.bp-canvas {
+  position: relative;
+  /* 左侧留一条走线走廊：跳层依赖从这里绕行，不横穿中间层 */
+  padding: var(--sp-4) var(--sp-4) var(--sp-5) 40px;
+}
+
+.bp-edges {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+}
+
+.bp-edge {
+  fill: none;
+  stroke: var(--rule-strong);
+  stroke-width: 1.5;
+  /* 未选中的连线压到很低：全图画满会变成一团「毛球」，
+     真正要读的是「我选的这个组件依赖谁、被谁依赖」。 */
+  opacity: 0.28;
+  transition-property: opacity, stroke, stroke-width;
+  transition-duration: var(--dur);
+  transition-timing-function: var(--ease-out);
+}
+
+.bp-edge.is-active {
+  stroke: var(--agent);
+  stroke-width: 2;
+  opacity: 1;
+}
+
+/* 跳层依赖画成虚线 —— 线型本身携带信息，不必逐条加文字标注 */
+.bp-edge.is-skip {
+  stroke-dasharray: 4 3;
+}
+
+.bp-edge.is-skip.is-active {
+  stroke-dasharray: none;
+}
+
+.bp-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-2) var(--sp-5);
+  margin: 0;
+  padding: var(--sp-3) var(--sp-4) 0;
+  border-top: 1px solid var(--rule);
+  list-style: none;
+  color: var(--ink-3);
+  font-size: 12px;
+}
+
+.bp-legend__item {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+}
+
+.bp-legend__glyph {
+  flex: none;
+  width: 34px;
+  height: 12px;
+  color: var(--rule-strong);
+}
+
+.bp-layers {
+  display: flex;
+  flex-direction: column;
+  /* 层间距留够，给连线一条走廊，不要贴着节点跑 */
+  gap: var(--sp-5);
+}
+
+.bp-layer {
+  display: grid;
+  /* 层名走左侧栏位，节点全部排在右侧 —— 这样跨层连线只会落在节点区，
+     不会横穿每一层的说明文字（原来是横着压过去的，很难读）。 */
+  grid-template-columns: 84px minmax(0, 1fr);
+  align-items: start;
+  padding: var(--sp-3);
+  border: 1px solid color-mix(in oklab, var(--agent) 20%, var(--rule));
+  border-radius: var(--r-md);
+  /* 分层色阶：自上而下逐层加深，表达依赖方向 */
+  background: color-mix(in oklab, var(--agent) 4%, var(--surface));
+}
+
+.bp-layer:nth-child(2) {
+  background: color-mix(in oklab, var(--agent) 8%, var(--surface));
+}
+
+.bp-layer:nth-child(3) {
+  background: color-mix(in oklab, var(--agent) 12%, var(--surface));
+}
+
+.bp-layer__label {
+  display: grid;
+  gap: 2px;
+  align-content: start;
+  padding-block-start: 3px;
+  padding-inline-end: var(--sp-3);
+  color: var(--agent-deep);
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.35;
+}
+
+.bp-layer__hint {
+  color: var(--ink-3);
+  font-size: 11px;
+  font-weight: 400;
+}
+
+.bp-nodes {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-3);
+}
+
+.bp-node {
+  display: grid;
+  gap: 1px;
+  min-height: 46px;
+  padding: var(--sp-2) var(--sp-3);
+  border: 1px solid color-mix(in oklab, var(--agent) 26%, var(--rule));
+  border-radius: var(--r-md);
+  background: var(--surface);
+  text-align: left;
+  transition-property: border-color, background-color, box-shadow;
+  transition-duration: var(--dur-fast);
+  transition-timing-function: var(--ease-out);
+}
+
+.bp-node:hover {
+  border-color: var(--agent);
+}
+
+.bp-node[aria-pressed="true"] {
+  border-color: var(--agent);
+  background: var(--agent-soft);
+  box-shadow: 0 0 0 3px color-mix(in oklab, var(--agent) 14%, transparent);
+}
+
+.bp-node__name {
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  font-weight: 500;
+}
+
+.bp-node[aria-pressed="true"] .bp-node__name {
+  color: var(--agent-deep);
+}
+
+.bp-node__tech {
+  color: var(--ink-3);
+  font-size: 11px;
+}
+
+/* --------------------------------------------------------------------------
+   制图室：组件详情（跟随左侧选中）
+   -------------------------------------------------------------------------- */
+
+.detail {
+  border-inline-start: 1px solid var(--rule);
+  background: var(--surface-quiet);
+}
+
+.detail__head {
+  padding: var(--sp-4) var(--sp-4) var(--sp-3);
+  border-block-end: 1px solid var(--rule);
+}
+
+.detail__name {
+  font-family: var(--font-mono);
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.detail__role {
+  margin-block-start: 2px;
+  color: var(--ink-3);
+  font-size: 12px;
+}
+
+.detail__body {
+  padding: var(--sp-4);
+  display: grid;
+  gap: var(--sp-4);
+}
+
+.field__label {
+  color: var(--ink-3);
+  font-size: 11px;
+  font-weight: 500;
+}
+
+.field__value {
+  margin-block-start: 2px;
+  font-size: 13px;
+  line-height: 1.55;
+}
+
+.field__value code {
+  padding: 1px 4px;
+  border-radius: 3px;
+  background: var(--surface-sunk);
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+}
+
+.dep-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-2);
+  margin-block-start: var(--sp-2);
+}
+
+.dep {
+  padding: 2px var(--sp-2) 3px;
+  border: 1px solid var(--rule-strong);
+  border-radius: var(--r-sm);
+  background: var(--surface);
+  color: var(--ink-2);
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+}
+
+.dep--up {
+  border-color: color-mix(in oklab, var(--agent) 40%, var(--rule));
+  color: var(--agent-deep);
+}
+
+/* --------------------------------------------------------------------------
+   制图室：决策记录 + 开放问题
+   -------------------------------------------------------------------------- */
+
+.adr {
+  display: grid;
+  gap: var(--sp-3);
+  padding: var(--sp-4);
+}
+
+.adr__item {
+  border: 1px solid var(--rule);
+  border-radius: var(--r-md);
+  background: var(--surface-quiet);
+}
+
+.adr__q {
+  padding: var(--sp-3) var(--sp-4);
+  border-block-end: 1px solid var(--rule);
+  font-size: 13.5px;
+  font-weight: 500;
+}
+
+.adr__body {
+  padding: var(--sp-3) var(--sp-4) var(--sp-4);
+  display: grid;
+  gap: var(--sp-3);
+}
+
+.options {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: var(--sp-3);
+}
+
+.option {
+  padding: var(--sp-3);
+  border: 1px solid var(--rule);
+  border-radius: var(--r-sm);
+  background: var(--surface);
+}
+
+.option__name {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  font-size: 12.5px;
+  font-weight: 600;
+}
+
+/* 被选中的方案：用勾 + 强调边，不只靠颜色 */
+.option[data-picked="true"] {
+  border-color: var(--agent);
+  background: var(--agent-soft);
+}
+
+.option[data-picked="true"] .option__name::after {
+  content: "选择";
+  padding: 0 5px 1px;
+  border-radius: var(--r-sm);
+  background: var(--agent);
+  color: var(--on-accent);
+  font-size: 10px;
+  font-weight: 500;
+}
+
+.option__why {
+  margin-block-start: var(--sp-2);
+  color: var(--ink-2);
+  font-size: 12.5px;
+  line-height: 1.55;
+}
+
+.cost {
+  margin-block-start: var(--sp-2);
+  color: var(--warn);
+  font-size: 12px;
+}
+
+.open-q {
+  padding: var(--sp-4);
+  display: grid;
+  gap: var(--sp-3);
+}
+
+.open-q__item {
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr);
+  gap: var(--sp-3);
+  font-size: 13px;
+  line-height: 1.55;
+}
+
+.open-q__mark {
+  color: var(--warn);
+  font-family: var(--font-mono);
+  font-weight: 600;
+}
+
+/* --------------------------------------------------------------------------
+   助手浮层
+   -------------------------------------------------------------------------- */
+
+.scrim {
+  position: fixed;
+  inset: 0;
+  z-index: 40;
+  background: color-mix(in oklab, var(--ink) 34%, transparent);
+}
+
+.scrim[hidden] {
+  display: none;
+}
+
+.sheet {
+  position: fixed;
+  inset-block: 0;
+  inset-inline-start: 0;
+  z-index: 41;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  width: min(460px, 100vw);
+  background: var(--paper);
+  border-inline-end: 1px solid var(--rule);
+}
+
+.sheet[hidden] {
+  display: none;
+}
+
+.sheet__head {
+  display: grid;
+  gap: var(--sp-1);
+  padding: var(--sp-5) var(--sp-5) var(--sp-4);
+  border-block-end: 1px solid var(--rule);
+}
+
+.sheet__title {
+  font-family: var(--font-display);
+  font-size: 22px;
+  font-weight: 600;
+}
+
+.sheet__sub {
+  color: var(--ink-3);
+  font-size: 13px;
+  line-height: 1.55;
+}
+
+.sheet__body {
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: var(--sp-4) var(--sp-5) var(--sp-6);
+  display: grid;
+  gap: var(--sp-5);
+}
+
+.sheet__group-label {
+  color: var(--ink-3);
+  font-size: 11.5px;
+  font-weight: 500;
+}
+
+.sheet-grid {
+  display: grid;
+  gap: var(--sp-3);
+  margin-block-start: var(--sp-3);
+}
+
+.agent-card {
+  display: grid;
+  grid-template-columns: 40px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: var(--sp-3);
+  width: 100%;
+  padding: var(--sp-3);
+  border: 1px solid var(--rule);
+  border-radius: var(--r-md);
+  background: var(--surface);
+  text-align: left;
+  transition-property: border-color, background-color;
+  transition-duration: var(--dur-fast);
+  transition-timing-function: var(--ease-out);
+}
+
+.agent-card:hover {
+  border-color: var(--rule-strong);
+}
+
+.agent-card[aria-current="true"] {
+  border-color: var(--agent);
+  background: var(--agent-soft);
+}
+
+.agent-card[disabled] {
+  border-style: dashed;
+  opacity: 0.7;
+  cursor: default;
+}
+
+.agent-card__icon {
+  display: grid;
+  place-items: center;
+  width: 40px;
+  height: 40px;
+  border-radius: var(--r-md);
+  background: var(--surface-sunk);
+  color: var(--ink-2);
+}
+
+.agent-card[aria-current="true"] .agent-card__icon {
+  background: var(--agent);
+  color: var(--on-accent);
+}
+
+.agent-card__name {
+  font-size: 13.5px;
+  font-weight: 600;
+}
+
+.agent-card__desc {
+  margin-block-start: 2px;
+  color: var(--ink-3);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.agent-card__state {
+  flex: none;
+  color: var(--ink-3);
+  font-size: 11.5px;
+}
+
+/* --------------------------------------------------------------------------
+   响应式
+   -------------------------------------------------------------------------- */
+
+/* 顶栏元信息拆成多个 <span>，窄屏时会被压成一字一行的竖排条。
+   在两处收口：① 每一段本身不换行；② 空间不够就把整块收掉。 */
+.topbar__meta > span {
+  white-space: nowrap;
+}
+
+/* 抽屉开关默认不出现，只在窄屏露出。
+   （必须排在下面的媒体查询之前，否则基础规则会把 display:grid 覆盖掉。） */
+.drawer-btn {
+  display: none;
+  place-items: center;
+  flex: none;
+  width: 34px;
+  height: 34px;
+  margin-inline-end: calc(var(--sp-2) * -1);
+  border-radius: var(--r-md);
+  color: var(--ink-2);
+}
+
+.drawer-btn:hover {
+  background: var(--surface-sunk);
+  color: var(--ink);
+}
+
+@media (max-width: 1180px) {
+  .blueprint {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .detail {
+    border-inline-start: 0;
+    border-block-start: 1px solid var(--rule);
+  }
+}
+
+@media (max-width: 960px) {
+  .topbar__meta {
+    display: none;
+  }
+}
+
+@media (max-width: 900px) {
+  .app {
+    grid-template-columns: 56px minmax(0, 1fr);
+  }
+
+  /* 上下文栏改为抽屉：窄屏下没有它就没有「切换任务」的入口，
+     所以必须留一个开关，不能只是 display:none 藏掉。
+     遮罩复用助手浮层那一个（隐藏式，靠 hidden 属性控制）。 */
+  .context {
+    position: fixed;
+    inset-block: 0;
+    inset-inline-start: 56px;
+    z-index: 42;
+    width: min(300px, calc(100vw - 84px));
+    box-shadow: var(--shadow-pop);
+    transform: translateX(-102%);
+    visibility: hidden;
+    transition-property: transform, visibility;
+    transition-duration: var(--dur);
+    transition-timing-function: var(--ease-out);
+  }
+
+  .context[data-open="true"] {
+    transform: none;
+    visibility: visible;
+  }
+
+  .drawer-btn {
+    display: grid;
+  }
+}
+
+@media (max-width: 720px) {
+  .topbar,
+  .dock {
+    padding-inline: var(--sp-4);
+  }
+
+  .work {
+    padding-inline: 0;
+  }
+
+  /* 输入坞的模型选择让位给输入框 */
+  .model-btn__name {
+    display: none;
+  }
+}
+
+/* 360px 这条线上，顶栏右侧的连接状态 + 模型按钮会把整行顶出视口。
+   收掉任务标题（抽屉里有完整列表）与连接状态的文字，只留状态点。
+   role=status + aria-label 保住「后端已连接」这条信息的可达性。 */
+@media (max-width: 480px) {
+  .topbar {
+    gap: var(--sp-3);
+  }
+
+  .topbar__title,
+  .conn__text {
+    display: none;
+  }
+
+  .conn {
+    padding: 2px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .bp-edge,
+  .context {
+    transition: none;
+  }
+}
