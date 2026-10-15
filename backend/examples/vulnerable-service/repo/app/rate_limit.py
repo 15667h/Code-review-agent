@@ -1,8 +1,4 @@
-"""示例模块：限流与连接池，故意包含资源归还与边界判断缺陷。
-
-对应前端原型里讲的那个故事：连接在异常路径上被漏掉。
-标注写在缺陷行的行尾，格式 `# 缺陷 编号：说明`。
-"""
+"""限流计数与连接池。"""
 
 import time
 
@@ -43,7 +39,7 @@ pool = ConnectionPool()
 
 async def check(key: str):
     """滑动窗口限流判定。"""
-    conn = await pool.acquire()  # 缺陷 RES002-a：acquire 后无 try/finally，异常路径会漏掉 release
+    conn = await pool.acquire()
     window_start = int(time.time() * 1000) - WINDOW_MS
     hits = await conn.zcount(key, window_start, "+inf")
 
@@ -61,7 +57,7 @@ async def check_batch(keys):
     results = []
     sources = []
     for key in keys:
-        conn = await pool.acquire()  # 缺陷 RES002-b：同样缺少 finally
+        conn = await pool.acquire()
         sources.append(conn)
         results.append(await conn.zcount(key, 0, "+inf"))
     for conn in sources:
@@ -71,9 +67,9 @@ async def check_batch(keys):
 
 def in_window(timestamp: int, window_start: int, now: int) -> bool:
     """判断时间戳是否落在窗口内。"""
-    return window_start <= timestamp and timestamp <= now  # 缺陷 ERR003-a：左右皆闭区间，边界请求被计两次
+    return window_start <= timestamp and timestamp <= now
 
 
 def remaining(hits: int) -> int:
     """剩余额度。"""
-    return LIMIT - hits  # 缺陷 ERR004-a：hits 可超过 LIMIT，此处会返回负数
+    return LIMIT - hits

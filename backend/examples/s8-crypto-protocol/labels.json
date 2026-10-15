@@ -1,0 +1,35 @@
+{
+  "case": "s8-crypto-protocol",
+  "labels": [
+    {
+      "code": "CRYPTO01-a",
+      "file": "app/tokens.py",
+      "line": 7,
+      "description": "签名密钥硬编码，且是低熵的固定字符串"
+    },
+    {
+      "code": "CRYPTO02-a",
+      "file": "app/tokens.py",
+      "line": 12,
+      "description": "Mersenne Twister 可预测，观测若干输出即可推后续值"
+    },
+    {
+      "code": "CRYPTO03-a",
+      "file": "app/tokens.py",
+      "line": 18,
+      "description": "MD5 已被攻破且此处未加盐，可构造碰撞"
+    },
+    {
+      "code": "CRYPTO04-a",
+      "file": "app/tokens.py",
+      "line": 26,
+      "description": "字符串比较非常量时间（可做时序侧信道），且完全没用 public_key，等于不验签"
+    },
+    {
+      "code": "CRYPTO05-a",
+      "file": "app/tokens.py",
+      "line": 34,
+      "description": "固定密钥流异或，相同明文恒定得到相同密文（确定性），且长度小于 32 字节时密钥流被复用"
+    }
+  ]
+}

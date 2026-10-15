@@ -1,0 +1,17 @@
+{
+  "case": "s7-crossfile-flow",
+  "labels": [
+    {
+      "code": "FLOW001-a",
+      "file": "app/repository.py",
+      "line": 12,
+      "description": "tenant/kind 源自 HTTP 查询参数，经 service 透传至此拼进 SQL"
+    },
+    {
+      "code": "FLOW002-a",
+      "file": "app/repository.py",
+      "line": 19,
+      "description": "表名同样来自请求参数，且无法参数化，必须走白名单校验"
+    }
+  ]
+}

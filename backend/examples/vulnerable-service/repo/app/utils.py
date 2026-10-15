@@ -1,12 +1,9 @@
-"""示例模块：工具函数，故意包含可变默认参数与不安全求值。
-
-标注写在缺陷行的行尾，格式 `# 缺陷 编号：说明`。
-"""
+"""通用工具函数。"""
 
 import json
 
 
-def append_event(event: dict, target: list = []) -> list:  # 缺陷 PY001-a：可变对象作为默认参数
+def append_event(event: dict, target: list = []) -> list:
     """把事件追加到列表。
 
     target 在多次调用之间共享，第二次调用会看到第一次追加进去的元素。
@@ -15,7 +12,7 @@ def append_event(event: dict, target: list = []) -> list:  # 缺陷 PY001-a：�
     return target
 
 
-def build_index(items: list = {}) -> dict:  # 缺陷 PY001-b：字典作为默认参数同样共享
+def build_index(items: list = {}) -> dict:
     """构建索引。"""
     for index, item in enumerate(items):
         items[index] = (index, item)
@@ -24,13 +21,13 @@ def build_index(items: list = {}) -> dict:  # 缺陷 PY001-b：字典作为默�
 
 def parse_payload(text: str):
     """解析一段负载。"""
-    return eval(text)  # 缺陷 SEC003-a：eval 执行任意表达式
+    return eval(text)
 
 
 def parse_config(text: str) -> dict:
     """解析配置 JSON。"""
     namespace: dict = {}
-    exec(text, namespace)  # 缺陷 SEC003-b：exec 在任意输入上执行
+    exec(text, namespace)
     return namespace
 
 

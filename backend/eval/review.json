@@ -1,0 +1,515 @@
+{
+  "criteria": {
+    "hit": "自动匹配命中，且人工复核认可为同一缺陷。",
+    "merged": "模型在同一条发现里合并描述了多条标注 / 多个缺陷点，内容确实覆盖到了。",
+    "placement": "同一条缺陷，模型指向的位置与标注不同（多为多行语句的起点与操作行之差）。",
+    "key_gap": "模型报的是**真缺陷**，但标注集没收录 —— 属于答案键遗漏，不是模型报错。",
+    "partial": "可争议：确有其事，但算不算缺陷取决于设计约定或加固等级，人工判为多报。",
+    "true_fp": "明确的误报：所指代码不存在该问题。",
+    "true_miss": "明确的漏报：模型既没定位到，完整发现里也没有等价描述。",
+    "false_credit": "该预测被自动匹配算作命中，但它描述的其实是另一处缺陷，属于错误计入。"
+  },
+  "note": "判定由我（助手）逐条给出，理由写在 rationale 里。用户可以不同意并自行重判 —— 这份文件的作用是让复核过程可审计，而不是把某个数字定成事实。",
+  "false_credits": [
+    {
+      "sample": "s8-crypto-protocol",
+      "prediction": "app/tokens.py:24",
+      "credited_label": "CRYPTO04-a @ app/tokens.py:26",
+      "rationale": "两者相距 2 行被自动判为命中，但 24 行讲的是 '.' 切分不对称，26 行讲的是非常量时间比较，不是同一件事。CRYPTO04-a 的实质由 tokens.py:18 那条覆盖。"
+    }
+  ],
+  "samples": [
+    {
+      "sample": "s1-obvious-danger",
+      "tier": "L1 基础",
+      "labels": 5,
+      "auto": {
+        "recall": 0.8,
+        "precision": 1.0,
+        "f1": 0.889
+      },
+      "entries": [
+        {
+          "role": "prediction",
+          "file": "app/hooks.py",
+          "line": 6,
+          "severity": "blocker",
+          "title": "插件钩子对用户代码直接 exec，无任何隔离",
+          "verdict": "hit",
+          "rationale": "命中 SEC013-a（exec）。"
+        },
+        {
+          "role": "prediction",
+          "file": "app/settings.py",
+          "line": 5,
+          "severity": "blocker",
+          "title": "生产凭据以明文形式硬编码在源码中",
+          "verdict": "merged",
+          "rationale": "这条发现明确写了「DEPLOY_KEY 与 DB_PASSWORD 两个生产环境密钥…（第 5、6 行）」，一条报告覆盖了 SEC010-a 与 SEC010-b 两条标注，属合并描述。"
+        },
+        {
+          "role": "missed_label",
+          "code": "SEC010-b",
+          "file": "app/settings.py",
+          "line": 6,
+          "description": "数据库口令同样硬编码",
+          "verdict": "merged",
+          "rationale": "该标注被上面 settings.py:5 那条发现一并覆盖（原文点名了 5、6 两行）。按逐条口径算漏报，按合并口径算覆盖。"
+        },
+        {
+          "role": "prediction",
+          "file": "app/settings.py",
+          "line": 13,
+          "severity": "blocker",
+          "title": "shell=True 拼接 target 造成命令注入",
+          "verdict": "hit",
+          "rationale": "命中 SEC011-a（shell 注入）。"
+        },
+        {
+          "role": "prediction",
+          "file": "app/settings.py",
+          "line": 19,
+          "severity": "blocker",
+          "title": "对配置表达式调用 eval，可执行任意代码",
+          "verdict": "hit",
+          "rationale": "命中 SEC012-a（eval）。"
+        }
+      ]
+    },
+    {
+      "sample": "s2-resources-errors",
+      "tier": "L2 基础",
+      "labels": 4,
+      "auto": {
+        "recall": 1.0,
+        "precision": 0.8,
+        "f1": 0.889
+      },
+      "entries": [
+        {
+          "role": "prediction",
+          "file": "app/exporter.py",
+          "line": 11,
+          "severity": "warn",
+          "title": "export_csv 未用 with/try-finally，写入失败时文件句柄不被关闭",
+          "verdict": "hit",
+          "rationale": "命中 RES010-a（未用 with）。"
+        },
+        {
+          "role": "prediction",
+          "file": "app/exporter.py",
+          "line": 14,
+          "severity": "warn",
+          "title": "CSV 字段未转义：值含逗号/引号/换行会写坏报表，含 = 开头则会触发公式注入",
+          "verdict": "key_gap",
+          "rationale": "CSV 字段未转义且存在公式注入（值以 = + - @ 开头会被表格软件当公式执行）。rows 来自外部数据，是实打实的缺陷 —— 我的标注集只标了「未用 with」，漏收了这一处。"
+        },
+        {
+          "role": "prediction",
+          "file": "app/exporter.py",
+          "line": 23,
+          "severity": "note",
+          "title": "fetch_config 用裸 except 把「键不存在」和「读取失败」混为一谈",
+          "verdict": "hit",
+          "rationale": "命中 ERR010-a（裸 except）。"
+        },
+        {
+          "role": "prediction",
+          "file": "app/exporter.py",
+          "line": 34,
+          "severity": "note",
+          "title": "purge_cache 把清理失败上报为「删除 0 条」",
+          "verdict": "hit",
+          "rationale": "命中 ERR011-a（异常吞掉后返回 0）。"
+        },
+        {
+          "role": "prediction",
+          "file": "app/pool.py",
+          "line": 24,
+          "severity": "blocker",
+          "title": "compute() 提前 return 时不归还连接，in_use 只增不减",
+          "verdict": "hit",
+          "rationale": "命中 RES011-a（提前 return 跳过 release）。"
+        }
+      ]
+    },
+    {
+      "sample": "s3-input-paths",
+      "tier": "L3 进阶",
+      "labels": 4,
+      "auto": {
+        "recall": 1.0,
+        "precision": 1.0,
+        "f1": 1.0
+      },
+      "entries": [
+        {
+          "role": "prediction",
+          "file": "app/files.py",
+          "line": 13,
+          "severity": "blocker",
+          "title": "read_upload 直接把文件名拼进路径，未做规范化与越界校验，可读任意文件",
+          "verdict": "hit",
+          "rationale": "命中 PATH01-a（路径穿越）。"
+        },
+        {
+          "role": "prediction",
+          "file": "app/files.py",
+          "line": 20,
+          "severity": "blocker",
+          "title": "load_profile 对用户提交的字节流直接 pickle.loads，构成反序列化 RCE",
+          "verdict": "hit",
+          "rationale": "命中 DESER01-a（pickle）。"
+        },
+        {
+          "role": "prediction",
+          "file": "app/files.py",
+          "line": 25,
+          "severity": "warn",
+          "title": "load_settings 用 yaml.load 且未指定 Loader，解析外部 YAML 依赖不安全的默认加载器",
+          "verdict": "hit",
+          "rationale": "命中 DESER02-a（yaml.load 无 Loader）。"
+        },
+        {
+          "role": "prediction",
+          "file": "app/files.py",
+          "line": 30,
+          "severity": "blocker",
+          "title": "fetch_avatar 用用户给定的 URL 直接发外部请求，无协议/主机白名单，可被用作 SSRF",
+          "verdict": "hit",
+          "rationale": "命中 SSRF01-a（未限制目标地址）。"
+        }
+      ]
+    },
+    {
+      "sample": "s4-concurrency",
+      "tier": "L4 进阶",
+      "labels": 4,
+      "auto": {
+        "recall": 0.75,
+        "precision": 0.75,
+        "f1": 0.75
+      },
+      "entries": [
+        {
+          "role": "prediction",
+          "file": "app/cache.py",
+          "line": 15,
+          "severity": "warn",
+          "title": "ConfigCache.instance 的无锁惰性单例：两个线程可能各得到一个实例，instance() 不再全局唯一",
+          "verdict": "hit",
+          "rationale": "命中 CONC01-a（无锁惰性单例）。"
+        },
+        {
+          "role": "prediction",
+          "file": "app/cache.py",
+          "line": 20,
+          "severity": "blocker",
+          "title": "get_or_create 的 check-then-act 无锁，两个线程会各自构建一份值，缓存被后写者覆盖且返回值不一致",
+          "verdict": "hit",
+          "rationale": "命中 CONC02-a（check-then-act）。"
+        },
+        {
+          "role": "prediction",
+          "file": "app/cache.py",
+          "line": 29,
+          "severity": "warn",
+          "title": "allocate_slot 用 len(used) 推槽位且判断与写入非原子：并发下会分配重复槽位，且槽位满时仍可能被分配",
+          "verdict": "placement",
+          "rationale": "与 CONC03-a 是同一处：模型从竞态窗口的读起点（len(used)）切入，标注落在写操作（used.add）。模型把三步交错完整推演了出来，判定为同一缺陷。"
+        },
+        {
+          "role": "missed_label",
+          "code": "CONC03-a",
+          "file": "app/cache.py",
+          "line": 32,
+          "description": "读 len 与 add 之间无锁，两个线程会拿到同一个槽位",
+          "verdict": "placement",
+          "rationale": "CONC03-a 被上面 cache.py:29 那条发现覆盖，只是行号差 3 行超出默认容差。"
+        },
+        {
+          "role": "prediction",
+          "file": "app/cache.py",
+          "line": 38,
+          "severity": "warn",
+          "title": "record_hit 的无锁「读-改-写」会丢计数，且与 snapshot 上加锁的读取口径不一致",
+          "verdict": "hit",
+          "rationale": "命中 CONC04-a（读-改-写丢更新）。"
+        }
+      ]
+    },
+    {
+      "sample": "s5-boundaries",
+      "tier": "L5 高级",
+      "labels": 6,
+      "auto": {
+        "recall": 1.0,
+        "precision": 1.0,
+        "f1": 1.0
+      },
+      "entries": [
+        {
+          "role": "prediction",
+          "file": "app/limits.py",
+          "line": 11,
+          "severity": "note",
+          "title": "in_window 含两端闭区间且不校验参数次序，边界事件会被相邻窗口重复计入",
+          "verdict": "hit",
+          "rationale": "命中 BOUND01-a（闭区间重复计入）。"
+        },
+        {
+          "role": "prediction",
+          "file": "app/limits.py",
+          "line": 16,
+          "severity": "note",
+          "title": "remaining 未声明/约束返回值下界，hits 超过 LIMIT 时返回负数",
+          "verdict": "hit",
+          "rationale": "命中 BOUND02-a（返回负配额）。"
+        },
+        {
+          "role": "prediction",
+          "file": "app/limits.py",
+          "line": 21,
+          "severity": "blocker",
+          "title": "page_offset 与文档声明的「页码从 1 开始」不符，第 1 页会被整页跳过",
+          "verdict": "hit",
+          "rationale": "命中 BOUND03-a（页码基准错位）。"
+        },
+        {
+          "role": "prediction",
+          "file": "app/limits.py",
+          "line": 26,
+          "severity": "warn",
+          "title": "percentage 未落实「whole 非 0」这一隐含前提，whole=0 时抛 ZeroDivisionError",
+          "verdict": "hit",
+          "rationale": "命中 BOUND04-a（whole=0 除零）。"
+        },
+        {
+          "role": "prediction",
+          "file": "app/limits.py",
+          "line": 31,
+          "severity": "warn",
+          "title": "days_between 声明「含首尾两天」但实现是半开区间，结果恒少 1",
+          "verdict": "hit",
+          "rationale": "命中 BOUND05-a（含尾区间少算一天）。"
+        },
+        {
+          "role": "prediction",
+          "file": "app/limits.py",
+          "line": 36,
+          "severity": "warn",
+          "title": "quota_key 的时区换算被截断且未归一化，非整小时时区的配额桶边界错位",
+          "verdict": "hit",
+          "rationale": "命中 BOUND06-a（时区换算未归一化）。"
+        }
+      ]
+    },
+    {
+      "sample": "s6-authz-logic",
+      "tier": "L6 高级",
+      "labels": 4,
+      "auto": {
+        "recall": 0.75,
+        "precision": 0.6,
+        "f1": 0.667
+      },
+      "entries": [
+        {
+          "role": "prediction",
+          "file": "app/orders.py",
+          "line": 12,
+          "severity": "blocker",
+          "title": "get_order 完全忽略 user_id，任何用户可读取任意订单",
+          "verdict": "hit",
+          "rationale": "命中 AUTHZ01-a（越权读取）。"
+        },
+        {
+          "role": "prediction",
+          "file": "app/orders.py",
+          "line": 16,
+          "severity": "blocker",
+          "title": "cancel 不校验 user_id，任意用户可取消他人订单",
+          "verdict": "key_gap",
+          "rationale": "cancel 完全不使用 user_id，任意用户可取消他人订单 —— 真缺陷，与「状态守卫只挡 shipped」是两回事，标注集只收了后者。"
+        },
+        {
+          "role": "prediction",
+          "file": "app/orders.py",
+          "line": 17,
+          "severity": "warn",
+          "title": "cancel 的状态守卫只挡 shipped，重复取消与终态订单仍可迁移",
+          "verdict": "hit",
+          "rationale": "命中 AUTHZ02-a（状态守卫只挡 shipped）。"
+        },
+        {
+          "role": "prediction",
+          "file": "app/orders.py",
+          "line": 22,
+          "severity": "blocker",
+          "title": "can_view 定义了权限模型但全仓无任何调用点，判定未接入读写路径",
+          "verdict": "key_gap",
+          "rationale": "can_view 定义了权限判定却全仓无调用点，且是默认放行语义 —— 真缺陷，标注集未收录。"
+        },
+        {
+          "role": "missed_label",
+          "code": "AUTHZ03-a",
+          "file": "app/orders.py",
+          "line": 25,
+          "description": "全局权限直接放行，静默覆盖了 CLIENT_DENY 里配的逐 client 拒绝",
+          "verdict": "true_miss",
+          "rationale": "AUTHZ03-a 的具体问题是「global 权限直接放行、静默覆盖 CLIENT_DENY」。模型报了同一个函数的默认放行与未被调用，但没有点出 global 分支这条具体路径，按逐条口径判为真漏报。"
+        },
+        {
+          "role": "prediction",
+          "file": "app/orders.py",
+          "line": 30,
+          "severity": "blocker",
+          "title": "refund 未校验金额范围与累计上限，可为负或超额退款",
+          "verdict": "hit",
+          "rationale": "命中 AUTHZ04-a（退款金额无校验）。"
+        }
+      ]
+    },
+    {
+      "sample": "s7-crossfile-flow",
+      "tier": "L7 专家",
+      "labels": 2,
+      "auto": {
+        "recall": 1.0,
+        "precision": 0.667,
+        "f1": 0.8
+      },
+      "entries": [
+        {
+          "role": "prediction",
+          "file": "app/repository.py",
+          "line": 8,
+          "severity": "warn",
+          "title": "连接只在 __init__ 创建，query/export 均无释放路径",
+          "verdict": "partial",
+          "rationale": "模型称「连接无释放路径构成泄漏」。sqlite 连接在 Repository 上常驻是常见写法，是否算泄漏取决于上层生命周期约定，本样本里没有证据表明它被反复创建。判定为**可争议多报**，从严计入误报。"
+        },
+        {
+          "role": "prediction",
+          "file": "app/repository.py",
+          "line": 12,
+          "severity": "blocker",
+          "title": "query 用字符串拼接 tenant/kind，存在 SQL 注入与跨租户数据泄漏",
+          "verdict": "hit",
+          "rationale": "命中 FLOW001-a（SQL 注入）。"
+        },
+        {
+          "role": "prediction",
+          "file": "app/repository.py",
+          "line": 17,
+          "severity": "blocker",
+          "title": "export 的 path 完全由请求方指定，构成任意文件写入",
+          "verdict": "key_gap",
+          "rationale": "path 直接来自请求体，构成任意文件写入 —— 真缺陷，标注集未收录。该条被自动匹配算作「冗余」（因为离 FLOW002-a 只有 2 行且已被消费），属误判。"
+        },
+        {
+          "role": "prediction",
+          "file": "app/repository.py",
+          "line": 18,
+          "severity": "blocker",
+          "title": "export 直接把 table 拼进 SQL，表名可被注入",
+          "verdict": "hit",
+          "rationale": "命中 FLOW002-a（表名注入）。"
+        },
+        {
+          "role": "prediction",
+          "file": "app/repository.py",
+          "line": 20,
+          "severity": "warn",
+          "title": "export 返回值恒为 0，上层因此永远上报 rows=0",
+          "verdict": "key_gap",
+          "rationale": "export 无条件 return 0，上层把它当行数返回，接口契约不成立 —— 真缺陷，标注集未收录。"
+        }
+      ]
+    },
+    {
+      "sample": "s8-crypto-protocol",
+      "tier": "L8 专家",
+      "labels": 5,
+      "auto": {
+        "recall": 0.6,
+        "precision": 0.6,
+        "f1": 0.6
+      },
+      "entries": [
+        {
+          "role": "missed_label",
+          "code": "CRYPTO01-a",
+          "file": "app/tokens.py",
+          "line": 7,
+          "description": "签名密钥硬编码，且是低熵的固定字符串",
+          "verdict": "merged",
+          "rationale": "CRYPTO01-a（SIGNING_SECRET 硬编码且从未被引用）的实质被 tokens.py:18 那条发现覆盖，原文点名了「文件顶部定义的 SIGNING_SECRET（L7）在全文件中从未被引用」。"
+        },
+        {
+          "role": "prediction",
+          "file": "app/tokens.py",
+          "line": 12,
+          "severity": "blocker",
+          "title": "会话 ID 用非密码学随机数 random 生成，可被预测（不可预测性失效）",
+          "verdict": "hit",
+          "rationale": "命中 CRYPTO02-a（MT 可预测）。"
+        },
+        {
+          "role": "prediction",
+          "file": "app/tokens.py",
+          "line": 15,
+          "severity": "warn",
+          "title": "令牌不含时效与一次性标识，verify 也无法拒绝过期令牌，重放防护缺失",
+          "verdict": "key_gap",
+          "rationale": "sign 不注入 exp/jti，verify 也不做时效判定，重放防护缺失 —— 真缺陷，标注集未收录（属设计层面的缺失，从严可争议）。"
+        },
+        {
+          "role": "prediction",
+          "file": "app/tokens.py",
+          "line": 18,
+          "severity": "blocker",
+          "title": "签名是无密钥的裸 MD5，任何人都能伪造合法令牌（不可伪造性失效）",
+          "verdict": "merged",
+          "rationale": "这条发现同时覆盖了三件事：签名不含密钥（CRYPTO03-a）、verify 忽略 public_key （CRYPTO04-a 的实质）、以及 L7 的 SIGNING_SECRET 在全文件从未被引用（CRYPTO01-a）。一条报告覆盖三条标注。"
+        },
+        {
+          "role": "prediction",
+          "file": "app/tokens.py",
+          "line": 24,
+          "severity": "warn",
+          "title": "签名按首个 '.' 切分，payload 含 '.' 时合法令牌会被自身 verify 拒绝",
+          "verdict": "key_gap",
+          "rationale": "sign 用 body + '.' + digest 拼接、verify 却按**第一个** '.' 切分，payload 内含 '.' 时自己签发的令牌会被自己拒绝 —— 真缺陷，标注集未收录。注意：该条被自动匹配算作命中 CRYPTO04-a，是错误计入（见 false_credit）。"
+        },
+        {
+          "role": "prediction",
+          "file": "app/tokens.py",
+          "line": 26,
+          "severity": "note",
+          "title": "摘要比对使用非常量时间的 ==，修复密钥化 MAC 后会成为侧信道",
+          "verdict": "partial",
+          "rationale": "非常量时间比较。模型自己在发现里写明「在当前实现下不构成可利用漏洞，是修复签名后的加固项」。属加固建议而非缺陷，从严计入误报。"
+        },
+        {
+          "role": "prediction",
+          "file": "app/tokens.py",
+          "line": 31,
+          "severity": "blocker",
+          "title": "encrypt_field 用固定 32 字节密钥流做异或，无 IV 且重复使用密钥流，机密性不成立",
+          "verdict": "placement",
+          "rationale": "与 CRYPTO05-a 是同一处：模型指向密钥流派生行，标注落在多行表达式的收尾行。模型指的位置更准确。"
+        },
+        {
+          "role": "missed_label",
+          "code": "CRYPTO05-a",
+          "file": "app/tokens.py",
+          "line": 34,
+          "description": "固定密钥流异或，相同明文恒定得到相同密文（确定性），且长度小于 32 字节时密钥流被复用",
+          "verdict": "placement",
+          "rationale": "CRYPTO05-a 被上面 tokens.py:31 那条发现覆盖，只是行号差 3 行。标注落在多行表达式收尾行，模型指的起点更准确 —— 这一处是我的标注位置不理想。"
+        }
+      ]
+    }
+  ]
+}

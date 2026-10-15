@@ -29,7 +29,7 @@ if str(BACKEND) not in sys.path:
 from harness import server  # noqa: E402
 from harness.config import Config  # noqa: E402
 
-EXAMPLE_REPO = BACKEND / "examples" / "vulnerable-service"
+EXAMPLE_REPO = BACKEND / "examples" / "vulnerable-service" / "repo"
 
 
 # =============================================================================
@@ -90,7 +90,7 @@ def post(base: str, path: str, payload: dict) -> tuple[int, str]:
 def test_looks_like_repo_finds_src_layout(tmp_path: Path) -> None:
     """源码放在子目录（src/、app/）是常规布局，必须能识别。
 
-    早期版本只在顶层 glob("*.py")，于是 examples/vulnerable-service
+    早期版本只在顶层 glob("*.py")，于是 examples/<样本>/repo
     这种 app/ + tests/ 结构的仓库被整个漏掉，列表返回空。
     """
     repo = tmp_path / "svc"
@@ -240,7 +240,7 @@ def test_audit_accepts_project_relative_path(live_server: str) -> None:
         live_server,
         "/api/audit",
         {
-            "repo": "backend/examples/vulnerable-service",
+            "repo": "backend/examples/vulnerable-service/repo",
             "goal": "回归测试：跑通离线链路",
             "offline": True,
         },
@@ -269,7 +269,7 @@ def test_report_endpoint_renders_markdown(live_server: str) -> None:
     status, body = post(
         live_server,
         "/api/audit",
-        {"repo": "backend/examples/vulnerable-service", "offline": True},
+        {"repo": "backend/examples/vulnerable-service/repo", "offline": True},
     )
     assert status == 201
     run_id = json.loads(body)["run_id"]
@@ -358,7 +358,7 @@ def test_save_config_ignores_empty_api_key(
 
 
 def test_stop_is_idempotent_on_finished_run(live_server: str) -> None:
-    status, body = post(live_server, "/api/audit", {"repo": "backend/examples/vulnerable-service", "offline": True})
+    status, body = post(live_server, "/api/audit", {"repo": "backend/examples/vulnerable-service/repo", "offline": True})
     run_id = json.loads(body)["run_id"]
     deadline = time.time() + 60
     while time.time() < deadline:

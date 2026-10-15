@@ -1,0 +1,41 @@
+{
+  "case": "s5-boundaries",
+  "labels": [
+    {
+      "code": "BOUND01-a",
+      "file": "app/limits.py",
+      "line": 11,
+      "description": "两端皆闭，恰好落在边界的事件被相邻两个窗口各计一次"
+    },
+    {
+      "code": "BOUND02-a",
+      "file": "app/limits.py",
+      "line": 16,
+      "description": "hits 可大于 LIMIT，此处会返回负数并直接被展示"
+    },
+    {
+      "code": "BOUND03-a",
+      "file": "app/limits.py",
+      "line": 21,
+      "description": "页码从 1 起时应为 (page-1)*size，否则首屏被整页跳过"
+    },
+    {
+      "code": "BOUND04-a",
+      "file": "app/limits.py",
+      "line": 26,
+      "description": "whole 为 0 时抛 ZeroDivisionError，调用方未做防护"
+    },
+    {
+      "code": "BOUND05-a",
+      "file": "app/limits.py",
+      "line": 31,
+      "description": "含尾应再 +1，跨月/跨年时同样少算一天"
+    },
+    {
+      "code": "BOUND06-a",
+      "file": "app/limits.py",
+      "line": 36,
+      "description": "未对 24 取模也未归一化，跨日会算出不存在的小时"
+    }
+  ]
+}

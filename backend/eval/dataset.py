@@ -3,20 +3,31 @@
 标准答案来自**人工标注**，而不是检测规则 —— 否则就是「用规则评估规则」，
 指标会虚高且没有诊断价值。
 
-标注写在样本代码的注释里，格式：
+布局（每个样本一个目录）：
 
-    # 缺陷 SEC001-a：凭据硬编码在源码里
-    # 缺陷 RES002-b：同样缺少 finally
+    examples/<样本名>/
+      repo/          ← 被审计的代码，**不含任何标注**
+      labels.json    ← 标注，位于审计根之外
 
-解析这些标注得到 ground truth。这样标注与实现待在同一个地方，
-改代码时不容易忘记同步。
+**为什么标注必须放在审计根之外**：早期版本把 `# 缺陷 编号：说明` 写在缺陷行的
+行尾注释里 —— 等于把答案印在题目下面。模型读文件时直接看到缺陷编号，
+实测召回率会虚高到 100%，测出来的是「会不会照着注释抄」，不是审计能力。
+侧车文件在 `repo/` 之外，而 Agent 的沙箱根就是 `repo/`，所以它读不到。
+
+为了让老样本还能用，若目录下没有 `repo/`，就把样本目录本身当审计根；
+没有 `labels.json` 时退回解析源码注释（不推荐，仅作兼容）。
 """
 
 from __future__ import annotations
 
+import json
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
+
+# 审计根的子目录名；标注文件名
+AUDIT_SUBDIR = "repo"
+LABELS_FILE = "labels.json"
 
 LABEL_RE = re.compile(
     r"#\s*缺陷\s+(?P<code>[A-Z]+\d+(?:-[a-z])?)[：:]\s*(?P<desc>.+)"
@@ -89,8 +100,53 @@ def extract_labels(root: Path, *, suffixes: tuple[str, ...] = (".py",)) -> list[
     return findings
 
 
-def load_case(case_id: str, repo: Path, goal: str) -> EvalCase:
-    return EvalCase(id=case_id, repo=repo, goal=goal, expected=extract_labels(repo))
+def audit_root(case_dir: Path) -> Path:
+    """样本的审计根：有 ``repo/`` 子目录就用它，否则退回样本目录本身。"""
+    candidate = case_dir / AUDIT_SUBDIR
+    return candidate if candidate.is_dir() else case_dir
+
+
+def load_labels(case_dir: Path) -> list[ExpectedFinding]:
+    """读标注。优先读审计根之外的 ``labels.json``。
+
+    退回到解析源码注释只是为了兼容旧样本；新样本一律用侧车文件，
+    原因见本模块顶部说明（注释在被审代码里等于泄题）。
+    """
+    path = case_dir / LABELS_FILE
+    if not path.is_file():
+        return extract_labels(audit_root(case_dir))
+
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return []
+
+    items = payload.get("labels") if isinstance(payload, dict) else payload
+    findings: list[ExpectedFinding] = []
+    for item in items or []:
+        if not isinstance(item, dict):
+            continue
+        try:
+            findings.append(
+                ExpectedFinding(
+                    code=str(item["code"]),
+                    file=str(item["file"]),
+                    line=int(item["line"]),
+                    description=str(item.get("description", "")),
+                )
+            )
+        except (KeyError, TypeError, ValueError):
+            continue
+    return findings
+
+
+def load_case(case_id: str, case_dir: Path, goal: str) -> EvalCase:
+    return EvalCase(
+        id=case_id,
+        repo=audit_root(case_dir),
+        goal=goal,
+        expected=load_labels(case_dir),
+    )
 
 
 DEFAULT_GOAL = (

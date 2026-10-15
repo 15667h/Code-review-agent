@@ -1,0 +1,29 @@
+{
+  "case": "s2-resources-errors",
+  "labels": [
+    {
+      "code": "RES010-a",
+      "file": "app/exporter.py",
+      "line": 11,
+      "description": "句柄未用 with，写入过程中抛异常则永不关闭"
+    },
+    {
+      "code": "ERR010-a",
+      "file": "app/exporter.py",
+      "line": 23,
+      "description": "裸 except 连 KeyboardInterrupt 一起吞掉"
+    },
+    {
+      "code": "ERR011-a",
+      "file": "app/exporter.py",
+      "line": 33,
+      "description": "异常被静默吞掉，调用方拿到 0 以为真的没数据"
+    },
+    {
+      "code": "RES011-a",
+      "file": "app/pool.py",
+      "line": 25,
+      "description": "提前 return 跳过下面的 release，连接被漏掉"
+    }
+  ]
+}

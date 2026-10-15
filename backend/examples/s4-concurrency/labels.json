@@ -1,0 +1,29 @@
+{
+  "case": "s4-concurrency",
+  "labels": [
+    {
+      "code": "CONC01-a",
+      "file": "app/cache.py",
+      "line": 15,
+      "description": "check-then-act 非原子，并发首次调用会建出多个实例"
+    },
+    {
+      "code": "CONC02-a",
+      "file": "app/cache.py",
+      "line": 22,
+      "description": "判断与写入之间是竞态窗口，可能重复建并覆盖"
+    },
+    {
+      "code": "CONC03-a",
+      "file": "app/cache.py",
+      "line": 32,
+      "description": "读 len 与 add 之间无锁，两个线程会拿到同一个槽位"
+    },
+    {
+      "code": "CONC04-a",
+      "file": "app/cache.py",
+      "line": 38,
+      "description": "读-改-写非原子，并发下会丢更新"
+    }
+  ]
+}

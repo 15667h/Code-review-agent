@@ -1,0 +1,29 @@
+{
+  "case": "s6-authz-logic",
+  "labels": [
+    {
+      "code": "AUTHZ01-a",
+      "file": "app/orders.py",
+      "line": 12,
+      "description": "只按 order_id 查询，未校验 order 归属（越权读取他人订单）"
+    },
+    {
+      "code": "AUTHZ02-a",
+      "file": "app/orders.py",
+      "line": 19,
+      "description": "只拦「已发货」，已退款/已完成的订单仍可取消并触发二次退款"
+    },
+    {
+      "code": "AUTHZ03-a",
+      "file": "app/orders.py",
+      "line": 25,
+      "description": "全局权限直接放行，静默覆盖了 CLIENT_DENY 里配的逐 client 拒绝"
+    },
+    {
+      "code": "AUTHZ04-a",
+      "file": "app/orders.py",
+      "line": 30,
+      "description": "未校验 amount 是否超过实付金额，也未校验是否已退过款"
+    }
+  ]
+}

@@ -1,0 +1,143 @@
+{
+  "case": "vulnerable-service",
+  "labels": [
+    {
+      "code": "SEC001-a",
+      "file": "app/auth.py",
+      "line": 6,
+      "description": "凭据硬编码在源码里"
+    },
+    {
+      "code": "SEC001-b",
+      "file": "app/auth.py",
+      "line": 7,
+      "description": "数据库口令同样硬编码"
+    },
+    {
+      "code": "SEC004",
+      "file": "app/auth.py",
+      "line": 12,
+      "description": "MD5 不适合做口令摘要"
+    },
+    {
+      "code": "ERR001-a",
+      "file": "app/auth.py",
+      "line": 21,
+      "description": "裸 except，且异常时返回 True 等于放行"
+    },
+    {
+      "code": "SEC005",
+      "file": "app/auth.py",
+      "line": 27,
+      "description": "用非加密安全随机数生成会话令牌"
+    },
+    {
+      "code": "RES001-a",
+      "file": "app/auth.py",
+      "line": 33,
+      "description": "句柄未用 with 管理"
+    },
+    {
+      "code": "PY002-a",
+      "file": "app/guards.py",
+      "line": 13,
+      "description": "用 assert 做参数校验，-O 下会失效"
+    },
+    {
+      "code": "PY002-b",
+      "file": "app/guards.py",
+      "line": 14,
+      "description": "同上"
+    },
+    {
+      "code": "PY002-c",
+      "file": "app/guards.py",
+      "line": 20,
+      "description": "同上"
+    },
+    {
+      "code": "PY003-a",
+      "file": "app/guards.py",
+      "line": 26,
+      "description": "与 True 直接比较，传入 1 时行为反直觉"
+    },
+    {
+      "code": "PY003-b",
+      "file": "app/guards.py",
+      "line": 31,
+      "description": "同上"
+    },
+    {
+      "code": "RES002-a",
+      "file": "app/rate_limit.py",
+      "line": 42,
+      "description": "acquire 后无 try/finally，异常路径会漏掉 release"
+    },
+    {
+      "code": "RES002-b",
+      "file": "app/rate_limit.py",
+      "line": 60,
+      "description": "同样缺少 finally"
+    },
+    {
+      "code": "ERR003-a",
+      "file": "app/rate_limit.py",
+      "line": 70,
+      "description": "左右皆闭区间，边界请求被计两次"
+    },
+    {
+      "code": "ERR004-a",
+      "file": "app/rate_limit.py",
+      "line": 75,
+      "description": "hits 可超过 LIMIT，此处会返回负数"
+    },
+    {
+      "code": "SEC002-a",
+      "file": "app/repository.py",
+      "line": 6,
+      "description": "外部输入直接拼进 SQL"
+    },
+    {
+      "code": "SEC002-b",
+      "file": "app/repository.py",
+      "line": 12,
+      "description": "f-string 拼接同样构成注入"
+    },
+    {
+      "code": "ERR002-a",
+      "file": "app/repository.py",
+      "line": 20,
+      "description": "异常被静默吞掉，调用方无法感知失败"
+    },
+    {
+      "code": "ERR001-b",
+      "file": "app/repository.py",
+      "line": 29,
+      "description": "裸 except 会连 KeyboardInterrupt 一起吞掉"
+    },
+    {
+      "code": "PY001-a",
+      "file": "app/utils.py",
+      "line": 6,
+      "description": "可变对象作为默认参数"
+    },
+    {
+      "code": "PY001-b",
+      "file": "app/utils.py",
+      "line": 15,
+      "description": "字典作为默认参数同样共享"
+    },
+    {
+      "code": "SEC003-a",
+      "file": "app/utils.py",
+      "line": 24,
+      "description": "eval 执行任意表达式"
+    },
+    {
+      "code": "SEC003-b",
+      "file": "app/utils.py",
+      "line": 30,
+      "description": "exec 在任意输入上执行"
+    }
+  ]
+}

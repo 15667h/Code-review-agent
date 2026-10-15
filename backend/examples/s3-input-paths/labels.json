@@ -1,0 +1,29 @@
+{
+  "case": "s3-input-paths",
+  "labels": [
+    {
+      "code": "PATH01-a",
+      "file": "app/files.py",
+      "line": 13,
+      "description": "name 未做基线校验，../ 可越出 BASE_DIR"
+    },
+    {
+      "code": "DESER01-a",
+      "file": "app/files.py",
+      "line": 20,
+      "description": "pickle 处理不可信数据等同任意代码执行"
+    },
+    {
+      "code": "DESER02-a",
+      "file": "app/files.py",
+      "line": 25,
+      "description": "yaml.load 未指定 SafeLoader，可构造对象"
+    },
+    {
+      "code": "SSRF01-a",
+      "file": "app/files.py",
+      "line": 30,
+      "description": "未限制目标地址，可打内网与云元数据服务"
+    }
+  ]
+}

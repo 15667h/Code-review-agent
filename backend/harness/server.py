@@ -80,6 +80,9 @@ DENY_PARTS = {
     ".env", ".git", ".workbuddy", ".runs", "__pycache__", "node_modules",
     # 工具缓存：既不该被列进仓库文件数，也不该出现在审计范围里
     ".ruff_cache", ".pytest_cache", ".mypy_cache", ".venv", "venv",
+    # 评估标注：虽然它在审计根之外、Agent 的沙箱读不到，
+    # 但静态路由也没有理由把它发给浏览器 —— 多一道防线不花钱。
+    "labels.json",
 }
 
 MAX_STATIC_BYTES = 8 * 1024 * 1024
@@ -505,26 +508,32 @@ def list_repos(root: Path | None = None) -> list[dict[str, Any]]:
 
     默认看 ``examples/``，那是最安全的默认值 —— 绝不会把用户的私人目录
     莫名其妙地列出来。要审别的地方就传 root 或用 --repo。
+
+    样本目录里可能有一层 ``repo/`` 作为真正的审计根（标注放在它的外面），
+    有就用它 —— 否则会把 ``labels.json`` 一起列进被审范围，等于把答案交给模型。
     """
     base = root or (BACKEND_ROOT / "examples")
     if not base.is_dir():
         return []
     repos: list[dict[str, Any]] = []
     for child in sorted(base.iterdir()):
-        if child.name.startswith((".", "_")) or not _looks_like_repo(child):
+        if child.name.startswith((".", "_")):
+            continue
+        audit_root = child / "repo" if (child / "repo").is_dir() else child
+        if not _looks_like_repo(audit_root):
             continue
         files = sum(
             1
-            for p in child.rglob("*")
+            for p in audit_root.rglob("*")
             if p.is_file() and not any(part in DENY_PARTS for part in p.parts)
         )
         repos.append(
             {
                 "id": child.name,
                 "name": child.name,
-                "path": str(child),
+                "path": str(audit_root),
                 "files": files,
-                "runs": len(REGISTRY.list(repo=str(child), limit=500)),
+                "runs": len(REGISTRY.list(repo=str(audit_root), limit=500)),
             }
         )
     return repos

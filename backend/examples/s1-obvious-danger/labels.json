@@ -1,0 +1,35 @@
+{
+  "case": "s1-obvious-danger",
+  "labels": [
+    {
+      "code": "SEC013-a",
+      "file": "app/hooks.py",
+      "line": 6,
+      "description": "exec 在任意输入上执行"
+    },
+    {
+      "code": "SEC010-a",
+      "file": "app/settings.py",
+      "line": 5,
+      "description": "生产凭据硬编码在源码里"
+    },
+    {
+      "code": "SEC010-b",
+      "file": "app/settings.py",
+      "line": 6,
+      "description": "数据库口令同样硬编码"
+    },
+    {
+      "code": "SEC011-a",
+      "file": "app/settings.py",
+      "line": 14,
+      "description": "外部输入拼进 shell 命令，可注入"
+    },
+    {
+      "code": "SEC012-a",
+      "file": "app/settings.py",
+      "line": 19,
+      "description": "eval 执行任意表达式"
+    }
+  ]
+}

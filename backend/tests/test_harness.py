@@ -47,7 +47,7 @@ from harness.sandbox import PathEscape, Workspace  # noqa: E402
 from harness.tools import Risk, Tool, ToolRegistry, truncate_output, validate_arguments  # noqa: E402
 from harness.types import Decision, Finding, Message, RunState, ToolCall, ToolResult  # noqa: E402
 
-SAMPLE_REPO = BACKEND / "examples" / "vulnerable-service"
+SAMPLE_REPO = BACKEND / "examples" / "vulnerable-service" / "repo"
 
 
 # =============================================================================
@@ -228,6 +228,53 @@ def test_scan_tree_on_sample_repo_finds_expected_rules() -> None:
     for expected in {"SEC001", "SEC002", "SEC003", "ERR001", "PY001", "PY003"}:
         assert expected in found, f"样本仓库应命中 {expected}"
     assert report.scanned_files >= 5
+
+
+# =============================================================================
+# 靶场纯净性：被审代码里绝不能出现答案
+# =============================================================================
+
+
+def test_audit_roots_do_not_leak_labels() -> None:
+    """被审计的代码里不能出现标注或提示词。
+
+    这条守的是一个真实犯过的错：标注原本写在缺陷行的行尾注释里，
+    模型读文件时直接看到了缺陷编号与说明 —— 等于把答案印在题目下面。
+    那种布局下实测召回率虚高到 100%，量出来的是「会不会照着注释抄」，
+    不是审计能力。标注现在放在审计根之外的 labels.json，本测试守住这个边界。
+    """
+    from eval.dataset import load_default_cases
+
+    cases = load_default_cases(BACKEND / "examples")
+    assert len(cases) >= 1, "至少要有一个样本"
+
+    for case in cases:
+        assert case.expected, f"{case.id} 没有解析出任何标注"
+        assert not (case.repo / "labels.json").exists(), (
+            f"{case.id} 的 labels.json 落在审计根之内，模型能读到答案"
+        )
+        for path in case.repo.rglob("*.py"):
+            text = path.read_text(encoding="utf-8")
+            assert "# 缺陷" not in text, f"{path} 仍含标注注释"
+            for keyword in ("靶场", "故意包含", "标注"):
+                assert keyword not in text, f"{path} 含提示词「{keyword}」"
+
+
+def test_sidecar_labels_point_at_real_defect_lines() -> None:
+    """labels.json 里的行号必须指向实际存在的行，且不能被整体搬空。"""
+    from eval.dataset import load_default_cases
+
+    for case in load_default_cases(BACKEND / "examples"):
+        for label in case.expected:
+            target = case.repo / label.file
+            assert target.is_file(), f"{case.id} 的标注指向不存在的文件 {label.file}"
+            body = target.read_text(encoding="utf-8").splitlines()
+            assert 1 <= label.line <= len(body), (
+                f"{case.id} {label.file}:{label.line} 超出文件行数 {len(body)}"
+            )
+            assert body[label.line - 1].strip(), (
+                f"{case.id} {label.file}:{label.line} 指向空行，标注位置可能已漂移"
+            )
 
 
 # =============================================================================
@@ -772,3 +819,100 @@ def test_run_audit_keeps_tool_pairing_when_discovery_is_parallel(tmp_path: Path)
     # 该 user 消息之前，本批两条 tool 结果都应已就位
     assert roles.count("tool") >= 2
     assert result.iterations == 2
+
+
+# ===========================================================================
+# 靶场度量工具
+#
+# 这一组测试守的是「度量口径」本身。本项目已被度量工具的 bug 坑过两次
+# （匹配器重复消费标注、分组口径把冗余算成误报），所以新加的度量逻辑
+# 必须有测试，尤其是会把「误报」重新分类成「位置分歧」的那一段 ——
+# 判错了就等于偷偷放宽指标。
+# ===========================================================================
+
+
+def test_tolerance_curve_is_monotonic_in_recall() -> None:
+    """容差放宽，命中数不能减少 —— 召回率随容差单调不减。"""
+    from eval.dataset import ExpectedFinding
+    from eval.run_bench import TOLERANCES, tolerance_curve
+
+    expected = [
+        ExpectedFinding(code="A1-a", file="a.py", line=10, description=""),
+        ExpectedFinding(code="A2-a", file="a.py", line=30, description=""),
+    ]
+    predicted = [_Predicted("a.py", 12), _Predicted("a.py", 32)]
+    curve = tolerance_curve(predicted, expected)
+
+    # 两条预测都各差 2 行 → 容差 0/1 时全漏，容差 ≥2 时全中
+    assert curve["0"]["recall"] == 0.0
+    assert curve["1"]["recall"] == 0.0
+    assert curve["2"]["recall"] == 1.0
+    assert curve["4"]["recall"] == 1.0
+
+    recalls = [curve[str(t)]["recall"] for t in TOLERANCES]
+    assert recalls == sorted(recalls), f"召回随容差应单调不减，实际 {recalls}"
+    # 精确率同样不应随容差下降
+    precisions = [curve[str(t)]["precision"] for t in TOLERANCES]
+    assert precisions == sorted(precisions), f"精确率随容差应单调不减，实际 {precisions}"
+
+
+def test_classify_spurious_flags_near_miss_as_position_disagreement() -> None:
+    """距离 ≤4 行判为位置分歧，距离远或跨文件判为独立多报。"""
+    from eval.dataset import ExpectedFinding
+    from eval.run_bench import classify_spurious
+
+    expected = [
+        ExpectedFinding(code="A1-a", file="a.py", line=20, description=""),
+        ExpectedFinding(code="B1-a", file="b.py", line=5, description=""),
+    ]
+    # 三种情形：同文件差 3 行、同文件差 40 行、完全不同文件
+    spurious = [_Predicted("a.py", 23), _Predicted("a.py", 60), _Predicted("c.py", 7)]
+    rows = classify_spurious(spurious, expected)
+
+    assert [row["distance"] for row in rows] == [3, 40, None]
+    assert rows[0]["nearest_label"]["code"] == "A1-a"
+    assert rows[0]["in_same_file"] is True
+    assert rows[1]["distance"] == 40
+    # 没有同文件标注时，不能编一个最近标注出来
+    assert rows[2]["nearest_label"] is None
+    assert rows[2]["in_same_file"] is False
+
+
+def test_classify_missed_finds_nearest_prediction_in_same_file() -> None:
+    """漏报分类要能识别出「模型报了同一处但差几行」这种口径问题。"""
+    from eval.dataset import ExpectedFinding
+    from eval.run_bench import classify_missed
+
+    missed = [
+        ExpectedFinding(code="A1-a", file="a.py", line=50, description=""),
+        ExpectedFinding(code="B1-a", file="b.py", line=9, description=""),
+    ]
+    predicted = [_Predicted("a.py", 47)]
+    rows = classify_missed(missed, predicted)
+
+    assert rows[0]["distance"] == 3
+    assert rows[0]["nearest_prediction"]["file"] == "a.py"
+    # b.py 完全没有预测 → 真漏报，不能瞎指
+    assert rows[1]["nearest_prediction"] is None
+    assert rows[1]["distance"] is None
+
+
+def test_bench_samples_cover_eight_increasing_tiers() -> None:
+    """靶场清单本身是交付物的一部分，样本缺失会导致文档静默少一节。"""
+    from eval.run_bench import SAMPLES
+
+    assert len(SAMPLES) == 8, f"应有 8 个难度样本，实际 {len(SAMPLES)}"
+    tiers = [row[1] for row in SAMPLES]
+    assert tiers == sorted(tiers), "难度排序必须递增，否则文档里的梯度是假的"
+    # 每个样本都必须真实存在，且标注文件在审计根之外
+    from pathlib import Path
+
+    backend = Path(__file__).resolve().parent.parent
+    for name, _tier, _style, goal in SAMPLES:
+        case_dir = backend / "examples" / name
+        assert (case_dir / "repo").is_dir(), f"{name} 缺少 repo/ 目录"
+        assert (case_dir / "labels.json").is_file(), f"{name} 缺少 labels.json"
+        assert not (case_dir / "repo" / "labels.json").exists(), (
+            f"{name} 的标注落在了审计根之内 —— 模型能直接读到答案"
+        )
+        assert goal.strip(), f"{name} 的审计目标为空"
