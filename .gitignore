@@ -1,0 +1,61 @@
+# ---- OS ----
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ---- Editor / IDE ----
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# ---- WorkBuddy 本地项目数据（记忆 / 本地配置） ----
+.workbuddy/
+
+# ---- Python ----
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+venv/
+env/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.ipynb_checkpoints/
+
+# ---- Node ----
+node_modules/
+npm-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+.next/
+
+# ---- 环境变量与密钥（禁止入库） ----
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+credentials.json
+secrets.json
+
+# ---- 运行时产物 ----
+*.log
+logs/
+tmp/
+temp/
+output/
+outputs/
+cache/
+.cache/
+*.sqlite
+*.sqlite3
+*.db
+data/raw/
+
+# ---- 报告 / 中间产物 ----
+*.html.bak
