@@ -1,0 +1,205 @@
+/* ==========================================================================
+   Margin · 设计令牌
+   方向：编辑部校样台（proofing desk）
+   审查即校样 —— 冷纸底、墨色文字、批注式标记、有据可查的结构。
+   ========================================================================== */
+
+:root {
+  color-scheme: light;
+
+  /* --- 纸张与表面 ------------------------------------------------------ */
+  --paper: #f4f6f5;          /* 页面底色：偏冷的灰白，不是米白 */
+  --surface: #ffffff;        /* 卡片 / 输入区 */
+  --surface-sunk: #e9edeb;   /* 内凹区域：代码块、行号列 */
+  --surface-quiet: #f8faf9;  /* 次级卡片 */
+
+  /* --- 墨色：偏青的中性，避免纯黑 -------------------------------------- */
+  --ink: #0e1a18;
+  --ink-2: #4b5956;          /* 正文次级 */
+  --ink-3: #788683;          /* 元信息 */
+
+  /* --- 界线 ------------------------------------------------------------ */
+  --rule: #dbe1de;
+  --rule-strong: #c2cbc7;
+
+  /* --- 品牌：深青。刻意避开 AI 紫，也避开四个语义色相 ------------------ */
+  --accent: #0f6b5c;
+  --accent-deep: #0a5548;
+  --accent-soft: #e2efeb;
+  --on-accent: #ffffff;
+
+  /* --- 审查严重级别：与品牌色分离，语义独占色相 ------------------------- */
+  --blocker: #b3261e;
+  --blocker-soft: #fae9e7;
+  --warn: #96600a;
+  --warn-soft: #faf0dc;
+  --note: #5b4b8a;
+  --note-soft: #ece9f5;
+  --pass: #2f7d4f;
+  --pass-soft: #e5f1e9;
+
+  /* --- 字体：避开 Inter / Roboto 这类默认脸 ---------------------------- */
+  --font-display: "Fraunces", "Songti SC", "Source Han Serif SC", Georgia, serif;
+  --font-ui: "Instrument Sans", -apple-system, BlinkMacSystemFont, "Segoe UI",
+    "PingFang SC", "Microsoft YaHei", sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, "Cascadia Mono", Consolas,
+    "SF Mono", "Menlo", monospace;
+
+  /* --- 空间节奏：4px 基准，故意不等距，制造层次 ------------------------- */
+  --sp-1: 4px;
+  --sp-2: 8px;
+  --sp-3: 12px;
+  --sp-4: 16px;
+  --sp-5: 24px;
+  --sp-6: 32px;
+  --sp-7: 44px;
+  --sp-8: 64px;
+
+  /* --- 圆角：同心体系 outer = inner + padding -------------------------- */
+  --r-sm: 4px;
+  --r-md: 6px;
+  --r-lg: 10px;
+
+  /* --- 阴影：默认用边界分隔，只有浮层才用阴影加深度 -------------------- */
+  --shadow-pop: 0 1px 2px rgba(14, 26, 24, 0.06),
+    0 10px 28px -10px rgba(14, 26, 24, 0.16);
+  --lane-w: 46px; /* 发现卡片的行号列宽度 */
+  --rail-w: 268px; /* 左侧空间栏宽度 */
+
+  /* --- 动效：命名缓动，指数衰减手感 ------------------------------------- */
+  --ease-out: cubic-bezier(0.22, 0.61, 0.36, 1);
+  --ease-out-quart: cubic-bezier(0.25, 1, 0.5, 1);
+  --dur-fast: 120ms;
+  --dur: 180ms;
+  --dur-slow: 280ms;
+}
+
+/* ==========================================================================
+   Reset
+   ========================================================================== */
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html {
+  -webkit-text-size-adjust: 100%;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+body {
+  margin: 0;
+  min-height: 100dvh;
+  background: var(--paper);
+  color: var(--ink);
+  font-family: var(--font-ui);
+  font-size: 15px;
+  line-height: 1.6;
+  font-feature-settings: "cv05" 1;
+}
+
+h1,
+h2,
+h3,
+h4,
+p,
+figure,
+ul,
+ol {
+  margin: 0;
+}
+
+ul,
+ol {
+  padding: 0;
+  list-style: none;
+}
+
+button,
+input,
+textarea,
+select {
+  font: inherit;
+  color: inherit;
+}
+
+button {
+  border: 0;
+  background: none;
+  cursor: pointer;
+  touch-action: manipulation;
+  -webkit-tap-highlight-color: transparent;
+}
+
+a {
+  color: var(--accent);
+  text-decoration-color: color-mix(in oklab, var(--accent) 35%, transparent);
+  text-underline-offset: 2px;
+}
+
+svg {
+  display: block;
+  flex: none;
+}
+
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: var(--r-sm);
+}
+
+/* 数字：计数器、耗时、行号、统计值都不许随位数跳动 */
+.num,
+time,
+[data-num] {
+  font-variant-numeric: tabular-nums;
+}
+
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* 标题与短文本：避免难看的断行 */
+h1,
+h2,
+h3,
+.heading {
+  text-wrap: balance;
+}
+
+p,
+li,
+.body-text {
+  text-wrap: pretty;
+}
+
+/* ==========================================================================
+   动效降级
+   ========================================================================== */
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+
+  .is-animated {
+    opacity: 1 !important;
+    transform: none !important;
+  }
+}

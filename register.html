@@ -1,0 +1,164 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="theme-color" content="#0b3d36" />
+    <meta name="description" content="创建 Margin 账号，按空间归档你审过的每一个 PR。" />
+    <title>创建账号 · Margin</title>
+
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      rel="stylesheet"
+      href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400..700&family=Instrument+Sans:wght@400;500;600&family=JetBrains+Mono:wght@400;500;600&display=swap"
+    />
+
+    <link rel="stylesheet" href="styles/tokens.css" />
+    <link rel="stylesheet" href="styles/auth.css" />
+  </head>
+
+  <body class="auth-body">
+    <main class="auth">
+      <!-- ================= 左：样张台 ================= -->
+      <aside class="auth__aside">
+        <div class="auth__brand">
+          <svg
+            class="brand__mark"
+            width="21"
+            height="21"
+            viewBox="0 0 22 22"
+            aria-hidden="true"
+            focusable="false"
+          >
+            <path d="M4.2 2.6v16.8" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" />
+            <path d="M9.4 6.4h9.2" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" />
+            <path d="M9.4 11h6" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" />
+            <path d="M9.4 15.6h7.6" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" />
+          </svg>
+          <span class="auth__brand-name">Margin</span>
+        </div>
+
+        <div class="auth__pitch">
+          <p class="auth__pitch-text">一个账号，按仓库归档你审过的每个 PR，随时从上次那一条接着看。</p>
+
+          <figure class="specimen">
+            <span class="specimen__lane" aria-hidden="true"></span>
+            <div class="specimen__body">
+              <div class="specimen__head">
+                <span class="specimen__sev">警告</span>
+                <span class="specimen__loc" translate="no">src/lib/redis.ts:12</span>
+              </div>
+              <p class="specimen__title">重连没有次数上限，Redis 抖动时会无限重试</p>
+              <p class="specimen__meta">断开 Redis 后 180 秒未返回，进程无法进入降级分支</p>
+            </div>
+          </figure>
+        </div>
+
+        <p class="auth__foot">演示环境 · 全部为示例数据，不会发起真实请求</p>
+      </aside>
+
+      <!-- ================= 右：表单 ================= -->
+      <section class="auth__panel">
+        <form class="auth__form" data-auth-form="register" novalidate>
+          <header class="auth__head">
+            <h1 class="auth__title">创建账号</h1>
+            <p class="auth__sub">演示环境里填写任意信息即可进入，不会发起真实请求。</p>
+          </header>
+
+          <p class="form-note form-note--error" data-form-note role="alert" hidden></p>
+
+          <div class="auth__fields">
+            <div class="field" data-field="name">
+              <label class="field__label" for="name">名字</label>
+              <div class="input-wrap">
+                <input
+                  class="input"
+                  id="name"
+                  name="name"
+                  type="text"
+                  autocomplete="name"
+                  placeholder="会显示在审查记录里"
+                  aria-describedby="name-error"
+                />
+              </div>
+              <p class="field__error" id="name-error" hidden></p>
+            </div>
+
+            <div class="field" data-field="email">
+              <label class="field__label" for="email">工作邮箱</label>
+              <div class="input-wrap">
+                <input
+                  class="input"
+                  id="email"
+                  name="email"
+                  type="email"
+                  autocomplete="email"
+                  spellcheck="false"
+                  placeholder="you@company.com"
+                  aria-describedby="email-error"
+                />
+              </div>
+              <p class="field__error" id="email-error" hidden></p>
+            </div>
+
+            <div class="field" data-field="password">
+              <label class="field__label" for="password">密码</label>
+              <div class="input-wrap input-wrap--action">
+                <input
+                  class="input"
+                  id="password"
+                  name="password"
+                  type="password"
+                  autocomplete="new-password"
+                  placeholder="至少 8 位"
+                  aria-describedby="password-error password-strength"
+                />
+                <button
+                  class="input-action"
+                  type="button"
+                  data-toggle-password="password"
+                  aria-pressed="false"
+                  aria-label="显示密码"
+                >
+                  <svg width="17" height="17" viewBox="0 0 18 18" aria-hidden="true" focusable="false">
+                    <path
+                      d="M2 9s2.6-4.4 7-4.4S16 9 16 9s-2.6 4.4-7 4.4S2 9 2 9z"
+                      fill="none"
+                      stroke="currentColor"
+                      stroke-width="1.4"
+                    />
+                    <circle cx="9" cy="9" r="1.9" fill="none" stroke="currentColor" stroke-width="1.4" />
+                  </svg>
+                </button>
+              </div>
+
+              <div class="strength" data-strength data-level="0" id="password-strength" hidden>
+                <span class="strength__bar"></span>
+                <span class="strength__bar"></span>
+                <span class="strength__bar"></span>
+                <span class="strength__bar"></span>
+                <span class="strength__label"></span>
+              </div>
+
+              <p class="field__error" id="password-error" hidden></p>
+            </div>
+          </div>
+
+          <label class="check">
+            <input type="checkbox" data-terms />
+            <span>我已阅读并同意<a href="#">服务条款</a>与<a href="#">隐私政策</a>。</span>
+          </label>
+
+          <button class="btn-primary" type="submit" data-submit>
+            <span data-submit-label>创建账号</span>
+          </button>
+
+          <p class="auth__switch">已经有账号了？<a href="login.html">去登录</a></p>
+        </form>
+      </section>
+    </main>
+
+    <script src="scripts/auth.js"></script>
+  </body>
+</html>

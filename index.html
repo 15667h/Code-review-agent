@@ -1,0 +1,366 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="theme-color" content="#f4f6f5" />
+    <meta
+      name="description"
+      content="Margin 是面向代码评审的 agent 工作台：按空间组织审查记录，运行可追溯的审查计划，逐条给出带行号的发现。"
+    />
+    <title>Margin · 代码审查工作台</title>
+
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      rel="stylesheet"
+      href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400..700&family=Instrument+Sans:wght@400;500;600&family=JetBrains+Mono:wght@400;500;600&display=swap"
+    />
+
+    <link rel="stylesheet" href="styles/tokens.css" />
+    <link rel="stylesheet" href="styles/app.css" />
+  </head>
+
+  <body>
+    <a class="skip-link" href="#conversation">跳到审查对话</a>
+
+    <div class="shell" id="shell">
+      <!-- ===================== 左侧：空间栏 ===================== -->
+      <aside class="rail" id="rail" aria-label="空间与审查记录">
+        <div class="rail__head">
+          <button class="rail__new" type="button" id="newReview">
+            <svg width="14" height="14" viewBox="0 0 16 16" aria-hidden="true" focusable="false">
+              <path
+                d="M8 3.2v9.6M3.2 8h9.6"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="1.7"
+                stroke-linecap="round"
+              />
+            </svg>
+            <span>新建审查</span>
+          </button>
+        </div>
+
+        <nav class="rail__scroll" aria-label="空间列表">
+          <div class="rail__group" id="spacesGroup">
+            <h2 class="rail__group-title">
+              空间
+              <span class="rail__count num" id="spaceCount">0</span>
+            </h2>
+            <ul class="space-list" id="spaceList"></ul>
+          </div>
+        </nav>
+
+        <div class="rail__nav">
+          <a class="rail-link" href="settings.html">
+            <svg
+              class="rail-link__icon"
+              width="16"
+              height="16"
+              viewBox="0 0 16 16"
+              aria-hidden="true"
+              focusable="false"
+            >
+              <path
+                d="M2.6 4.6h10.8M2.6 8h10.8M2.6 11.4h10.8"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="1.3"
+                stroke-linecap="round"
+              />
+              <circle cx="6" cy="4.6" r="1.8" fill="none" stroke="currentColor" stroke-width="1.3" />
+              <circle cx="10.4" cy="11.4" r="1.8" fill="none" stroke="currentColor" stroke-width="1.3" />
+            </svg>
+            <span class="rail-link__text">
+              <span class="rail-link__title">模型配置</span>
+              <span class="rail-link__meta" id="railModelName" translate="no">DeepSeek V4.1 Flash</span>
+            </span>
+            <svg
+              class="rail-link__chev"
+              width="12"
+              height="12"
+              viewBox="0 0 12 12"
+              aria-hidden="true"
+              focusable="false"
+            >
+              <path
+                d="M4.5 3 8 6l-3.5 3"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="1.4"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+              />
+            </svg>
+          </a>
+        </div>
+
+        <div class="rail__foot">
+          <span class="avatar" aria-hidden="true">林</span>
+          <span class="rail__user">
+            <span class="rail__user-name">linzhe</span>
+            <span class="rail__user-note" id="railUserNote">3 个空间 · 5 次审查</span>
+          </span>
+          <button class="icon-btn icon-btn--sm" type="button" aria-label="退出登录" id="signOut">
+            <svg width="15" height="15" viewBox="0 0 16 16" aria-hidden="true" focusable="false">
+              <path
+                d="M6.4 2.6H4a1.6 1.6 0 0 0-1.6 1.6v7.6A1.6 1.6 0 0 0 4 13.4h2.4"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="1.35"
+                stroke-linecap="round"
+              />
+              <path
+                d="M10.4 5.4 13 8l-2.6 2.6M13 8H6.8"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="1.35"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+              />
+            </svg>
+          </button>
+        </div>
+      </aside>
+
+      <!-- ===================== 主区 ===================== -->
+      <div class="stage" id="stage">
+        <header class="topbar">
+          <div class="context" role="group" aria-label="当前审查上下文">
+            <button
+              class="rail-toggle"
+              type="button"
+              id="railToggle"
+              aria-label="收起空间栏"
+              aria-expanded="true"
+              aria-controls="rail"
+            >
+              <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true" focusable="false">
+                <rect
+                  x="1.7"
+                  y="2.7"
+                  width="12.6"
+                  height="10.6"
+                  rx="2"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="1.3"
+                />
+                <path d="M6.4 2.7v10.6" fill="none" stroke="currentColor" stroke-width="1.3" />
+              </svg>
+            </button>
+
+            <span class="context__divider" aria-hidden="true"></span>
+
+            <span class="context__repo" id="wsRepo" translate="no">meridian-labs/payments-api</span>
+            <span class="context__pr" id="wsPr" translate="no">#482</span>
+          </div>
+
+          <div class="topbar__right">
+            <div class="context__meta" id="wsMeta">
+              <span class="tag" translate="no" id="wsBranch">
+                <svg width="11" height="11" viewBox="0 0 12 12" aria-hidden="true" focusable="false">
+                  <path
+                    d="M3 2.5v5.2M9 2.5v2.1c0 1-.8 1.8-1.8 1.8H4.8"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="1.3"
+                    stroke-linecap="round"
+                  />
+                  <circle cx="3" cy="9.4" r="1.4" fill="currentColor" />
+                  <circle cx="9" cy="2.4" r="1.4" fill="currentColor" />
+                </svg>
+                feat/rate-limit-refactor
+              </span>
+              <span class="meta-dot" aria-hidden="true"></span>
+              <span class="meta num" id="wsFiles">7 个文件</span>
+              <span class="meta num stat-add" id="wsAdd">+312</span>
+              <span class="meta num stat-del" id="wsDel">−148</span>
+            </div>
+
+            <div class="brand">
+              <svg
+                class="brand__mark"
+                width="21"
+                height="21"
+                viewBox="0 0 22 22"
+                aria-hidden="true"
+                focusable="false"
+              >
+                <path
+                  d="M4.2 2.6v16.8"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="1.9"
+                  stroke-linecap="round"
+                />
+                <path
+                  d="M9.4 6.4h9.2"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="1.9"
+                  stroke-linecap="round"
+                />
+                <path
+                  d="M9.4 11h6"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="1.9"
+                  stroke-linecap="round"
+                />
+                <path
+                  d="M9.4 15.6h7.6"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="1.9"
+                  stroke-linecap="round"
+                />
+              </svg>
+              <span class="brand__name">Margin</span>
+            </div>
+          </div>
+        </header>
+
+        <main class="conversation" id="conversation" tabindex="-1">
+          <div class="conversation__scroll" id="scroller">
+            <div class="thread" id="thread"></div>
+          </div>
+        </main>
+
+        <div class="dock">
+          <div class="runbar" id="runbar" role="status" aria-live="polite" hidden>
+            <span class="runbar__pulse" aria-hidden="true"></span>
+            <span class="runbar__label" id="runbarLabel">正在运行审查计划…</span>
+            <span class="runbar__step num" id="runbarStep"></span>
+            <button class="runbar__stop" type="button" id="runbarStop">停止</button>
+          </div>
+
+          <form class="composer" id="composer" autocomplete="off">
+            <label class="sr-only" for="prompt">审查指令</label>
+            <div class="composer__box">
+              <textarea
+                id="prompt"
+                class="composer__input"
+                name="prompt"
+                rows="1"
+                placeholder="描述审查重点，或直接回车开始全量审查…"
+                spellcheck="false"
+                autocomplete="off"
+              ></textarea>
+
+              <div class="composer__row">
+                <div class="composer__tools">
+                  <button class="icon-btn" type="button" aria-label="附加文件或目录">
+                    <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true">
+                      <path
+                        d="M8.6 3.4 4.3 7.7a2.6 2.6 0 0 0 3.7 3.7l4.6-4.6a3.9 3.9 0 0 0-5.5-5.5L2.5 6.9"
+                        fill="none"
+                        stroke="currentColor"
+                        stroke-width="1.4"
+                        stroke-linecap="round"
+                      />
+                    </svg>
+                  </button>
+                  <button
+                    class="icon-btn"
+                    type="button"
+                    aria-label="选择审查范围"
+                    aria-haspopup="menu"
+                    aria-expanded="false"
+                  >
+                    <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true">
+                      <path
+                        d="M2.5 3.5h11M4.5 8h7M6.5 12.5h3"
+                        fill="none"
+                        stroke="currentColor"
+                        stroke-width="1.4"
+                        stroke-linecap="round"
+                      />
+                    </svg>
+                  </button>
+                </div>
+
+                <div class="composer__submit">
+                  <div class="model-select">
+                    <button
+                      class="model-btn"
+                      type="button"
+                      id="modelBtn"
+                      aria-haspopup="listbox"
+                      aria-expanded="false"
+                    >
+                      <svg
+                        class="model-btn__mark"
+                        width="17"
+                        height="17"
+                        viewBox="0 0 20 20"
+                        aria-hidden="true"
+                        focusable="false"
+                      >
+                        <path
+                          d="M2.4 12.1c0-3.4 2.8-6.2 6.2-6.2 2.6 0 4.8 1.6 5.7 3.9l2.6-1c.5-.2 1 .2.9.7l-.5 2.5c-.1.5-.5.8-1 .8h-2.1c-1 2.2-3.2 3.7-5.8 3.7-1.8 0-3.4-.7-4.6-1.9"
+                          fill="none"
+                          stroke="currentColor"
+                          stroke-width="1.5"
+                          stroke-linecap="round"
+                          stroke-linejoin="round"
+                        />
+                        <circle cx="7.5" cy="10.5" r="1" fill="currentColor" />
+                      </svg>
+                      <span class="model-btn__name" id="modelBtnName">DeepSeek V4.1 Flash</span>
+                      <svg
+                        class="model-btn__chev"
+                        width="11"
+                        height="11"
+                        viewBox="0 0 12 12"
+                        aria-hidden="true"
+                        focusable="false"
+                      >
+                        <path
+                          d="M3 4.75 6 7.75l3-3"
+                          fill="none"
+                          stroke="currentColor"
+                          stroke-width="1.4"
+                          stroke-linecap="round"
+                          stroke-linejoin="round"
+                        />
+                      </svg>
+                    </button>
+                    <div class="model-menu" id="modelMenu" role="listbox" aria-label="选择模型" hidden></div>
+                  </div>
+
+                  <button class="stop-btn" type="button" id="stopBtn" hidden>停止</button>
+                  <button class="send-btn" type="submit" id="sendBtn">
+                    <span>开始审查</span>
+                    <svg width="14" height="14" viewBox="0 0 16 16" aria-hidden="true">
+                      <path
+                        d="M3 8h9.2M8.6 4.2 12.4 8l-3.8 3.8"
+                        fill="none"
+                        stroke="currentColor"
+                        stroke-width="1.6"
+                        stroke-linecap="round"
+                        stroke-linejoin="round"
+                      />
+                    </svg>
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            <p class="composer__hint">
+              <kbd>Enter</kbd> 发送 · <kbd translate="no">Shift</kbd> + <kbd translate="no">Enter</kbd> 换行 ·
+              发现均为静态分析结果，合并前请人工确认
+            </p>
+          </form>
+        </div>
+      </div>
+
+      <!-- 窄屏抽屉遮罩 -->
+      <div class="scrim" id="scrim" hidden></div>
+    </div>
+
+    <script src="scripts/mock-data.js"></script>
+    <script src="scripts/app.js"></script>
+  </body>
+</html>

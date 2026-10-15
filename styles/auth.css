@@ -1,0 +1,581 @@
+/* ==========================================================================
+   Margin · 登录 / 注册
+   左侧深青样张台（放真实的审查发现），右侧表单。
+   ========================================================================== */
+
+.auth-body {
+  background: var(--paper);
+}
+
+.auth {
+  /* 左栏深青族，与产品品牌同源 */
+  --aside-bg: #0b3d36;
+  --aside-ink: #e7f0ed;
+  --aside-ink-2: #9dbfb7;
+  --aside-rule: rgba(231, 240, 237, 0.16);
+  --aside-sev: #d8736a;
+
+  display: grid;
+  grid-template-columns: minmax(0, 46fr) minmax(0, 54fr);
+  min-height: 100dvh;
+}
+
+/* ==========================================================================
+   左栏：样张台
+   ========================================================================== */
+
+.auth__aside {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  gap: var(--sp-7);
+  padding: var(--sp-6);
+  background: var(--aside-bg);
+  color: var(--aside-ink);
+  overflow: hidden;
+}
+
+/* 稿纸横线纹理：呼应「校样台」，纯装饰且不吃性能 */
+.auth__aside::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background-image: repeating-linear-gradient(
+    to bottom,
+    rgba(231, 240, 237, 0.035) 0 1px,
+    transparent 1px 32px
+  );
+  pointer-events: none;
+}
+
+.auth__aside > * {
+  position: relative;
+  z-index: 1;
+}
+
+.auth__brand {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+}
+
+.auth__brand .brand__mark {
+  color: var(--aside-ink);
+}
+
+.auth__brand-name {
+  font-family: var(--font-display);
+  font-size: 19px;
+  font-weight: 600;
+  letter-spacing: -0.015em;
+}
+
+.auth__pitch {
+  display: grid;
+  gap: var(--sp-5);
+  max-width: 34ch;
+}
+
+.auth__pitch-text {
+  font-family: var(--font-display);
+  font-size: 22px;
+  font-weight: 400;
+  line-height: 1.5;
+  letter-spacing: -0.005em;
+  text-wrap: balance;
+}
+
+/* ---- 样张：一段真实的审查发现 ---- */
+
+.specimen {
+  display: grid;
+  grid-template-columns: 2px minmax(0, 1fr);
+  gap: var(--sp-4);
+  margin: 0;
+  padding: var(--sp-4) var(--sp-4) var(--sp-4) 0;
+  border: 1px solid var(--aside-rule);
+  border-radius: var(--r-md);
+  background: rgba(231, 240, 237, 0.055);
+}
+
+.specimen__lane {
+  border-radius: 2px;
+  background: var(--aside-sev);
+}
+
+.specimen__body {
+  display: grid;
+  gap: var(--sp-2);
+  min-width: 0;
+}
+
+.specimen__head {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  flex-wrap: wrap;
+}
+
+.specimen__sev {
+  padding: 1px var(--sp-2) 2px;
+  border-radius: var(--r-sm);
+  background: rgba(216, 115, 106, 0.22);
+  color: #f0b3ac;
+  font-size: 11px;
+  font-weight: 500;
+}
+
+.specimen__loc {
+  color: var(--aside-ink-2);
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+}
+
+.specimen__title {
+  font-size: 13.5px;
+  line-height: 1.55;
+  text-wrap: pretty;
+}
+
+.specimen__meta {
+  color: var(--aside-ink-2);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.auth__foot {
+  color: var(--aside-ink-2);
+  font-size: 12px;
+}
+
+/* ==========================================================================
+   右栏：表单
+   ========================================================================== */
+
+.auth__panel {
+  display: grid;
+  place-items: center;
+  padding: var(--sp-6) var(--sp-5);
+}
+
+.auth__form {
+  width: min(100%, 396px);
+  display: grid;
+  gap: var(--sp-5);
+}
+
+.auth__head {
+  display: grid;
+  gap: var(--sp-2);
+}
+
+.auth__title {
+  font-family: var(--font-display);
+  font-size: 26px;
+  font-weight: 600;
+  letter-spacing: -0.015em;
+  line-height: 1.25;
+}
+
+.auth__sub {
+  color: var(--ink-2);
+  font-size: 14px;
+  text-wrap: pretty;
+}
+
+.auth__fields {
+  display: grid;
+  gap: var(--sp-4);
+}
+
+/* ---- 字段 ---- */
+
+.field {
+  display: grid;
+  gap: var(--sp-2);
+}
+
+.field__row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--sp-3);
+}
+
+.field__label {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--ink);
+}
+
+.field__hint {
+  color: var(--ink-3);
+  font-size: 12px;
+}
+
+.field__link {
+  font-size: 12.5px;
+  color: var(--accent);
+  transition-property: color;
+  transition-duration: var(--dur-fast);
+  transition-timing-function: var(--ease-out);
+}
+
+.field__link:hover {
+  color: var(--accent-deep);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.input-wrap {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+
+.input {
+  width: 100%;
+  min-height: 44px;
+  padding: 0 var(--sp-3);
+  border: 1px solid var(--rule-strong);
+  border-radius: var(--r-md);
+  background: var(--surface);
+  color: var(--ink);
+  font-size: 14.5px;
+  transition-property: border-color, box-shadow, background-color;
+  transition-duration: var(--dur);
+  transition-timing-function: var(--ease-out);
+}
+
+.input::placeholder {
+  color: var(--ink-3);
+}
+
+.input:hover {
+  border-color: var(--ink-3);
+}
+
+.input:focus {
+  border-color: var(--accent);
+  outline: none;
+  box-shadow: 0 0 0 3px color-mix(in oklab, var(--accent) 16%, transparent);
+}
+
+.input-wrap--action .input {
+  padding-inline-end: 46px;
+}
+
+.input-action {
+  position: absolute;
+  right: 2px;
+  display: grid;
+  place-items: center;
+  width: 40px;
+  height: 40px;
+  border-radius: var(--r-md);
+  color: var(--ink-3);
+  transition-property: background-color, color;
+  transition-duration: var(--dur-fast);
+  transition-timing-function: var(--ease-out);
+}
+
+.input-action:hover {
+  background: var(--surface-sunk);
+  color: var(--ink);
+}
+
+/* 校验失败：错误用颜色 + 文案 + 图标，不只靠颜色 */
+.input[aria-invalid="true"] {
+  border-color: var(--blocker);
+}
+
+.input[aria-invalid="true"]:focus {
+  box-shadow: 0 0 0 3px color-mix(in oklab, var(--blocker) 14%, transparent);
+}
+
+.field__error {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--sp-2);
+  color: var(--blocker);
+  font-size: 12.5px;
+  line-height: 1.5;
+}
+
+.field__error[hidden] {
+  display: none;
+}
+
+.field__error::before {
+  content: "!";
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 14px;
+  height: 14px;
+  margin-top: 2px;
+  border-radius: 50%;
+  background: var(--blocker);
+  color: var(--surface);
+  font-size: 10px;
+  font-weight: 700;
+}
+
+/* ---- 密码强度 ---- */
+
+.strength {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr)) auto;
+  align-items: center;
+  gap: var(--sp-2);
+}
+
+.strength[hidden] {
+  display: none;
+}
+
+.strength__bar {
+  height: 3px;
+  border-radius: 2px;
+  background: var(--rule);
+  transition-property: background-color;
+  transition-duration: var(--dur);
+  transition-timing-function: var(--ease-out);
+}
+
+.strength__label {
+  color: var(--ink-3);
+  font-size: 11.5px;
+  white-space: nowrap;
+}
+
+.strength[data-level="1"] .strength__bar:nth-child(-n + 1) {
+  background: var(--blocker);
+}
+
+.strength[data-level="2"] .strength__bar:nth-child(-n + 2) {
+  background: var(--warn);
+}
+
+.strength[data-level="3"] .strength__bar:nth-child(-n + 3) {
+  background: var(--accent);
+}
+
+.strength[data-level="4"] .strength__bar {
+  background: var(--pass);
+}
+
+/* ---- 勾选 ---- */
+
+.check {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--sp-3);
+  min-height: 24px;
+  cursor: pointer;
+  font-size: 13px;
+  color: var(--ink-2);
+  line-height: 1.55;
+}
+
+.check input {
+  flex: none;
+  width: 17px;
+  height: 17px;
+  margin: 2px 0 0;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+
+.check a {
+  color: var(--accent);
+}
+
+/* ---- 按钮 ---- */
+
+.btn-primary {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--sp-2);
+  width: 100%;
+  min-height: 44px;
+  border-radius: var(--r-md);
+  background: var(--accent);
+  color: var(--on-accent);
+  font-size: 14.5px;
+  font-weight: 500;
+  transition-property: background-color, transform;
+  transition-duration: var(--dur-fast);
+  transition-timing-function: var(--ease-out);
+}
+
+.btn-primary:hover:not([disabled]) {
+  background: var(--accent-deep);
+}
+
+.btn-primary:active:not([disabled]) {
+  transform: scale(0.985);
+}
+
+.btn-primary[disabled] {
+  background: color-mix(in oklab, var(--accent) 55%, var(--rule));
+  cursor: progress;
+}
+
+.spinner {
+  width: 14px;
+  height: 14px;
+  border: 2px solid rgba(255, 255, 255, 0.35);
+  border-top-color: #fff;
+  border-radius: 50%;
+  animation: spin 0.7s linear infinite;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* ---- 分隔与第三方 ---- */
+
+.auth__divider {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  color: var(--ink-3);
+  font-size: 12px;
+}
+
+.auth__divider::before,
+.auth__divider::after {
+  content: "";
+  flex: 1 1 auto;
+  height: 1px;
+  background: var(--rule);
+}
+
+.oauth {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--sp-3);
+}
+
+.oauth__btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--sp-2);
+  min-height: 42px;
+  border: 1px solid var(--rule-strong);
+  border-radius: var(--r-md);
+  background: var(--surface);
+  color: var(--ink-2);
+  font-size: 13.5px;
+  transition-property: border-color, color, background-color, transform;
+  transition-duration: var(--dur-fast);
+  transition-timing-function: var(--ease-out);
+}
+
+.oauth__btn:hover {
+  border-color: var(--ink-3);
+  color: var(--ink);
+}
+
+.oauth__btn:active {
+  transform: scale(0.985);
+}
+
+/* ---- 底部切换 ---- */
+
+.auth__switch {
+  color: var(--ink-2);
+  font-size: 13.5px;
+  text-align: center;
+}
+
+.auth__switch a {
+  font-weight: 500;
+}
+
+.auth__legal {
+  color: var(--ink-3);
+  font-size: 12px;
+  line-height: 1.6;
+  text-align: center;
+  text-wrap: pretty;
+}
+
+/* 表单级提示（成功 / 失败汇总） */
+.form-note {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--sp-2);
+  padding: var(--sp-3);
+  border-radius: var(--r-md);
+  font-size: 13px;
+  line-height: 1.55;
+}
+
+.form-note[hidden] {
+  display: none;
+}
+
+.form-note--error {
+  border: 1px solid color-mix(in oklab, var(--blocker) 30%, var(--rule));
+  background: var(--blocker-soft);
+  color: color-mix(in oklab, var(--blocker) 82%, var(--ink));
+}
+
+.form-note--hint {
+  border: 1px solid var(--rule);
+  background: var(--surface-quiet);
+  color: var(--ink-2);
+}
+
+/* ==========================================================================
+   响应式
+   ========================================================================== */
+
+@media (max-width: 900px) {
+  .auth {
+    grid-template-columns: minmax(0, 1fr);
+    /* 单列时两行都是 auto，align-content 的默认 stretch 会平分多余空间，
+       把深青头部拉高。这里显式让表单吃掉剩余高度。 */
+    grid-template-rows: auto minmax(0, 1fr);
+  }
+
+  .auth__aside {
+    justify-content: flex-start;
+    gap: var(--sp-5);
+    padding: var(--sp-5) var(--sp-5) var(--sp-6);
+  }
+
+  .auth__pitch {
+    max-width: none;
+  }
+
+  .auth__pitch-text {
+    font-size: 18px;
+  }
+
+  /* 窄屏藏掉样张，只留品牌与一句话 */
+  .specimen,
+  .auth__foot {
+    display: none;
+  }
+
+  .auth__panel {
+    /* 窄屏下表头顶对齐，避免与头部之间出现大片空白 */
+    place-items: start center;
+    padding: var(--sp-6) var(--sp-5) var(--sp-7);
+  }
+}
+
+@media (min-width: 901px) {
+  .auth__panel {
+    padding-block: var(--sp-7);
+  }
+}

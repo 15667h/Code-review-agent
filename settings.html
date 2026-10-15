@@ -1,0 +1,570 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="theme-color" content="#f4f6f5" />
+    <meta
+      name="description"
+      content="Margin 模型配置中心：服务端点、可用模型、生成参数、思考与请求可靠性。"
+    />
+    <title>模型配置 · Margin</title>
+
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      rel="stylesheet"
+      href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400..700&family=Instrument+Sans:wght@400;500;600&family=JetBrains+Mono:wght@400;500;600&display=swap"
+    />
+
+    <link rel="stylesheet" href="styles/tokens.css" />
+    <link rel="stylesheet" href="styles/settings.css" />
+  </head>
+
+  <body class="settings-body">
+    <a class="skip-link" href="#settings-main">跳到配置内容</a>
+
+    <!-- ================= 顶部 ================= -->
+    <header class="topbar">
+      <div class="topbar__left">
+        <a class="back-link" href="index.html">
+          <svg width="14" height="14" viewBox="0 0 16 16" aria-hidden="true" focusable="false">
+            <path
+              d="M10 3.5 5.5 8 10 12.5"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1.7"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+            />
+          </svg>
+          返回工作台
+        </a>
+
+        <span class="topbar__divider" aria-hidden="true"></span>
+
+        <h1 class="topbar__title">模型配置</h1>
+      </div>
+
+      <div class="topbar__right">
+        <span class="save-state" id="saveState" role="status"></span>
+        <button class="btn-ghost" type="button" id="resetBtn">重置</button>
+        <button class="btn-primary" type="button" id="saveBtn">
+          <span id="saveLabel">保存更改</span>
+        </button>
+      </div>
+    </header>
+
+    <main class="settings" id="settings-main">
+      <!-- ================= 1. 服务端点 ================= -->
+      <section class="card" aria-labelledby="card-endpoint">
+        <header class="card__head">
+          <h2 class="card__title" id="card-endpoint">服务端点</h2>
+          <p class="card__desc">
+            DeepSeek 同时兼容 OpenAI 与 Anthropic 两种协议。这里填的是 OpenAI 兼容根地址，不要带
+            <code translate="no">/chat/completions</code> 后缀。
+          </p>
+        </header>
+
+        <div class="card__body">
+          <div class="field-row">
+            <div class="field">
+              <label class="field__label" for="provider">提供商</label>
+              <div class="select-wrap">
+                <select class="input" id="provider">
+                  <option>DeepSeek（OpenAI 兼容）</option>
+                  <option>DeepSeek（Anthropic 兼容）</option>
+                  <option>OpenAI</option>
+                  <option>Anthropic</option>
+                  <option>阿里云百炼</option>
+                  <option>Ollama（本地）</option>
+                </select>
+                <svg class="select-wrap__chev" width="12" height="12" viewBox="0 0 12 12" aria-hidden="true">
+                  <path
+                    d="M3 4.75 6 7.75l3-3"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="1.4"
+                    stroke-linecap="round"
+                    stroke-linejoin="round"
+                  />
+                </svg>
+              </div>
+            </div>
+
+            <div class="field">
+              <label class="field__label" for="org">
+                组织 ID
+                <span class="field__opt">可选</span>
+              </label>
+              <input class="input input--mono" id="org" type="text" placeholder="org-…" spellcheck="false" />
+            </div>
+          </div>
+
+          <div class="field">
+            <label class="field__label" for="baseUrl">API 地址</label>
+            <input
+              class="input input--mono"
+              id="baseUrl"
+              type="url"
+              value="https://api.deepseek.com"
+              spellcheck="false"
+              autocomplete="off"
+            />
+            <p class="field__hint">
+              Anthropic 兼容协议的地址是
+              <code translate="no">https://api.deepseek.com/anthropic</code>。
+            </p>
+          </div>
+
+          <div class="field">
+            <label class="field__label" for="apiKey">API Key</label>
+            <div class="input-wrap input-wrap--action">
+              <input
+                class="input input--mono"
+                id="apiKey"
+                type="password"
+                value="sk-2f8c4a91b7e34d0fa6c5e8b2d9174a3f"
+                spellcheck="false"
+                autocomplete="off"
+                aria-describedby="apiKey-hint"
+              />
+              <button
+                class="input-action"
+                type="button"
+                data-toggle-password="apiKey"
+                aria-pressed="false"
+                aria-label="显示密钥"
+              >
+                <svg width="17" height="17" viewBox="0 0 18 18" aria-hidden="true" focusable="false">
+                  <path
+                    d="M2 9s2.6-4.4 7-4.4S16 9 16 9s-2.6 4.4-7 4.4S2 9 2 9z"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="1.4"
+                  />
+                  <circle cx="9" cy="9" r="1.9" fill="none" stroke="currentColor" stroke-width="1.4" />
+                </svg>
+              </button>
+            </div>
+            <p class="field__hint" id="apiKey-hint">密钥以 sk- 开头。演示环境不会发出真实请求。</p>
+          </div>
+
+          <div class="card__foot">
+            <button class="btn-ghost" type="button" id="testBtn">测试连接</button>
+            <span class="conn-state" id="connState"></span>
+          </div>
+        </div>
+      </section>
+
+      <!-- ================= 2. 可用模型 ================= -->
+      <section class="card" aria-labelledby="card-models">
+        <header class="card__head">
+          <h2 class="card__title" id="card-models">可用模型</h2>
+          <p class="card__desc">
+            启用的模型会出现在输入坞的模型菜单里，其中一个作为默认。
+          </p>
+        </header>
+
+        <div class="card__body card__body--flush">
+          <table class="model-table">
+            <caption class="sr-only">可用模型列表，可启用、禁用并设置默认模型</caption>
+            <thead>
+              <tr>
+                <th scope="col" class="col-toggle">启用</th>
+                <th scope="col">模型</th>
+                <th scope="col" class="col-ctx">上下文</th>
+                <th scope="col">能力</th>
+                <th scope="col" class="col-default">默认</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td class="col-toggle">
+                  <label class="switch">
+                    <input type="checkbox" checked aria-label="启用 DeepSeek V4.1 Flash" />
+                    <span class="switch__track" aria-hidden="true"></span>
+                  </label>
+                </td>
+                <td>
+                  <span class="model-name" translate="no">DeepSeek V4.1 Flash</span>
+                  <code class="model-id" translate="no">deepseek-v4.1-flash</code>
+                </td>
+                <td class="col-ctx num">1M</td>
+                <td><span class="cap">思考</span><span class="cap">工具调用</span></td>
+                <td class="col-default">
+                  <label class="radio">
+                    <input type="radio" name="default-model" value="deepseek-v4.1-flash" checked />
+                    <span class="sr-only">设为默认</span>
+                  </label>
+                </td>
+              </tr>
+
+              <tr>
+                <td class="col-toggle">
+                  <label class="switch">
+                    <input type="checkbox" checked aria-label="启用 DeepSeek V4.1 Pro" />
+                    <span class="switch__track" aria-hidden="true"></span>
+                  </label>
+                </td>
+                <td>
+                  <span class="model-name" translate="no">DeepSeek V4.1 Pro</span>
+                  <code class="model-id" translate="no">deepseek-v4.1-pro</code>
+                </td>
+                <td class="col-ctx num">1M</td>
+                <td><span class="cap">思考</span><span class="cap">工具调用</span></td>
+                <td class="col-default">
+                  <label class="radio">
+                    <input type="radio" name="default-model" value="deepseek-v4.1-pro" />
+                    <span class="sr-only">设为默认</span>
+                  </label>
+                </td>
+              </tr>
+
+              <tr>
+                <td class="col-toggle">
+                  <label class="switch">
+                    <input type="checkbox" checked aria-label="启用 DeepSeek V4 Flash" />
+                    <span class="switch__track" aria-hidden="true"></span>
+                  </label>
+                </td>
+                <td>
+                  <span class="model-name" translate="no">DeepSeek V4 Flash</span>
+                  <code class="model-id" translate="no">deepseek-v4-flash</code>
+                </td>
+                <td class="col-ctx num">1M</td>
+                <td><span class="cap">思考</span><span class="cap">工具调用</span></td>
+                <td class="col-default">
+                  <label class="radio">
+                    <input type="radio" name="default-model" value="deepseek-v4-flash" />
+                    <span class="sr-only">设为默认</span>
+                  </label>
+                </td>
+              </tr>
+
+              <tr>
+                <td class="col-toggle">
+                  <label class="switch">
+                    <input type="checkbox" aria-label="启用 DeepSeek V4 Pro" />
+                    <span class="switch__track" aria-hidden="true"></span>
+                  </label>
+                </td>
+                <td>
+                  <span class="model-name" translate="no">DeepSeek V4 Pro</span>
+                  <code class="model-id" translate="no">deepseek-v4-pro</code>
+                </td>
+                <td class="col-ctx num">1M</td>
+                <td><span class="cap">思考</span><span class="cap">工具调用</span></td>
+                <td class="col-default">
+                  <label class="radio">
+                    <input type="radio" name="default-model" value="deepseek-v4-pro" />
+                    <span class="sr-only">设为默认</span>
+                  </label>
+                </td>
+              </tr>
+
+              <tr class="is-deprecated">
+                <td class="col-toggle">
+                  <label class="switch">
+                    <input type="checkbox" aria-label="启用 deepseek-chat" />
+                    <span class="switch__track" aria-hidden="true"></span>
+                  </label>
+                </td>
+                <td>
+                  <span class="model-name" translate="no">DeepSeek Chat</span>
+                  <code class="model-id" translate="no">deepseek-chat</code>
+                  <span class="deprecated-note">2026-07-24 起弃用，对应 V4 Flash 的非思考模式</span>
+                </td>
+                <td class="col-ctx num">64K</td>
+                <td><span class="cap">工具调用</span></td>
+                <td class="col-default">
+                  <label class="radio">
+                    <input type="radio" name="default-model" value="deepseek-chat" />
+                    <span class="sr-only">设为默认</span>
+                  </label>
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <!-- ================= 3. 生成参数 ================= -->
+      <section class="card" aria-labelledby="card-sampling">
+        <header class="card__head">
+          <h2 class="card__title" id="card-sampling">生成参数</h2>
+          <p class="card__desc">
+            代码审查建议低温度以获得确定性输出。<code translate="no">temperature</code> 与
+            <code translate="no">top_p</code> 建议只调其中一个。
+          </p>
+        </header>
+
+        <div class="card__body">
+          <div class="field">
+            <div class="field__row">
+              <label class="field__label" for="temperature">Temperature</label>
+              <output class="field__value num" for="temperature" id="temperatureOut">0.2</output>
+            </div>
+            <input
+              class="range"
+              id="temperature"
+              type="range"
+              min="0"
+              max="2"
+              step="0.1"
+              value="0.2"
+              data-out="temperatureOut"
+            />
+            <p class="field__hint">0 到 2。越低越确定，审查类任务建议 0.0 到 0.3。</p>
+          </div>
+
+          <div class="field">
+            <div class="field__row">
+              <label class="field__label" for="topP">Top P</label>
+              <output class="field__value num" for="topP" id="topPOut">0.95</output>
+            </div>
+            <input
+              class="range"
+              id="topP"
+              type="range"
+              min="0"
+              max="1"
+              step="0.05"
+              value="0.95"
+              data-out="topPOut"
+            />
+          </div>
+
+          <div class="field-row">
+            <div class="field">
+              <label class="field__label" for="maxTokens">单次输出上限</label>
+              <input class="input input--mono" id="maxTokens" type="number" min="1" max="65536" value="8192" />
+              <p class="field__hint">单位 token。</p>
+            </div>
+
+            <div class="field">
+              <label class="field__label" for="seed">Seed</label>
+              <input class="input input--mono" id="seed" type="number" placeholder="留空即随机" />
+              <p class="field__hint">仅用于复现采样，不保证严格确定性。</p>
+            </div>
+          </div>
+
+          <div class="field-row">
+            <div class="field">
+              <div class="field__row">
+                <label class="field__label" for="frequency">频率惩罚</label>
+                <output class="field__value num" for="frequency" id="frequencyOut">0</output>
+              </div>
+              <input
+                class="range"
+                id="frequency"
+                type="range"
+                min="-2"
+                max="2"
+                step="0.1"
+                value="0"
+                data-out="frequencyOut"
+              />
+              <p class="field__hint">正值降低重复 token。</p>
+            </div>
+
+            <div class="field">
+              <div class="field__row">
+                <label class="field__label" for="presence">存在惩罚</label>
+                <output class="field__value num" for="presence" id="presenceOut">0</output>
+              </div>
+              <input
+                class="range"
+                id="presence"
+                type="range"
+                min="-2"
+                max="2"
+                step="0.1"
+                value="0"
+                data-out="presenceOut"
+              />
+              <p class="field__hint">正值鼓励引入新话题。</p>
+            </div>
+          </div>
+
+          <div class="field">
+            <label class="field__label" for="stop">停止序列</label>
+            <input class="input input--mono" id="stop" type="text" placeholder="以英文逗号分隔，最多 4 个" />
+          </div>
+        </div>
+      </section>
+
+      <!-- ================= 4. 思考与输出 ================= -->
+      <section class="card" aria-labelledby="card-reasoning">
+        <header class="card__head">
+          <h2 class="card__title" id="card-reasoning">思考与输出</h2>
+          <p class="card__desc">
+            思考强度会影响延迟与成本。审查这种多步推理任务建议中等以上。
+          </p>
+        </header>
+
+        <div class="card__body">
+          <fieldset class="fieldset">
+            <legend class="field__label">思考强度</legend>
+            <div class="segmented">
+              <label class="segmented__item">
+                <input type="radio" name="effort" value="minimal" />
+                <span>关闭</span>
+              </label>
+              <label class="segmented__item">
+                <input type="radio" name="effort" value="low" />
+                <span>低</span>
+              </label>
+              <label class="segmented__item">
+                <input type="radio" name="effort" value="medium" checked />
+                <span>中</span>
+              </label>
+              <label class="segmented__item">
+                <input type="radio" name="effort" value="high" />
+                <span>高</span>
+              </label>
+            </div>
+            <p class="field__hint">
+              对应请求参数 <code translate="no">reasoning_effort</code>，深度思考模型才支持。
+            </p>
+          </fieldset>
+
+          <div class="switch-list">
+            <div class="switch-row">
+              <div class="switch-row__text">
+                <span class="switch-row__title">流式输出</span>
+                <span class="switch-row__desc">逐 token 返回，首字延迟更低，长回答体验更好。</span>
+              </div>
+              <label class="switch">
+                <input type="checkbox" checked aria-label="流式输出" />
+                <span class="switch__track" aria-hidden="true"></span>
+              </label>
+            </div>
+
+            <div class="switch-row">
+              <div class="switch-row__text">
+                <span class="switch-row__title">JSON 输出模式</span>
+                <span class="switch-row__desc">
+                  对应 <code translate="no">response_format</code>，要求模型返回结构化结果时开启。
+                </span>
+              </div>
+              <label class="switch">
+                <input type="checkbox" aria-label="JSON 输出模式" />
+                <span class="switch__track" aria-hidden="true"></span>
+              </label>
+            </div>
+
+            <div class="switch-row">
+              <div class="switch-row__text">
+                <span class="switch-row__title">并行工具调用</span>
+                <span class="switch-row__desc">
+                  允许一次返回多个工具调用。涉及写操作或计费时要谨慎。
+                </span>
+              </div>
+              <label class="switch">
+                <input type="checkbox" checked aria-label="并行工具调用" />
+                <span class="switch__track" aria-hidden="true"></span>
+              </label>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ================= 5. 连接与可靠性 ================= -->
+      <section class="card" aria-labelledby="card-request">
+        <header class="card__head">
+          <h2 class="card__title" id="card-request">连接与可靠性</h2>
+          <p class="card__desc">
+            长上下文请求首 token 可能要等几十秒，超时给小了会直接失败。
+          </p>
+        </header>
+
+        <div class="card__body">
+          <div class="field-row field-row--three">
+            <div class="field">
+              <label class="field__label" for="timeout">超时</label>
+              <div class="input-suffix">
+                <input class="input input--mono" id="timeout" type="number" min="5" max="900" value="120" />
+                <span class="input-suffix__unit">秒</span>
+              </div>
+            </div>
+
+            <div class="field">
+              <label class="field__label" for="retries">最大重试</label>
+              <div class="input-suffix">
+                <input class="input input--mono" id="retries" type="number" min="0" max="10" value="3" />
+                <span class="input-suffix__unit">次</span>
+              </div>
+            </div>
+
+            <div class="field">
+              <label class="field__label" for="concurrency">并发上限</label>
+              <div class="input-suffix">
+                <input class="input input--mono" id="concurrency" type="number" min="1" max="64" value="4" />
+                <span class="input-suffix__unit">路</span>
+              </div>
+            </div>
+          </div>
+
+          <div class="field">
+            <label class="field__label" for="proxy">代理地址</label>
+            <input class="input input--mono" id="proxy" type="text" placeholder="http://proxy:8080" spellcheck="false" />
+            <p class="field__hint">出不了公网的环境才需要填。</p>
+          </div>
+
+          <div class="switch-row switch-row--bare">
+            <div class="switch-row__text">
+              <span class="switch-row__title">跳过 TLS 校验</span>
+              <span class="switch-row__desc">仅用于内网自签证书，公网调用务必关闭。</span>
+            </div>
+            <label class="switch">
+              <input type="checkbox" aria-label="跳过 TLS 校验" />
+              <span class="switch__track" aria-hidden="true"></span>
+            </label>
+          </div>
+
+          <div class="field">
+            <div class="field__row">
+              <span class="field__label" id="headers-label">自定义请求头</span>
+              <button class="field__link" type="button" id="addHeader">添加一行</button>
+            </div>
+            <div class="headers" id="headers" role="group" aria-labelledby="headers-label"></div>
+            <p class="field__hint">部分中转服务需要额外的鉴权头，例如 X-Tenant-Id。</p>
+          </div>
+        </div>
+      </section>
+
+      <!-- ================= 6. 用量 ================= -->
+      <section class="card" aria-labelledby="card-usage">
+        <header class="card__head">
+          <h2 class="card__title" id="card-usage">本月用量</h2>
+          <p class="card__desc">演示数据。</p>
+        </header>
+
+        <div class="card__body">
+          <div class="usage">
+            <div class="usage__row">
+              <span class="usage__label">输入 token</span>
+              <span class="usage__value num">18,420,000</span>
+            </div>
+            <div class="usage__row">
+              <span class="usage__label">输出 token</span>
+              <span class="usage__value num">3,180,000</span>
+            </div>
+            <div class="usage__row">
+              <span class="usage__label">命中缓存</span>
+              <span class="usage__value num">6,940,000</span>
+            </div>
+          </div>
+
+          <div class="meter" role="img" aria-label="本月用量已使用 42%">
+            <span class="meter__fill" style="inline-size: 42%"></span>
+          </div>
+          <p class="field__hint">已使用额度约 42%，超过上限后会拒绝新请求。</p>
+        </div>
+      </section>
+    </main>
+
+    <script src="scripts/settings.js"></script>
+  </body>
+</html>
