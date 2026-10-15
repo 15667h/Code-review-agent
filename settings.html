@@ -187,14 +187,14 @@
                   </label>
                 </td>
                 <td>
-                  <span class="model-name" translate="no">DeepSeek V4.1 Flash</span>
-                  <code class="model-id" translate="no">deepseek-v4.1-flash</code>
+                  <span class="model-name" translate="no">DeepSeek-V4.1-Flash</span>
+                  <code class="model-id" translate="no">deepseek-flash</code>
                 </td>
-                <td class="col-ctx num">1M</td>
-                <td><span class="cap">思考</span><span class="cap">工具调用</span></td>
+                <td class="col-ctx num">1.05M</td>
+                <td><span class="cap">思考</span><span class="cap">工具调用</span><span class="cap">图像输入</span></td>
                 <td class="col-default">
                   <label class="radio">
-                    <input type="radio" name="default-model" value="deepseek-v4.1-flash" checked />
+                    <input type="radio" name="default-model" value="deepseek-flash" checked />
                     <span class="sr-only">设为默认</span>
                   </label>
                 </td>
@@ -203,57 +203,15 @@
               <tr>
                 <td class="col-toggle">
                   <label class="switch">
-                    <input type="checkbox" checked aria-label="启用 DeepSeek V4.1 Pro" />
+                    <input type="checkbox" checked aria-label="启用 DeepSeek-V4-Pro" />
                     <span class="switch__track" aria-hidden="true"></span>
                   </label>
                 </td>
                 <td>
-                  <span class="model-name" translate="no">DeepSeek V4.1 Pro</span>
-                  <code class="model-id" translate="no">deepseek-v4.1-pro</code>
-                </td>
-                <td class="col-ctx num">1M</td>
-                <td><span class="cap">思考</span><span class="cap">工具调用</span></td>
-                <td class="col-default">
-                  <label class="radio">
-                    <input type="radio" name="default-model" value="deepseek-v4.1-pro" />
-                    <span class="sr-only">设为默认</span>
-                  </label>
-                </td>
-              </tr>
-
-              <tr>
-                <td class="col-toggle">
-                  <label class="switch">
-                    <input type="checkbox" checked aria-label="启用 DeepSeek V4 Flash" />
-                    <span class="switch__track" aria-hidden="true"></span>
-                  </label>
-                </td>
-                <td>
-                  <span class="model-name" translate="no">DeepSeek V4 Flash</span>
-                  <code class="model-id" translate="no">deepseek-v4-flash</code>
-                </td>
-                <td class="col-ctx num">1M</td>
-                <td><span class="cap">思考</span><span class="cap">工具调用</span></td>
-                <td class="col-default">
-                  <label class="radio">
-                    <input type="radio" name="default-model" value="deepseek-v4-flash" />
-                    <span class="sr-only">设为默认</span>
-                  </label>
-                </td>
-              </tr>
-
-              <tr>
-                <td class="col-toggle">
-                  <label class="switch">
-                    <input type="checkbox" aria-label="启用 DeepSeek V4 Pro" />
-                    <span class="switch__track" aria-hidden="true"></span>
-                  </label>
-                </td>
-                <td>
-                  <span class="model-name" translate="no">DeepSeek V4 Pro</span>
+                  <span class="model-name" translate="no">DeepSeek-V4-Pro</span>
                   <code class="model-id" translate="no">deepseek-v4-pro</code>
                 </td>
-                <td class="col-ctx num">1M</td>
+                <td class="col-ctx num">1.05M</td>
                 <td><span class="cap">思考</span><span class="cap">工具调用</span></td>
                 <td class="col-default">
                   <label class="radio">
@@ -273,13 +231,35 @@
                 <td>
                   <span class="model-name" translate="no">DeepSeek Chat</span>
                   <code class="model-id" translate="no">deepseek-chat</code>
-                  <span class="deprecated-note">2026-07-24 起弃用，对应 V4 Flash 的非思考模式</span>
+                  <span class="deprecated-note">2026-07-24 起弃用</span>
                 </td>
                 <td class="col-ctx num">64K</td>
                 <td><span class="cap">工具调用</span></td>
                 <td class="col-default">
                   <label class="radio">
                     <input type="radio" name="default-model" value="deepseek-chat" />
+                    <span class="sr-only">设为默认</span>
+                  </label>
+                </td>
+              </tr>
+
+              <tr class="is-deprecated">
+                <td class="col-toggle">
+                  <label class="switch">
+                    <input type="checkbox" aria-label="启用 deepseek-reasoner" />
+                    <span class="switch__track" aria-hidden="true"></span>
+                  </label>
+                </td>
+                <td>
+                  <span class="model-name" translate="no">DeepSeek Reasoner</span>
+                  <code class="model-id" translate="no">deepseek-reasoner</code>
+                  <span class="deprecated-note">2026-07-24 起弃用</span>
+                </td>
+                <td class="col-ctx num">64K</td>
+                <td><span class="cap">思考</span><span class="cap">工具调用</span></td>
+                <td class="col-default">
+                  <label class="radio">
+                    <input type="radio" name="default-model" value="deepseek-reasoner" />
                     <span class="sr-only">设为默认</span>
                   </label>
                 </td>

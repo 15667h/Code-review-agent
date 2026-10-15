@@ -1,0 +1,212 @@
+{
+  "goal": "审查这个仓库中的缺陷，重点是会导致错误行为、资源泄漏或安全问题的实现。",
+  "repo": "C:\\Users\\34442\\Desktop\\porject\\代码审查agent\\backend\\examples\\vulnerable-service",
+  "model": "heuristic-offline（规则驱动）",
+  "iterations": 16,
+  "stop_reason": "finished",
+  "elapsed": 0.022,
+  "usage": {
+    "prompt_tokens": 0,
+    "completion_tokens": 0,
+    "cached_tokens": 0
+  },
+  "findings": [
+    {
+      "id": "F_c040ef417f85",
+      "severity": "blocker",
+      "file": "app/auth.py",
+      "line": 13,
+      "title": "硬编码密钥（SEC001）",
+      "detail": "源码中直接写入了密码、令牌或 API Key。一旦仓库公开或进入交付物，凭据即泄露。",
+      "evidence": "API_KEY = \"***\"",
+      "suggestion": "改为从环境变量或密钥管理服务读取，并把该凭据立即轮换。"
+    },
+    {
+      "id": "F_1e86f2217599",
+      "severity": "blocker",
+      "file": "app/auth.py",
+      "line": 14,
+      "title": "硬编码密钥（SEC001）",
+      "detail": "源码中直接写入了密码、令牌或 API Key。一旦仓库公开或进入交付物，凭据即泄露。",
+      "evidence": "DB_PASSWORD = \"***\"",
+      "suggestion": "改为从环境变量或密钥管理服务读取，并把该凭据立即轮换。"
+    },
+    {
+      "id": "F_571752e8ee89",
+      "severity": "warn",
+      "file": "app/auth.py",
+      "line": 28,
+      "title": "裸 except（ERR001）",
+      "detail": "`except:` 会同时捕获 KeyboardInterrupt 与 SystemExit，使程序无法被正常中断，也掩盖真实错误类型。",
+      "evidence": "except:",
+      "suggestion": "捕获明确的异常类型；若确实需要兜底，用 `except Exception:` 并记录日志。"
+    },
+    {
+      "id": "F_2d6c32c78a2d",
+      "severity": "warn",
+      "file": "app/auth.py",
+      "line": 40,
+      "title": "文件句柄未使用 with 管理（RES001）",
+      "detail": "直接 `open()` 赋值给变量时，异常路径上不会关闭文件描述符，长期运行会耗尽句柄。",
+      "evidence": "handle = open(path, \"r\", encoding=\"utf-8\")",
+      "suggestion": "改用 `with open(...) as fh:`；若必须手动管理，请放进 try/finally。"
+    },
+    {
+      "id": "F_21625cbe143a",
+      "severity": "note",
+      "file": "app/guards.py",
+      "line": 17,
+      "title": "生产代码中的 assert（PY002）",
+      "detail": "Python 以 -O 运行时 assert 会被整体移除，用它做参数校验会失效。",
+      "evidence": "assert limit > 0, \"limit must be positive\"",
+      "suggestion": "改成显式的 if + raise，或用类型/校验库。"
+    },
+    {
+      "id": "F_6d746a35c655",
+      "severity": "note",
+      "file": "app/guards.py",
+      "line": 18,
+      "title": "生产代码中的 assert（PY002）",
+      "detail": "Python 以 -O 运行时 assert 会被整体移除，用它做参数校验会失效。",
+      "evidence": "assert limit <= 100_000, \"limit too large\"",
+      "suggestion": "改成显式的 if + raise，或用类型/校验库。"
+    },
+    {
+      "id": "F_f0878f72687a",
+      "severity": "note",
+      "file": "app/guards.py",
+      "line": 24,
+      "title": "生产代码中的 assert（PY002）",
+      "detail": "Python 以 -O 运行时 assert 会被整体移除，用它做参数校验会失效。",
+      "evidence": "assert window_ms >= 1000, \"window too small\"",
+      "suggestion": "改成显式的 if + raise，或用类型/校验库。"
+    },
+    {
+      "id": "F_42f21c0abbbf",
+      "severity": "note",
+      "file": "app/guards.py",
+      "line": 30,
+      "title": "与布尔常量直接比较（PY003）",
+      "detail": "`x == True` 是值比较而非真值判断，传入 1、'yes' 等真值时行为与直觉不符。",
+      "evidence": "return flag == True",
+      "suggestion": "直接写 `if x:` / `if not x:`；若必须区分 True 与其他真值，用 `is True`。"
+    },
+    {
+      "id": "F_5d871746b44a",
+      "severity": "note",
+      "file": "app/guards.py",
+      "line": 35,
+      "title": "与布尔常量直接比较（PY003）",
+      "detail": "`x == True` 是值比较而非真值判断，传入 1、'yes' 等真值时行为与直觉不符。",
+      "evidence": "return flag == False",
+      "suggestion": "直接写 `if x:` / `if not x:`；若必须区分 True 与其他真值，用 `is True`。"
+    },
+    {
+      "id": "F_ce28af0d8bed",
+      "severity": "note",
+      "file": "app/rate_limit.py",
+      "line": 46,
+      "title": "资源获取后未见 finally 归还（RES002）",
+      "detail": "acquire/checkout 之后如果异常路径没有归还，资源占用会随异常频率单调增长。静态上看不出完整控制流，这里只做提示。",
+      "evidence": "conn = await pool.acquire()",
+      "suggestion": "把获取与归还收进 try/finally，或改用上下文管理器（with）。"
+    },
+    {
+      "id": "F_13afd0268841",
+      "severity": "note",
+      "file": "app/rate_limit.py",
+      "line": 64,
+      "title": "资源获取后未见 finally 归还（RES002）",
+      "detail": "acquire/checkout 之后如果异常路径没有归还，资源占用会随异常频率单调增长。静态上看不出完整控制流，这里只做提示。",
+      "evidence": "conn = await pool.acquire()",
+      "suggestion": "把获取与归还收进 try/finally，或改用上下文管理器（with）。"
+    },
+    {
+      "id": "F_46232156972d",
+      "severity": "blocker",
+      "file": "app/repository.py",
+      "line": 9,
+      "title": "SQL 语句字符串拼接（SEC002）",
+      "detail": "把变量直接拼进 SQL 文本，输入可控时会形成注入点。",
+      "evidence": "sql = \"SELECT id, name FROM users WHERE name = '\" + name + \"'\"",
+      "suggestion": "改用参数化查询（占位符 + 参数元组），不要用 f-string 或 % 拼接 SQL。"
+    },
+    {
+      "id": "F_192d4879f360",
+      "severity": "blocker",
+      "file": "app/repository.py",
+      "line": 15,
+      "title": "SQL 语句字符串拼接（SEC002）",
+      "detail": "把变量直接拼进 SQL 文本，输入可控时会形成注入点。",
+      "evidence": "sql = f\"SELECT id FROM orders WHERE status = '{status}' LIMIT {limit}\"",
+      "suggestion": "改用参数化查询（占位符 + 参数元组），不要用 f-string 或 % 拼接 SQL。"
+    },
+    {
+      "id": "F_3cff30bd6e43",
+      "severity": "warn",
+      "file": "app/repository.py",
+      "line": 32,
+      "title": "裸 except（ERR001）",
+      "detail": "`except:` 会同时捕获 KeyboardInterrupt 与 SystemExit，使程序无法被正常中断，也掩盖真实错误类型。",
+      "evidence": "except:",
+      "suggestion": "捕获明确的异常类型；若确实需要兜底，用 `except Exception:` 并记录日志。"
+    },
+    {
+      "id": "F_0b4e1dacdb1b",
+      "severity": "warn",
+      "file": "app/repository.py",
+      "line": 24,
+      "title": "异常被静默吞掉（ERR002）",
+      "detail": "`except ...: pass` 把错误完全丢弃，故障会以更晚、更难定位的形式出现。",
+      "evidence": "except Exception: → pass",
+      "suggestion": "至少记录一条日志，或把异常向上抛出。"
+    },
+    {
+      "id": "F_9ea4618efe8c",
+      "severity": "warn",
+      "file": "app/utils.py",
+      "line": 9,
+      "title": "可变对象作为默认参数（PY001）",
+      "detail": "默认参数在函数定义时求值一次并在调用间共享，多次调用会累积同一个列表/字典。",
+      "evidence": "def append_event(event: dict, target: list = []) -> list:",
+      "suggestion": "默认值用 None，在函数体内 `if x is None: x = []`。"
+    },
+    {
+      "id": "F_72c26dac23cb",
+      "severity": "warn",
+      "file": "app/utils.py",
+      "line": 18,
+      "title": "可变对象作为默认参数（PY001）",
+      "detail": "默认参数在函数定义时求值一次并在调用间共享，多次调用会累积同一个列表/字典。",
+      "evidence": "def build_index(items: list = {}) -> dict:",
+      "suggestion": "默认值用 None，在函数体内 `if x is None: x = []`。"
+    },
+    {
+      "id": "F_c4631a056c30",
+      "severity": "warn",
+      "file": "app/utils.py",
+      "line": 27,
+      "title": "使用 eval / exec（SEC003）",
+      "detail": "动态执行字符串代码，输入可控时等同于任意代码执行。",
+      "evidence": "return eval(text)",
+      "suggestion": "改用显式解析（ast.literal_eval、json.loads）或白名单分派表。"
+    },
+    {
+      "id": "F_5fa7969c9b7f",
+      "severity": "warn",
+      "file": "app/utils.py",
+      "line": 33,
+      "title": "使用 eval / exec（SEC003）",
+      "detail": "动态执行字符串代码，输入可控时等同于任意代码执行。",
+      "evidence": "exec(text, namespace)",
+      "suggestion": "改用显式解析（ast.literal_eval、json.loads）或白名单分派表。"
+    }
+  ],
+  "warnings": [],
+  "compression_events": [],
+  "prefix": {
+    "fingerprint": "b3c2ce2fff2ded65",
+    "tokens": 4378,
+    "tool_count": 8
+  }
+}

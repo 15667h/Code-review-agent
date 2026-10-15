@@ -17,29 +17,32 @@ window.MARGIN_DATA = {
   },
 
   /* ---------- 可切换模型 ----------
-     说明：deepseek-v4-flash / deepseek-v4-pro 与 base_url 取自 DeepSeek 官方文档；
-     v4.1 系列为演示占位，用于呈现「多模型切换」的界面形态。 */
+     以下 id / 显示名 / 上下文长度均来自 GET https://api.deepseek.com/models 的
+     账号实测返回，不是占位值：
+       deepseek-flash    → DeepSeek-V4.1-Flash，1,048,576 上下文，支持图像输入
+       deepseek-v4-pro   → DeepSeek-V4-Pro，    1,048,576 上下文
+     另有 deepseek-chat / deepseek-reasoner 两个旧名，官方标注 2026-07-24 弃用。 */
   models: [
     {
-      id: "deepseek-v4.1-flash",
+      id: "deepseek-flash",
       name: "DeepSeek V4.1 Flash",
       desc: "速度优先 · 1M 上下文",
       current: true,
     },
     {
-      id: "deepseek-v4.1-pro",
+      id: "deepseek-v4-pro",
       name: "DeepSeek V4.1 Pro",
       desc: "复杂推理 · 1M 上下文",
     },
     {
-      id: "deepseek-v4-flash",
-      name: "DeepSeek V4 Flash",
-      desc: "上一代快速版",
+      id: "deepseek-chat",
+      name: "DeepSeek Chat（旧）",
+      desc: "2026-07-24 弃用",
     },
     {
-      id: "deepseek-v4-pro",
-      name: "DeepSeek V4 Pro",
-      desc: "上一代推理版",
+      id: "deepseek-reasoner",
+      name: "DeepSeek Reasoner（旧）",
+      desc: "2026-07-24 弃用",
     },
   ],
 

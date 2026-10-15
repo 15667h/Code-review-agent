@@ -1,0 +1,119 @@
+{
+  "label": "heuristic-offline",
+  "model": "heuristic-offline",
+  "runs_per_case": 3,
+  "primary_grouping": "instance",
+  "thresholds": {
+    "min_recall": 1.0,
+    "min_precision": 0.5
+  },
+  "summary": {
+    "instance": {
+      "cases": 1.0,
+      "runs_per_case": 3.0,
+      "pass@1": 0.0,
+      "ci95_low": 0.0,
+      "ci95_high": 0.0,
+      "standard_error": 0.0,
+      "pass^3": 0.0,
+      "pass@3": 0.0
+    },
+    "file_rule": {
+      "cases": 1.0,
+      "runs_per_case": 3.0,
+      "pass@1": 0.0,
+      "ci95_low": 0.0,
+      "ci95_high": 0.0,
+      "standard_error": 0.0,
+      "pass^3": 0.0,
+      "pass@3": 0.0
+    }
+  },
+  "details": [
+    {
+      "case": "vulnerable-service",
+      "expected": 23,
+      "outcomes": {
+        "instance": [
+          false,
+          false,
+          false
+        ],
+        "file_rule": [
+          false,
+          false,
+          false
+        ]
+      },
+      "missed_on_first_run": [
+        "SEC004 app/auth.py:19",
+        "SEC005 app/auth.py:34",
+        "ERR003-a app/rate_limit.py:74",
+        "ERR004-a app/rate_limit.py:79"
+      ],
+      "missed_detail_on_first_run": [
+        {
+          "code": "SEC004",
+          "file": "app/auth.py",
+          "line": 19,
+          "merged_into_another_report": false,
+          "nearest": "app/auth.py:14（Δ-5）硬编码密钥（SEC001）"
+        },
+        {
+          "code": "SEC005",
+          "file": "app/auth.py",
+          "line": 34,
+          "merged_into_another_report": false,
+          "nearest": "app/auth.py:28（Δ-6）裸 except（ERR001）"
+        },
+        {
+          "code": "ERR003-a",
+          "file": "app/rate_limit.py",
+          "line": 74,
+          "merged_into_another_report": false,
+          "nearest": "app/rate_limit.py:64（Δ-10）资源获取后未见 finally 归还（RES002）"
+        },
+        {
+          "code": "ERR004-a",
+          "file": "app/rate_limit.py",
+          "line": 79,
+          "merged_into_another_report": false,
+          "nearest": "app/rate_limit.py:64（Δ-15）资源获取后未见 finally 归还（RES002）"
+        }
+      ],
+      "spurious_on_first_run": [],
+      "metrics_first_run": {
+        "instance": {
+          "precision": 1.0,
+          "recall": 0.8260869565217391,
+          "f1": 0.9047619047619047
+        },
+        "file_rule": {
+          "precision": 1.0,
+          "recall": 0.8260869565217391,
+          "f1": 0.9047619047619047
+        }
+      },
+      "iterations": [
+        16,
+        16,
+        16
+      ],
+      "stop_reasons": [
+        "finished",
+        "finished",
+        "finished"
+      ],
+      "cache_hit_ratio": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "total_tokens": [
+        0,
+        0,
+        0
+      ]
+    }
+  ]
+}
