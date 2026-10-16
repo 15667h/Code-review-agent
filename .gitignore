@@ -66,3 +66,6 @@ data/raw/
 # ---- 架构测试场：案例代码从上游克隆，不入库（brief.md / RESULTS.md 记录选题与结论，
 #      repo/ 由 brief 里的 URL 自行克隆，避免把三个上游仓库整体搬进本项目）----
 backend/arch-cases/*/repo/
+
+# ---- 本机账号表：含密码哈希，绝不入库 ----
+backend/.auth/

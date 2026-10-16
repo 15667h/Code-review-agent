@@ -53,6 +53,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, urlparse
 
+from . import auth
 from .agents import (
     UnknownAgent,
     default_id as default_agent_id,
@@ -962,12 +963,30 @@ class Handler(BaseHTTPRequestHandler):
         # 静音访问日志：审计运行会产生大量事件轮询，刷屏会淹没真正的诊断信息
         pass
 
+    def handle_one_request(self) -> None:
+        # 每个请求重置附加响应头：Handler 实例在 keep-alive 下会被复用，
+        # 不清会让上一个请求的 Set-Cookie 漏到下一个响应里。
+        self._extra_headers: list[tuple[str, str]] = []
+        super().handle_one_request()
+
+    def _flush_extra_headers(self) -> None:
+        """把排队中的附加响应头写出去（登录/登出要 Set-Cookie）。
+
+        单独排队而不是各处直接 send_header 的原因：响应头必须在 send_response
+        之后、end_headers 之前写，中间还夹着不同分支的逻辑；排队让业务代码
+        不必关心这个顺序，统一到 _send_json/_send_text 出口。
+        """
+        for name, value in getattr(self, "_extra_headers", []):
+            self.send_header(name, value)
+        self._extra_headers = []
+
     def _send_json(self, payload: Any, status: int = 200) -> None:
         body = json.dumps(payload, ensure_ascii=False, default=str).encode("utf-8")
         self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store")
+        self._flush_extra_headers()
         # 刻意不发 Access-Control-Allow-Origin：前端由本服务同源托管，
         # 不需要 CORS。发 `*` 会把「同源」这个前提抵消掉 —— 任意网页都能
         # 跨源调这些接口（含把真实 API Key 送往攻击者 base_url 的
@@ -980,6 +999,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send_response(status)
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(body)))
+        self._flush_extra_headers()
         self.end_headers()
         self.wfile.write(body)
 
@@ -1039,7 +1059,13 @@ class Handler(BaseHTTPRequestHandler):
     # ---- API: GET ---- #
 
     def _route_get(self, path: str, query: dict[str, list[str]]) -> None:
+        if self._auth_gate(path):
+            return
         config = load_config()
+
+        if path == "/api/auth/me":
+            self._auth_me()
+            return
 
         if path == "/api/health":
             self._send_json(
@@ -1177,7 +1203,113 @@ class Handler(BaseHTTPRequestHandler):
 
     # ---- API: POST ---- #
 
+    # ---- 认证 ---- #
+
+    def _session_token(self) -> str | None:
+        """从 Cookie 里取会话令牌。只认我们自己的那个 cookie 名。"""
+        raw = self.headers.get("Cookie") or ""
+        for part in raw.split(";"):
+            name, _, value = part.strip().partition("=")
+            if name == auth.COOKIE_NAME:
+                return value or None
+        return None
+
+    def _current_user(self) -> "auth.User | None":
+        session = auth.SESSIONS.get(self._session_token())
+        if session is None:
+            return None
+        return auth.STORE.get(session.email)
+
+    def _set_session_cookie(self, token: str) -> None:
+        """HttpOnly + SameSite=Strict：脚本读不到，跨站请求不会带上。
+
+        刻意**不加 Secure** —— 本机是 http://127.0.0.1，加了浏览器就不发送了。
+        这个服务只监听回环地址；要对外提供服务时必须同时加 Secure 并上 HTTPS，
+        否则令牌会走明文。这条约束写在这里，避免被顺手复制到线上配置。
+        """
+        self._extra_headers.append(
+            (
+                "Set-Cookie",
+                f"{auth.COOKIE_NAME}={token}; Path=/; HttpOnly; SameSite=Strict; "
+                f"Max-Age={auth.SESSION_TTL}",
+            )
+        )
+
+    def _clear_session_cookie(self) -> None:
+        self._extra_headers.append(
+            ("Set-Cookie", f"{auth.COOKIE_NAME}=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0")
+        )
+
+    #: 未登录也能访问的接口。前端要能拿到助手清单来渲染界面，健康检查要给探活用；
+    #: 其余业务数据一律按需保护。
+    PUBLIC_API = ("/api/health", "/api/agents", "/api/auth/")
+
+    def _auth_gate(self, path: str) -> bool:
+        """``MARGIN_REQUIRE_AUTH=1`` 时的入口守卫。
+
+        返回 True 表示已经拦截并响应（调用方直接 return）。默认开关是关的：
+        本机工具直开即用，登录态只用于「知道自己是谁」与退出，不挡使用。
+        """
+        if not load_config().require_auth:
+            return False
+        if any(path.startswith(prefix) for prefix in self.PUBLIC_API):
+            return False
+        if self._current_user() is not None:
+            return False
+        self._send_json(
+            {"error": "需要先登录。", "code": "unauthenticated", "login": "/login.html"}, 401
+        )
+        return True
+
+    def _auth_me(self) -> None:
+        user = self._current_user()
+        self._send_json({"user": user.public() if user else None})
+
+    def _auth_register(self, body: dict[str, Any]) -> None:
+        try:
+            user = auth.STORE.register(
+                str(body.get("email") or ""),
+                str(body.get("name") or ""),
+                str(body.get("password") or ""),
+            )
+        except auth.AuthError as exc:
+            self._send_json({"error": exc.message, "code": exc.code}, exc.status)
+            return
+        self._set_session_cookie(auth.SESSIONS.issue(user.email).token)
+        self._send_json({"user": user.public()}, 201)
+
+    def _auth_login(self, body: dict[str, Any]) -> None:
+        try:
+            user = auth.STORE.authenticate(
+                str(body.get("email") or ""), str(body.get("password") or "")
+            )
+        except auth.AuthError as exc:
+            self._send_json({"error": exc.message, "code": exc.code}, exc.status)
+            return
+        self._set_session_cookie(auth.SESSIONS.issue(user.email).token)
+        self._send_json({"user": user.public()})
+
+    def _auth_logout(self) -> None:
+        auth.SESSIONS.revoke(self._session_token())
+        self._clear_session_cookie()
+        self._send_json({"ok": True})
+
     def _route_post(self, path: str, body: dict[str, Any]) -> None:
+        if self._auth_gate(path):
+            return
+
+        if path == "/api/auth/register":
+            self._auth_register(body)
+            return
+
+        if path == "/api/auth/login":
+            self._auth_login(body)
+            return
+
+        if path == "/api/auth/logout":
+            self._auth_logout()
+            return
+
         if path == "/api/config":
             self._update_config(body)
             return
@@ -1562,6 +1694,9 @@ def main(argv: list[str] | None = None) -> int:
     REGISTRY.runs_dir = Path(args.runs_dir)
     restored = REGISTRY.load_archived()
 
+    # 账号表为空时写入测试账户（已有账号则不动 —— 不能把用户改过的密码重置回去）
+    seeded = auth.seed_demo_accounts(auth.STORE)
+
     httpd = ThreadingHTTPServer((args.host, args.port), Handler)
     httpd.daemon_threads = True
 
@@ -1574,6 +1709,13 @@ def main(argv: list[str] | None = None) -> int:
     print(f"  模型     {config.model}（{'已配置密钥' if config.ready else '未配置密钥，仅可离线运行'}）")
     print(f"  历史运行 已载入 {restored} 条")
     print(f"  项目根   {PROJECT_ROOT}")
+    print(f"  账号     {auth.STORE.count()} 个（存储 {auth.USERS_PATH}）")
+    if seeded:
+        print("  测试账户 首次启动自动创建，可直接登录：")
+        for item in seeded:
+            print(f"           {item['email']}  /  {item['password']}")
+    if config.require_auth:
+        print("  访问控制 已开启（未登录访问业务接口返回 401）")
     print("  按 Ctrl+C 停止")
     print("─" * 64)
 

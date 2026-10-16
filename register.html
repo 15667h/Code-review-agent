@@ -55,7 +55,7 @@
           </figure>
         </div>
 
-        <p class="auth__foot">演示环境 · 全部为示例数据，不会发起真实请求</p>
+        <p class="auth__foot">账号只存在本机 backend/.auth/，密码以 scrypt 哈希保存</p>
       </aside>
 
       <!-- ================= 右：表单 ================= -->
@@ -63,7 +63,7 @@
         <form class="auth__form" data-auth-form="register" novalidate>
           <header class="auth__head">
             <h1 class="auth__title">创建账号</h1>
-            <p class="auth__sub">演示环境里填写任意信息即可进入，不会发起真实请求。</p>
+            <p class="auth__sub">账号只存在本机（<code translate="no">backend/.auth/</code>），密码以 scrypt 哈希保存。</p>
           </header>
 
           <p class="form-note form-note--error" data-form-note role="alert" hidden></p>
@@ -159,6 +159,7 @@
       </section>
     </main>
 
+    <script src="scripts/api.js"></script>
     <script src="scripts/auth.js"></script>
   </body>
 </html>

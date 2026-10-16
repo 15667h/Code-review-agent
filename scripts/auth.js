@@ -1,6 +1,12 @@
 /* ==========================================================================
    Margin · 登录 / 注册表单
-   纯前端演示：不发任何真实请求，通过校验后跳转到工作台。
+
+   真调后端：`POST /api/auth/login|register`，成功后后端下发 HttpOnly 会话
+   Cookie，前端只负责跳转。校验仍在前端做一遍 —— 那是为了即时反馈，
+   后端的校验才是边界（前端能改，服务端不能信）。
+
+   后端不可达时（`file://` 直开或服务没起）**如实报错**，不假装登录成功 ——
+   假装成功会让人以为账号真的创建了。
    ========================================================================== */
 
 (function () {
@@ -18,6 +24,26 @@
   var strength = form.querySelector('[data-strength]');
   var busy = false;
 
+  /* 测试账户：与后端 backend/harness/auth.py 的 DEMO_ACCOUNTS 一致。
+     只为了「本机演示能一键进入」，不是任何形式的凭据分发 —— 首次启动时
+     后端会把它们写进 .auth/users.json（不入库）。 */
+  var DEMO_CREDENTIALS = {
+    'demo@margin.dev': 'Margin-demo-2026',
+    'reviewer@margin.dev': 'Margin-review-2026',
+  };
+
+  /* 后端错误码 → 该把提示挂在哪个字段上。挂错字段比不挂更让人困惑。 */
+  var CODE_FIELD = {
+    email_empty: 'email',
+    email_invalid: 'email',
+    email_taken: 'email',
+    password_empty: 'password',
+    password_short: 'password',
+    password_too_long: 'password',
+    name_empty: 'name',
+    name_too_long: 'name',
+  };
+
   var MESSAGES = {
     emailEmpty: '请输入邮箱地址。',
     emailBad: '邮箱格式不对，检查一下 @ 前后是否完整。',
@@ -26,6 +52,27 @@
     nameEmpty: '请填写名字，它会显示在审查记录里。',
     terms: '需要先同意服务条款才能创建账号。',
   };
+
+  /* 提示里的账号密码从这里渲染 —— 与一键登录用的是同一份常量，
+     不会出现「提示写 A、实际用 B」。 */
+  var hintBox = form.querySelector('[data-demo-hint]');
+  var primary = Object.keys(DEMO_CREDENTIALS)[0];
+  if (hintBox && primary) {
+    hintBox.textContent = '测试账号：' + primary + ' · 密码 ' + DEMO_CREDENTIALS[primary];
+    hintBox.hidden = false;
+  }
+
+  /* 已经登录过就别再登一次：直接进工作台。
+     会话在 Cookie 里，me 会带回当前用户。 */
+  if (window.MARGIN_API && window.MARGIN_API.served) {
+    window.MARGIN_API.me().then(function (payload) {
+      if (payload && payload.user) {
+        window.location.href = 'index.html';
+      }
+    }).catch(function () {
+      /* 后端不在也不影响填写表单 —— 提交时还会再报一次，不在这里刷屏 */
+    });
+  }
 
   /* ==========================================================================
      字段工具
@@ -288,19 +335,71 @@
 
     setLoading(true);
 
-    // 演示：不发请求，短暂延迟后进入工作台
-    window.setTimeout(function () {
-      try {
-        window.sessionStorage.setItem('margin.demo.user', input('email').value.trim());
-      } catch (error) {
-        /* file:// 下可能不可用，忽略即可 */
-      }
-      window.location.href = 'index.html';
-    }, 1000);
+    var email = input('email').value.trim();
+    var password = input('password').value;
+    var nameInput = input('name');
+
+    var api = window.MARGIN_API;
+    if (!api || !api.served) {
+      // file:// 直开：同源前提不成立，如实说明而不是假装成功
+      setLoading(false);
+      showNote('登录需要后端服务：在 backend/ 目录运行 python -m harness.server，然后访问 http://127.0.0.1:8765/。');
+      return;
+    }
+
+    var request = mode === 'register'
+      ? api.register(email, nameInput ? nameInput.value.trim() : '', password)
+      : api.login(email, password);
+
+    request
+      .then(function (payload) {
+        if (payload && payload.user) {
+          try {
+            window.sessionStorage.setItem('margin.user', payload.user.email);
+          } catch (error) {
+            /* 隐私模式下不可用，忽略即可 —— 登录态本身由 Cookie 维持 */
+          }
+          window.location.href = 'index.html';
+          return;
+        }
+        setLoading(false);
+        reportFailure(payload);
+      })
+      .catch(function () {
+        setLoading(false);
+        showNote('连不上后端服务。确认它在运行（backend/ 目录：python -m harness.server）。');
+      });
   });
 
+  /* 把后端的失败翻译成字段级提示。 */
+  function reportFailure(payload) {
+    var data = payload || {};
+    var code = data.code || '';
+    var message = data.error || '登录失败，请重试。';
+    var field = CODE_FIELD[code];
+
+    if (field && box(field)) {
+      setError(field, message);
+      var target = input(field);
+      if (target) {
+        target.focus();
+      }
+      return;
+    }
+    showNote(message);
+  }
+
+  function showNote(text) {
+    if (!note) {
+      return;
+    }
+    note.className = 'form-note form-note--error';
+    note.textContent = text;
+    note.hidden = false;
+  }
+
   /* ==========================================================================
-     第三方登录与忘记密码（演示环境的行为）
+     测试账号一键登录与忘记密码
      ========================================================================== */
 
   form.querySelectorAll('[data-demo-enter]').forEach(function (button) {
@@ -308,10 +407,46 @@
       if (busy) {
         return;
       }
+      var email = button.dataset.demoEnter;
+      var password = DEMO_CREDENTIALS[email];
+      if (!email || !password) {
+        return;
+      }
+
+      if (!window.MARGIN_API || !window.MARGIN_API.served) {
+        showNote('测试账号需要后端服务：在 backend/ 目录运行 python -m harness.server。');
+        return;
+      }
+
+      // 先填进表单（用户能看见用了哪个账号），再提交
+      if (input('email')) {
+        input('email').value = email;
+      }
+      if (input('password')) {
+        input('password').value = password;
+      }
+      if (input('name') && !input('name').value) {
+        input('name').value = email === 'demo@margin.dev' ? '演示账号' : '林哲';
+      }
+      var terms = form.querySelector('[data-terms]');
+      if (terms) {
+        terms.checked = true;  // 测试账号走的是既有账号，不需要再勾条款
+      }
+
       setLoading(true);
-      window.setTimeout(function () {
-        window.location.href = 'index.html';
-      }, 700);
+      window.MARGIN_API.login(email, password)
+        .then(function (payload) {
+          if (payload && payload.user) {
+            window.location.href = 'index.html';
+            return;
+          }
+          setLoading(false);
+          reportFailure(payload);
+        })
+        .catch(function () {
+          setLoading(false);
+          showNote('连不上后端服务。确认它在运行（backend/ 目录：python -m harness.server）。');
+        });
     });
   });
 
@@ -319,7 +454,8 @@
   if (forgot && note) {
     forgot.addEventListener('click', function () {
       note.className = 'form-note form-note--hint';
-      note.textContent = '演示环境不提供重置流程：直接用任意邮箱加 8 位以上密码登录即可。';
+      note.textContent = '本机服务不发邮件，没有重置流程。忘记密码就用测试账号登录，'
+        + '或删掉 backend/.auth/users.json 重启服务（会重新生成测试账户）。';
       note.hidden = false;
     });
   }

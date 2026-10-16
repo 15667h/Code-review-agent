@@ -56,6 +56,16 @@
             payload.error = 'HTTP ' + response.status;
           }
           payload.status = response.status;
+
+          /* 服务端开启了访问控制（MARGIN_REQUIRE_AUTH=1）而我们没登录：
+             直接送去登录页，别让界面拿一堆 401 空数据渲染出一个「什么都为空」的
+             假象 —— 那种空看起来像「没有记录」，其实是没有权限。 */
+          if (response.status === 401 && payload.code === 'unauthenticated') {
+            var here = window.location.pathname.split('/').pop() || 'index.html';
+            if (here !== 'login.html' && here !== 'register.html') {
+              window.location.href = 'login.html';
+            }
+          }
         }
         return payload;
       });
@@ -65,6 +75,32 @@
   var MARGIN_API = {
     served: served,
     base: served ? origin : '',
+
+    /* ---- 账号 ---- */
+    /* 会话靠 HttpOnly Cookie 维持，脚本读不到也不需要读；
+       fetch 默认 credentials: 'same-origin'，同源请求会自动带上。 */
+
+    me: function () {
+      return jsonFetch('/api/auth/me');
+    },
+
+    login: function (email, password) {
+      return jsonFetch('/api/auth/login', {
+        method: 'POST',
+        body: { email: email, password: password },
+      });
+    },
+
+    register: function (email, name, password) {
+      return jsonFetch('/api/auth/register', {
+        method: 'POST',
+        body: { email: email, name: name, password: password },
+      });
+    },
+
+    logout: function () {
+      return jsonFetch('/api/auth/logout', { method: 'POST', body: {} });
+    },
 
     /* ---- 服务与配置 ---- */
 

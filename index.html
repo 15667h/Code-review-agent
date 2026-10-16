@@ -102,12 +102,14 @@
         </div>
 
         <div class="rail__foot">
-          <span class="avatar" aria-hidden="true">林</span>
+          <!-- 账号信息由 /api/auth/me 填充；未登录时 runAuth 会换成登录入口。
+               这里不放静态默认值 —— 显示一个假用户名比留空更糟。 -->
+          <span class="avatar" aria-hidden="true" id="railAvatar"></span>
           <span class="rail__user">
-            <span class="rail__user-name">linzhe</span>
-            <span class="rail__user-note" id="railUserNote">3 个空间 · 5 次审查</span>
+            <a class="rail__user-name" id="railUserName" href="login.html">未登录</a>
+            <span class="rail__user-note" id="railUserNote"></span>
           </span>
-          <button class="icon-btn icon-btn--sm" type="button" aria-label="退出登录" id="signOut">
+          <button class="icon-btn icon-btn--sm" type="button" aria-label="退出登录" id="signOut" hidden>
             <svg width="15" height="15" viewBox="0 0 16 16" aria-hidden="true" focusable="false">
               <path
                 d="M6.4 2.6H4a1.6 1.6 0 0 0-1.6 1.6v7.6A1.6 1.6 0 0 0 4 13.4h2.4"

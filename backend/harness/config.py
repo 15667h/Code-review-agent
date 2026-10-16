@@ -43,7 +43,7 @@ def find_env_file(start: Path | None = None) -> Path | None:
 class Config:
     api_key: str = ""
     base_url: str = "https://api.deepseek.com"
-    model: str = "deepseek-v4-flash"
+    model: str = "deepseek-flash"
     max_iterations: int = 40
     context_window: int = 131_072
     repeat_limit: int = 3
@@ -64,11 +64,19 @@ class Config:
     )
     temperature: float = 0.2
     timeout: float = 120.0
+    #: 是否要求登录才能用工作台。默认关（本机工具，直开即用）；
+    #: 置 1 后业务接口一律要求有效会话，未登录返回 401。
+    require_auth: bool = False
 
     @property
     def ready(self) -> bool:
         """没有 api_key 时只能跑离线模式（脚本化模型）。"""
         return bool(self.api_key)
+
+
+def _truthy(raw: str) -> bool:
+    """开关类环境变量的宽松解析：1/true/yes/on 都算开。"""
+    return (raw or "").strip().lower() in {"1", "true", "yes", "on"}
 
 
 def load_config(env_file: Path | None = None) -> Config:
@@ -102,13 +110,14 @@ def load_config(env_file: Path | None = None) -> Config:
     config = Config(
         api_key=get("DEEPSEEK_API_KEY"),
         base_url=get("DEEPSEEK_BASE_URL", "https://api.deepseek.com"),
-        model=get("DEEPSEEK_MODEL", "deepseek-v4-flash"),
+        model=get("DEEPSEEK_MODEL", "deepseek-flash"),
         max_iterations=get_int("AUDIT_MAX_ITERATIONS", 40),
         context_window=get_int("AUDIT_CONTEXT_WINDOW", 131_072),
         repeat_limit=get_int("AUDIT_REPEAT_LIMIT", 3),
         workspace_root=Path(workspace_raw).expanduser().resolve() if workspace_raw else None,
         temperature=get_float("AUDIT_TEMPERATURE", 0.2),
         timeout=get_float("AUDIT_TIMEOUT", 120.0),
+        require_auth=_truthy(get("MARGIN_REQUIRE_AUTH")),
     )
     if commands:
         config.allow_commands = commands

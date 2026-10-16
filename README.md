@@ -22,6 +22,25 @@ python -m harness.server --port 8000
 - 离线规则模式：不加 key 也能跑（确定性规则 + 启发式模型），适合先看界面
 - 演示模式：直接双击 `index.html`（`file://`），走 `scripts/mock-data.js` 的演示数据
 
+### 测试账户
+
+首次启动时（账号表为空）自动创建，登录页上也有「测试账号」一键登录按钮：
+
+| 邮箱 | 密码 | 名字 |
+|---|---|---|
+| `demo@margin.dev` | `Margin-demo-2026` | 演示账号 |
+| `reviewer@margin.dev` | `Margin-review-2026` | 林哲 |
+
+账号存在 `backend/.auth/users.json`（**不入库**），密码用 scrypt 加盐哈希保存，
+明文不落盘。删掉该文件重启即可重新生成测试账户。
+
+默认**不强制登录**（本机工具，直开即用）；想要「未登录不能访问」就把
+`MARGIN_REQUIRE_AUTH=1` 写进 `.env`，业务接口会要求有效会话，前端自动跳登录页。
+
+认证相关接口：`POST /api/auth/register` · `POST /api/auth/login` ·
+`POST /api/auth/logout` · `GET /api/auth/me`。会话靠 HttpOnly + SameSite=Strict
+的 Cookie 维持，令牌只存在服务端内存里（重启需要重新登录）。
+
 ## 目录
 
 ```

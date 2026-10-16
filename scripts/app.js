@@ -1573,16 +1573,85 @@
     closeDrawer();
   });
 
-  /* 退出登录：清掉本地标记后回到登录页 */
+  /* 退出登录：让服务端吊销会话（清 Cookie），再回登录页。
+     只清本地标记是不够的 —— 会话在服务端，不吊销它下次打开仍然是登录态。 */
   var signOut = document.getElementById('signOut');
   if (signOut) {
     signOut.addEventListener('click', function () {
       try {
-        window.sessionStorage.removeItem('margin.demo.user');
+        window.sessionStorage.removeItem('margin.user');
       } catch (error) {
-        /* file:// 下可能不可用，忽略 */
+        /* 隐私模式下不可用，忽略 */
+      }
+      var api = window.MARGIN_API;
+      if (api && api.served) {
+        api.logout().catch(function () {
+          /* 网络失败也要放人走：本地已经当自己退出了 */
+        }).then(function () {
+          window.location.href = 'login.html';
+        });
+        return;
       }
       window.location.href = 'login.html';
+    });
+  }
+
+  /* ==========================================================================
+     账号态：侧栏底部显示当前登录的用户
+     未登录不编一个假名字出来，显示「登录」入口。
+     ========================================================================== */
+
+  function runAuth() {
+    var avatar = document.getElementById('railAvatar');
+    var nameNode = document.getElementById('railUserName');
+    var out = document.getElementById('signOut');
+    var api = window.MARGIN_API;
+
+    function showGuest() {
+      if (avatar) {
+        avatar.textContent = '?';
+      }
+      if (nameNode) {
+        nameNode.textContent = '未登录';
+        nameNode.setAttribute('href', 'login.html');
+        nameNode.removeAttribute('title');
+      }
+      if (out) {
+        out.hidden = true;
+      }
+    }
+
+    if (!api || !api.served) {
+      // 演示模式：没有后端也就没有账号，如实说明
+      showGuest();
+      if (nameNode) {
+        nameNode.textContent = '演示模式';
+        nameNode.removeAttribute('href');
+      }
+      return;
+    }
+
+    api.me().then(function (payload) {
+      var user = payload && payload.user;
+      if (!user) {
+        showGuest();
+        return;
+      }
+      if (avatar) {
+        // 中文名取首字，英文名取首字母大写；都没有就用 @ 前的字符
+        var label = (user.name || user.email || '?').trim();
+        avatar.textContent = label.slice(0, 1).toUpperCase();
+      }
+      if (nameNode) {
+        nameNode.textContent = user.name || user.email;
+        nameNode.removeAttribute('href');
+        nameNode.setAttribute('title', user.email);
+      }
+      if (out) {
+        out.hidden = false;
+      }
+    }).catch(function () {
+      showGuest();
     });
   }
 
@@ -1895,6 +1964,9 @@
   }
 
   async function boot() {
+    /* 账号态先填上：侧栏底部的用户名不该由静态 HTML 决定 */
+    runAuth();
+
     /* 助手清单：实时模式取 /api/agents，演示模式用内置声明。
        必须在渲染之前拿到 —— 强调色与文案都跟着它走。 */
     if (window.MARGIN_AGENTS && typeof window.MARGIN_AGENTS.boot === 'function') {
