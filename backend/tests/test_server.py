@@ -723,16 +723,18 @@ def test_unknown_agent_is_rejected_on_every_list_endpoint(live_server: str) -> N
 
 def test_repo_run_count_matches_filtered_session_count(live_server: str) -> None:
     """仓库卡上的「N 次」必须等于这一栏里能点出来的条数。"""
+    # 工作空间按助手隔离后，examples 的靶场归 review —— 助手与仓库要对得上，
+    # 否则列表里根本找不到这个仓库（那正是隔离在起作用）
     repo = "backend/examples/s2-resources-errors/repo"
-    status, body = post(live_server, "/api/audit", {"repo": repo, "goal": "盘一下", "offline": True, "agent": "architect"})
+    status, body = post(live_server, "/api/audit", {"repo": repo, "goal": "盘一下", "offline": True, "agent": "review"})
     assert status == 201
     _wait_run(live_server, json.loads(body)["run_id"])
 
-    _, raw = get(live_server, "/api/repos?agent=architect")
+    _, raw = get(live_server, "/api/repos?agent=review")
     repos = json.loads(raw)["repos"]
     entry = next(r for r in repos if r["path"].endswith("s2-resources-errors\\repo") or r["path"].endswith("s2-resources-errors/repo"))
 
-    _, raw = get(live_server, "/api/runs?agent=architect")
+    _, raw = get(live_server, "/api/runs?agent=review")
     listed = [r for r in json.loads(raw)["runs"] if r["repo"] == entry["path"]]
 
     assert entry["runs"] == len(listed), "仓库计数与会话列表不同口径"
@@ -807,13 +809,13 @@ def test_fs_list_marks_workspace_members(tmp_path: Path, monkeypatch) -> None:
     target.mkdir()
     (target / "a.py").write_text("x", encoding="utf-8")
 
-    monkeypatch.setattr(server, "_load_registered", lambda: [target])
+    monkeypatch.setattr(server, "_load_registered", lambda agent=None: [target])
     result, _ = server.fs_list(str(tmp_path))
     row = next(item for item in result["entries"] if item["name"] == "Repo")
     assert row["in_workspace"] is True and row["added"] is True
 
     # 换一种大小写写法，仍应认出来（normcase 生效）
-    monkeypatch.setattr(server, "_load_registered", lambda: [Path(str(target).upper())])
+    monkeypatch.setattr(server, "_load_registered", lambda agent=None: [Path(str(target).upper())])
     result2, _ = server.fs_list(str(tmp_path))
     row2 = next(item for item in result2["entries"] if item["name"] == "Repo")
     assert row2["in_workspace"] is True, "大小写不同被当成了另一个目录"
@@ -862,19 +864,82 @@ def test_fs_list_rejects_missing_directory(tmp_path: Path) -> None:
     assert "不是一个目录" in error
 
 
-def test_fs_list_marks_workspace_members(tmp_path: Path, monkeypatch) -> None:
-    """已在工作区的目录要标出来，且大小写不同也算同一目录（Windows 语义）。"""
-    target = tmp_path / "Repo"
+# =============================================================================
+# 工作空间按助手隔离
+# =============================================================================
+
+
+def test_sample_roots_split_by_agent() -> None:
+    """每个助手有各自的样本目录：审查看靶场，架构看案例。"""
+    assert server._sample_root("review").name == "examples"
+    assert server._sample_root("architect").name == "arch-cases"
+    # 未登记的助手回落到 examples（宁可少隔离，不可无样本）
+    assert server._sample_root("whoever") == server._sample_root("review")
+
+
+def test_repos_and_candidates_are_scoped_to_agent() -> None:
+    """review 只看到靶场，architect 只看到案例 —— 两边不串。"""
+    review = server.list_repos(agent="review")
+    arch = server.list_repos(agent="architect")
+
+    review_names = {r["name"] for r in review}
+    arch_names = {r["name"] for r in arch}
+    assert "s1-obvious-danger" in review_names
+    assert not arch_names & {"s1-obvious-danger", "s2-resources-errors"}, arch_names
+
+    assert arch_names, "架构助手下应该列得出案例"
+    # 隔离要保证的是「审查靶场不出现在架构侧」；旧格式迁移来的手动目录
+    # 会两边都可见（有意的保护），所以这里不断言「只有案例」
+    assert not arch_names & {"s1-obvious-danger", "s2-resources-errors"}, arch_names
+
+    rc = {c["name"] for c in server.workspace_candidates("review")}
+    ac = {c["name"] for c in server.workspace_candidates("architect")}
+    assert "s1-obvious-danger" in rc
+    assert not (rc & {"e1-pluggy", "e2-requests", "e3-celery"}), rc
+    assert "e1-pluggy" in ac and not (ac & {"s1-obvious-danger"}), ac
+
+
+def test_registered_paths_are_per_agent(tmp_path: Path, monkeypatch) -> None:
+    """手动加入的目录也按助手归属：加进 review 的，architect 看不到。"""
+    workspace = tmp_path / "myrepo"
+    workspace.mkdir()
+    (workspace / "app.py").write_text("x = 1", encoding="utf-8")
+
+    ws_file = tmp_path / "workspace.json"
+    monkeypatch.setattr(server, "WORKSPACE_FILE", ws_file)
+    monkeypatch.setattr(server, "PROJECT_ROOT", tmp_path)
+    monkeypatch.setattr(server, "BACKEND_ROOT", tmp_path)
+
+    server._register_path(workspace, "review")
+    server._register_path(workspace, "architect")
+
+    # 各自只能在自己的列表里看到
+    assert any(str(p) == str(workspace) for p in server._load_registered("review"))
+    assert any(str(p) == str(workspace) for p in server._load_registered("architect"))
+
+    # 从 review 移出，architect 那份还在（互不影响）
+    assert server._unregister_path(workspace, "review") is True
+    assert server._load_registered("review") == []
+    assert any(str(p) == str(workspace) for p in server._load_registered("architect"))
+
+    # 文件里是分组格式，两份记录分开存
+    saved = json.loads(ws_file.read_text(encoding="utf-8"))
+    assert set(saved["roots"]) == {"review", "architect"}
+    assert saved["roots"]["review"] == []
+
+
+def test_legacy_workspace_file_is_migrated_for_every_agent(tmp_path: Path, monkeypatch) -> None:
+    """旧格式（没有分组的 roots）不能丢：读取时复制给每个助手。"""
+    target = tmp_path / "oldrepo"
     target.mkdir()
     (target / "a.py").write_text("x", encoding="utf-8")
+    ws_file = tmp_path / "workspace.json"
+    ws_file.write_text(json.dumps({"roots": [str(target)]}), encoding="utf-8")
+    monkeypatch.setattr(server, "WORKSPACE_FILE", ws_file)
 
-    monkeypatch.setattr(server, "_load_registered", lambda: [target])
-    result, _ = server.fs_list(str(tmp_path))
-    row = next(item for item in result["entries"] if item["name"] == "Repo")
-    assert row["in_workspace"] is True and row["added"] is True
+    for agent in ("review", "architect"):
+        assert any(str(p) == str(target) for p in server._load_registered(agent)), agent
 
-    # 换一种大小写写法，仍应认出来（normcase 生效）
-    monkeypatch.setattr(server, "_load_registered", lambda: [Path(str(target).upper())])
-    result2, _ = server.fs_list(str(tmp_path))
-    row2 = next(item for item in result2["entries"] if item["name"] == "Repo")
-    assert row2["in_workspace"] is True, "大小写不同被当成了另一个目录"
+    # 读取不产生副作用：文件还是旧格式，等下次写入才升级
+    assert "roots" in json.loads(ws_file.read_text(encoding="utf-8"))
+    assert isinstance(json.loads(ws_file.read_text(encoding="utf-8"))["roots"], list)

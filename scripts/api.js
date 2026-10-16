@@ -161,23 +161,31 @@
 
     /* ---- 工作区：加入 / 移出 / 文件清单 ---- */
 
-    candidates: function () {
-      return jsonFetch('/api/workspace/candidates').catch(function () {
+    /* 候选目录按助手分发（审查 → 靶场，架构 → 案例） */
+    candidates: function (agent) {
+      return jsonFetch('/api/workspace/candidates' + qs({ agent: agent || '' })).catch(function () {
         return { candidates: [] };
       });
     },
 
     /* 浏览电脑上的目录（回形针的文件浏览器用）。path 留空返回起点：常用位置 + 盘符。 */
-    fsList: function (path) {
-      return jsonFetch('/api/fs/list' + qs({ path: path || '' }));
+    fsList: function (path, agent) {
+      return jsonFetch('/api/fs/list' + qs({ path: path || '', agent: agent || '' }));
     },
 
-    addRepo: function (path) {
-      return jsonFetch('/api/repos', { method: 'POST', body: { path: path } });
+    /* 加入 / 移出要带 agent：工作空间是按助手隔离的，加错助手就看不见 */
+    addRepo: function (path, agent) {
+      return jsonFetch('/api/repos', {
+        method: 'POST',
+        body: { path: path, agent: agent || 'review' },
+      });
     },
 
-    removeRepo: function (path) {
-      return jsonFetch('/api/repos/remove', { method: 'POST', body: { path: path } });
+    removeRepo: function (path, agent) {
+      return jsonFetch('/api/repos/remove', {
+        method: 'POST',
+        body: { path: path, agent: agent || 'review' },
+      });
     },
 
     repoFiles: function (repo) {

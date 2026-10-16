@@ -129,9 +129,12 @@
     });
 
     /* 回形针里加入/移出仓库后，侧栏要立刻反映出来 */
+    /* 工作空间按助手隔离：候选、加入、移除、浏览都带上当前助手 id。
+       服务端据此分发 —— 审查看靶场、架构看案例，两边的空间列表互不干扰。 */
     ui.setWorkspaceProvider({
       list: function () {
-        return Promise.all([api.candidates(), api.repos()]).then(function (results) {
+        var agent = agentScope();
+        return Promise.all([api.candidates(agent), api.repos(agent)]).then(function (results) {
           return {
             candidates: (results[0] && results[0].candidates) || [],
             repos: (results[1] && results[1].repos) || [],
@@ -139,13 +142,13 @@
         });
       },
       add: function (path) {
-        return api.addRepo(path);
+        return api.addRepo(path, agentScope());
       },
       browse: function (path) {
-        return api.fsList(path);
+        return api.fsList(path, agentScope());
       },
       remove: function (path) {
-        return api.removeRepo(path);
+        return api.removeRepo(path, agentScope());
       },
       files: function (repoPath) {
         return api.repoFiles(repoPath);

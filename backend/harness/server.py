@@ -600,36 +600,114 @@ def _looks_like_repo(path: Path) -> bool:
     return False
 
 
-def _load_registered() -> list[Path]:
-    """读「已加入工作区」的目录清单。
+# 每个助手有各自的样本目录 —— 工作空间按助手隔离：
+# 审查助手看审查靶场，架构助手看架构案例，两边的空间列表互不干扰。
+# 接第三个助手时在这里加一行，list_repos / candidates / 浏览器都会跟着走。
+SAMPLE_ROOTS: dict[str, Path] = {
+    "review": BACKEND_ROOT / "examples",
+    "architect": BACKEND_ROOT / "arch-cases",
+}
 
-    存在 ``.runs/workspace.json``（该目录已被 gitignore）—— 这是本机的使用状态，
-    不是项目配置，不该入库。
+
+def _sample_root(agent: str | None) -> Path:
+    """该助手的样本目录。未登记的助手回落到 examples（宁可少隔离，不可无样本）。"""
+    return SAMPLE_ROOTS.get(agent or "", SAMPLE_ROOTS["review"])
+
+
+def _load_registered_groups() -> dict[str, list[Path]]:
+    """读 ``.runs/workspace.json``，按助手分组返回。
+
+    文件有两种形态：
+
+    - ``{"roots": {"review": [...], "architect": [...]}}`` —— 当前格式；
+    - ``{"roots": [...]}`` —— 分组之前的旧格式，条目没有助手归属。
+
+    旧格式的条目在读取时**复制给每个助手**（而不是丢给某一个）：用户既然加过它，
+    说明他想用它；迁移时少显示一个目录是功能缺失，多显示一个只是需要手动移除。
+    文件要等到下次写入才升级成新格式，读取不产生副作用。
     """
     if not WORKSPACE_FILE.is_file():
-        return []
+        return {name: [] for name in SAMPLE_ROOTS}
     try:
         data = json.loads(WORKSPACE_FILE.read_text(encoding="utf-8"))
     except (OSError, ValueError):
-        return []
+        return {name: [] for name in SAMPLE_ROOTS}
 
-    roots: list[Path] = []
-    for raw in data.get("roots", []):
-        try:
-            candidate = _resolve_user_path(str(raw))
-        except ValueError:
-            continue
-        if candidate.is_dir():
-            roots.append(candidate)
-    return roots
+    raw_roots = data.get("roots", {})
+    groups: dict[str, list[Path]] = {name: [] for name in SAMPLE_ROOTS}
+
+    def parse(items: object) -> list[Path]:
+        out: list[Path] = []
+        for raw in items if isinstance(items, list) else []:
+            try:
+                candidate = _resolve_user_path(str(raw))
+            except ValueError:
+                continue
+            if candidate.is_dir():
+                out.append(candidate)
+        return out
+
+    if isinstance(raw_roots, dict):
+        for name in SAMPLE_ROOTS:
+            groups[name] = parse(raw_roots.get(name))
+    else:
+        legacy = parse(raw_roots)
+        for name in SAMPLE_ROOTS:
+            groups[name] = list(legacy)
+    return groups
 
 
-def _save_registered(roots: list[Path]) -> None:
+def _load_registered(agent: str | None = None) -> list[Path]:
+    """该助手「已加入工作区」的目录。agent 为空时取全部（去重，供计数与迁移用）。"""
+    groups = _load_registered_groups()
+    if agent and agent in groups:
+        return groups[agent]
+    seen: list[Path] = []
+    for items in groups.values():
+        for item in items:
+            if item not in seen:
+                seen.append(item)
+    return seen
+
+
+def _save_registered_groups(groups: dict[str, list[Path]]) -> None:
     WORKSPACE_FILE.parent.mkdir(parents=True, exist_ok=True)
     WORKSPACE_FILE.write_text(
-        json.dumps({"roots": [str(p) for p in roots]}, ensure_ascii=False, indent=2),
+        json.dumps(
+            {"roots": {name: [str(p) for p in items] for name, items in groups.items()}},
+            ensure_ascii=False,
+            indent=2,
+        ),
         encoding="utf-8",
     )
+
+
+def _register_path(target: Path, agent: str | None) -> None:
+    """把一个目录加进**该助手**的工作区。路径比较用 normcase，避免同一目录记两份。"""
+    def key(value: object) -> str:
+        return os.path.normcase(str(value))
+
+    groups = _load_registered_groups()
+    name = agent if (agent and agent in groups) else "review"
+    if any(key(existing) == key(target) for existing in groups[name]):
+        return
+    groups[name].append(target)
+    _save_registered_groups(groups)
+
+
+def _unregister_path(target: Path, agent: str | None) -> bool:
+    """从**该助手**的工作区移出。返回是否真的移掉了。"""
+    def key(value: object) -> str:
+        return os.path.normcase(str(value))
+
+    groups = _load_registered_groups()
+    name = agent if (agent and agent in groups) else "review"
+    before = len(groups[name])
+    groups[name] = [item for item in groups[name] if key(item) != key(target)]
+    if len(groups[name]) == before:
+        return False
+    _save_registered_groups(groups)
+    return True
 
 
 def _resolve_user_path(raw: str) -> Path:
@@ -643,8 +721,8 @@ def _resolve_user_path(raw: str) -> Path:
     return candidate.resolve()
 
 
-def add_repo(raw_path: str) -> tuple[dict[str, Any] | None, str]:
-    """把一个目录加入工作区。返回 ``(条目, 错误信息)``，二者必有其一为空。"""
+def add_repo(raw_path: str, agent: str | None = None) -> tuple[dict[str, Any] | None, str]:
+    """把一个目录加入**该助手**的工作区。返回 ``(条目, 错误信息)``，二者必有其一为空。"""
     try:
         target = _resolve_user_path(raw_path)
     except ValueError as exc:
@@ -664,25 +742,19 @@ def add_repo(raw_path: str) -> tuple[dict[str, Any] | None, str]:
     ):
         return None, f"该目录下没有任何可审的文件：{target}"
 
-    roots = _load_registered()
-    if target not in roots:
-        roots.append(target)
-        _save_registered(roots)
-    return _repo_entry(target.name, target, source="added"), ""
+    _register_path(target, agent)
+    return _repo_entry(target.name, target, source="added", agent=agent), ""
 
 
-def remove_repo(raw_path: str) -> tuple[bool, str]:
-    """把目录移出工作区。只能移出「手动加入」的，``examples/`` 下的样本不能移。"""
+def remove_repo(raw_path: str, agent: str | None = None) -> tuple[bool, str]:
+    """把目录移出**该助手**的工作区。只能移出「手动加入」的，样本目录不能移。"""
     try:
         target = _resolve_user_path(raw_path)
     except ValueError as exc:
         return False, str(exc)
 
-    roots = _load_registered()
-    if target not in roots:
-        return False, "该目录不在手动加入的清单里（examples/ 下的样本不能移除）。"
-    roots.remove(target)
-    _save_registered(roots)
+    if not _unregister_path(target, agent):
+        return False, "该目录不在这个助手手动加入的清单里（样本目录不能移除）。"
     return True, ""
 
 
@@ -712,7 +784,7 @@ def fs_shortcuts() -> list[dict[str, str]]:
     return spots
 
 
-def fs_list(raw_path: str = "") -> tuple[dict[str, Any] | None, str]:
+def fs_list(raw_path: str = "", agent: str | None = None) -> tuple[dict[str, Any] | None, str]:
     """列出一个目录下的条目（**只一层**），供前端浏览并选目录加入工作区。
 
     只列一层是有意的：递归统计会让大目录卡住几十秒，而「这一层里有什么」
@@ -735,8 +807,8 @@ def fs_list(raw_path: str = "") -> tuple[dict[str, Any] | None, str]:
     def key(value: str) -> str:
         return os.path.normcase(str(value))
 
-    added = {key(p) for p in _load_registered()}
-    existing = {key(item["path"]) for item in list_repos()}
+    added = {key(p) for p in _load_registered(agent)}
+    existing = {key(item["path"]) for item in list_repos(agent=agent)}
     entries: list[dict[str, Any]] = []
     try:
         children = sorted(target.iterdir(), key=lambda c: (not c.is_dir(), c.name.lower()))
@@ -795,30 +867,42 @@ def list_repo_files(repo_path: str, *, limit: int = 300) -> tuple[list[str], str
     return [workspace.relative(p) for p in files], ""
 
 
-def workspace_candidates() -> list[dict[str, Any]]:
-    """列出「可以加入工作区」的候选目录，供前端选择器使用。
+def workspace_candidates(agent: str | None = None) -> list[dict[str, Any]]:
+    """列出该助手「可以加入工作区」的候选目录，供前端选择器使用。
 
-    候选来源：项目根下的一级目录（排除被禁目录）。每个都带上是否已在工作区，
-    这样前端不必自己合并两份数据。
+    候选 = 该助手样本目录下的一级目录（审查 → 靶场，架构 → 案例）。
+    刻意**不再**扫项目根：那会把 backend/、docs/、styles/ 这类工程目录混进候选，
+    而用户真正想选的是样本，或者干脆用文件浏览器挑别处的目录。
+
+    每个条目带上是否已在工作区，这样前端不必自己合并两份数据。
     """
-    added = {str(p) for p in _load_registered()}
-    existing = {item["path"] for item in list_repos()}
+
+    def key(value: object) -> str:
+        return os.path.normcase(str(value))
+
+    base = _sample_root(agent)
+    added = {key(p) for p in _load_registered(agent)}
+    existing = {key(item["path"]) for item in list_repos(agent=agent)}
     candidates: list[dict[str, Any]] = []
 
-    if PROJECT_ROOT.is_dir():
-        for child in sorted(PROJECT_ROOT.iterdir()):
+    if base.is_dir():
+        for child in sorted(base.iterdir()):
             if not child.is_dir() or child.name.startswith("."):
                 continue
             if any(part in DENY_PARTS for part in child.parts):
                 continue
-            resolved = child.resolve()
+            # 样本目录下可能有一层 repo/ 作为真正的审计根（标注在它的外面）
+            audit_root = child / "repo" if (child / "repo").is_dir() else child
+            if not _looks_like_repo(audit_root):
+                continue
+            resolved = audit_root.resolve()
             candidates.append(
                 {
                     "name": child.name,
                     "path": str(resolved),
                     "files": _count_files(resolved),
-                    "added": str(resolved) in added,
-                    "in_workspace": str(resolved) in existing,
+                    "added": key(resolved) in added,
+                    "in_workspace": key(resolved) in existing or key(resolved) in added,
                 }
             )
     return candidates
@@ -835,7 +919,7 @@ def list_repos(root: Path | None = None, agent: str | None = None) -> list[dict[
     样本目录里可能有一层 ``repo/`` 作为真正的审计根（标注放在它的外面），
     有就用它 —— 否则会把 ``labels.json`` 一起列进被审范围，等于把答案交给模型。
     """
-    base = root or (BACKEND_ROOT / "examples")
+    base = root or _sample_root(agent)
     repos: list[dict[str, Any]] = []
     seen: set[str] = set()
 
@@ -849,7 +933,7 @@ def list_repos(root: Path | None = None, agent: str | None = None) -> list[dict[
             seen.add(str(audit_root.resolve()))
             repos.append(_repo_entry(child.name, audit_root, source="examples", agent=agent))
 
-    for extra in _load_registered():
+    for extra in _load_registered(agent):
         if str(extra) in seen:
             continue
         seen.add(str(extra))
@@ -1201,12 +1285,20 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         if path == "/api/workspace/candidates":
-            self._send_json({"candidates": workspace_candidates()})
+            agent, problem = self._agent_filter(query)
+            if problem:
+                self._send_json(problem, 400)
+                return
+            self._send_json({"candidates": workspace_candidates(agent)})
 
         if path == "/api/fs/list":
             # 文件浏览器：?path= 留空返回起点（常用位置 + 盘符）
             raw = (query.get("path") or [""])[0]
-            result, error = fs_list(raw)
+            agent, problem = self._agent_filter(query)
+            if problem:
+                self._send_json(problem, 400)
+                return
+            result, error = fs_list(raw, agent)
             if error:
                 self._send_json({"error": error}, 400)
                 return
@@ -1249,6 +1341,24 @@ class Handler(BaseHTTPRequestHandler):
         raw = str(query.get("agent", [""])[0] or "").strip()
         if not raw:
             return None, None
+        try:
+            return get_agent(raw).id, None
+        except UnknownAgent as exc:
+            return None, {
+                "error": str(exc),
+                "code": "unknown_agent",
+                "agents": [item["id"] for item in manifests()],
+            }
+
+    def _agent_from_body(
+        self, body: dict[str, Any]
+    ) -> tuple[str | None, dict[str, Any] | None]:
+        """解析请求体里的 ``agent``。POST 没有查询串，但工作空间是按助手隔离的，
+        加入/移出必须知道是哪个助手 —— 缺省视为 review（主用场景）。
+        """
+        raw = str(body.get("agent") or "").strip()
+        if not raw:
+            return "review", None
         try:
             return get_agent(raw).id, None
         except UnknownAgent as exc:
@@ -1423,19 +1533,27 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         if path == "/api/repos":
-            entry, error = add_repo(str(body.get("path") or ""))
+            agent, problem = self._agent_from_body(body)
+            if problem:
+                self._send_json(problem, 400)
+                return
+            entry, error = add_repo(str(body.get("path") or ""), agent)
             if error:
                 self._send_json({"error": error}, 400)
                 return
-            self._send_json({"repo": entry, "repos": list_repos()}, 201)
+            self._send_json({"repo": entry, "repos": list_repos(agent=agent)}, 201)
             return
 
         if path == "/api/repos/remove":
-            ok, error = remove_repo(str(body.get("path") or ""))
+            agent, problem = self._agent_from_body(body)
+            if problem:
+                self._send_json(problem, 400)
+                return
+            ok, error = remove_repo(str(body.get("path") or ""), agent)
             if not ok:
                 self._send_json({"error": error}, 400)
                 return
-            self._send_json({"removed": True, "repos": list_repos()})
+            self._send_json({"removed": True, "repos": list_repos(agent=agent)})
             return
 
         if path.startswith("/api/audit/") and path.endswith("/stop"):

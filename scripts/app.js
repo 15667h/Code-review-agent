@@ -1264,12 +1264,20 @@
     );
 
     if (!workspaceProvider) {
-      attachPop.appendChild(
-        popEmpty(
-          '当前是演示模式（直接打开的本地文件），没有后端可连接。' +
-            '用 python -m harness.server 启动后再打开这个页面即可添加。'
-        )
+      /* 这个提示要能把人送到能用的状态上，所以写成两步可照做的动作。
+         「没有后端」有两种成因：双击打开了 index.html（file://），
+         或者服务确实没在跑 —— 对使用者来说处理方式是一样的。 */
+      var guide = el('div', 'pop__empty');
+      guide.appendChild(
+        document.createTextNode('文件浏览器需要后端。当前没有连上服务，所以列不出目录。')
       );
+      var steps = el('ol', 'pop__steps');
+      steps.appendChild(el('li', null, '启动服务：双击项目根目录下的 start-margin.bat'));
+      steps.appendChild(
+        el('li', null, '用浏览器打开 http://127.0.0.1:8000/（不要双击 index.html）')
+      );
+      guide.appendChild(steps);
+      attachPop.appendChild(guide);
       return;
     }
 

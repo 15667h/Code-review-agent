@@ -2326,6 +2326,19 @@ a.rail__user-name:hover {
 
 /* 回形针的文件浏览器：快捷位置 / 路径导航 / 目录行。
    与原来的候选列表共用 .pop__list / .pop__name / .pop__meta，只补新增结构。 */
+/* 演示模式下的操作指引：两步照做就能用上需要后端的功能 */
+.pop__steps {
+  margin: 6px 0 0;
+  padding-left: 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.pop__steps li {
+  line-height: 1.55;
+}
+
 .pop__chips {
   display: flex;
   flex-wrap: wrap;
