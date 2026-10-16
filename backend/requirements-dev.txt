@@ -1,0 +1,7 @@
+# 开发与测试依赖（运行时不需要）
+#
+#   pip install -r requirements-dev.txt
+
+-r requirements.txt
+
+pytest>=8.0

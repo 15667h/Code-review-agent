@@ -1,0 +1,1272 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<title>Margin · 研发辅助 Agent 工作台 — 技术文档</title>
+<style>
+  /* ===== 页面与字体 ===== */
+  @page { size: A4; margin: 17mm 16mm 16mm; }
+  @page :first { margin: 0; }
+
+  :root {
+    --ink: #1a2028;
+    --ink-2: #48505c;
+    --ink-3: #6d7783;
+    --rule: #d8dee4;
+    --rule-soft: #eaeef2;
+    --brand: #0f6b5c;
+    --brand-soft: #e8f2f0;
+    --accent: #1c3f6e;
+    --accent-soft: #e9eef6;
+    --warn: #8a5a00;
+    --warn-soft: #fdf3e0;
+  }
+
+  * { box-sizing: border-box; }
+
+  html { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+
+  body {
+    margin: 0;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei",
+      "PingFang SC", "Hiragino Sans GB", "Source Han Sans SC", sans-serif;
+    font-size: 10.2pt;
+    line-height: 1.72;
+    color: var(--ink);
+    background: #fff;
+  }
+
+  code, pre, .mono {
+    font-family: "Cascadia Mono", Consolas, "SF Mono", Menlo, "Courier New", monospace;
+    font-size: 9.1pt;
+  }
+
+  /* ===== 封面 ===== */
+  .cover {
+    height: 297mm;
+    padding: 34mm 22mm 22mm;
+    display: flex;
+    flex-direction: column;
+    background: linear-gradient(160deg, #0f6b5c 0%, #0b4f45 46%, #123a52 100%);
+    color: #fff;
+    page-break-after: always;
+  }
+  .cover__kicker {
+    font-size: 10.5pt; letter-spacing: .22em; text-transform: uppercase;
+    opacity: .82; margin-bottom: 60mm;
+  }
+  .cover__title { font-size: 33pt; line-height: 1.22; font-weight: 700; margin: 0 0 6mm; }
+  .cover__sub { font-size: 14pt; line-height: 1.6; opacity: .93; margin: 0 0 3mm; font-weight: 400; }
+  .cover__tag {
+    display: inline-block; margin-top: 4mm; padding: 2mm 4mm; border-radius: 2mm;
+    background: rgba(255,255,255,.16); font-size: 10pt;
+  }
+  .cover__meta { margin-top: auto; font-size: 10.5pt; line-height: 2.05; opacity: .95; }
+  .cover__meta b { font-weight: 600; opacity: 1; }
+  .cover__foot {
+    margin-top: 8mm; padding-top: 4mm; border-top: 1px solid rgba(255,255,255,.28);
+    font-size: 9pt; opacity: .8;
+  }
+
+  /* ===== 目录 ===== */
+  .toc { page-break-after: always; }
+  .toc h2 { font-size: 17pt; margin: 0 0 8mm; padding-bottom: 3mm; border-bottom: 2px solid var(--brand); }
+  .toc ol { list-style: none; padding: 0; margin: 0; counter-reset: chap; }
+  .toc > ol > li {
+    counter-increment: chap; margin: 0 0 2.6mm; font-size: 10.6pt; font-weight: 600;
+    display: flex; align-items: baseline; gap: 3mm;
+  }
+  .toc > ol > li::before {
+    content: counter(chap); flex: 0 0 8mm; height: 8mm; border-radius: 2mm;
+    background: var(--brand-soft); color: var(--brand); font-size: 9.5pt;
+    display: inline-flex; align-items: center; justify-content: center; font-weight: 700;
+  }
+  .toc ul { list-style: none; margin: 1mm 0 3mm 11mm; padding: 0; }
+  .toc ul li { font-size: 9.6pt; color: var(--ink-2); margin-bottom: .8mm; font-weight: 400; }
+
+  /* ===== 章节 ===== */
+  h1.chapter {
+    font-size: 18pt; margin: 0 0 5mm; padding: 0 0 3mm;
+    border-bottom: 2.5px solid var(--brand);
+    break-before: page; page-break-before: always;
+  }
+  h1.chapter .num {
+    display: inline-block; min-width: 11mm; color: var(--brand); font-weight: 800;
+  }
+  h2 { font-size: 13pt; margin: 7mm 0 3mm; color: var(--accent); }
+  h3 { font-size: 11.3pt; margin: 5mm 0 2mm; }
+  h4 { font-size: 10.4pt; margin: 4mm 0 1.5mm; color: var(--ink-2); }
+  p { margin: 0 0 2.6mm; }
+  ul, ol { margin: 0 0 3mm; padding-left: 6.5mm; }
+  li { margin-bottom: 1.1mm; }
+  b, strong { font-weight: 600; }
+
+  .lead { font-size: 11pt; color: var(--ink-2); }
+
+  /* ===== 表格 ===== */
+  table {
+    width: 100%; border-collapse: collapse; margin: 3mm 0 4mm;
+    font-size: 9.5pt; break-inside: avoid; page-break-inside: avoid;
+  }
+  th, td { border: 1px solid var(--rule); padding: 2mm 2.6mm; text-align: left; vertical-align: top; }
+  th { background: var(--brand-soft); font-weight: 600; color: #0a4c41; }
+  tbody tr:nth-child(even) { background: #fafbfc; }
+  td code, th code { background: none; padding: 0; }
+
+  /* ===== 代码与提示块 ===== */
+  code { background: #f2f5f7; padding: .3mm 1mm; border-radius: 1.2mm; color: #17323f; }
+  pre {
+    background: #f7f9fa; border: 1px solid var(--rule-soft); border-left: 3px solid var(--brand);
+    border-radius: 1.6mm; padding: 3mm 3.6mm; margin: 3mm 0; overflow: visible;
+    white-space: pre-wrap; word-break: break-word; line-height: 1.55;
+  }
+  pre code { background: none; padding: 0; }
+
+  .note, .warnbox, .keybox {
+    border-radius: 1.8mm; padding: 3mm 3.6mm; margin: 3mm 0; font-size: 9.8pt;
+    break-inside: avoid; page-break-inside: avoid;
+  }
+  .note { background: var(--accent-soft); border-left: 3px solid var(--accent); }
+  .warnbox { background: var(--warn-soft); border-left: 3px solid var(--warn); }
+  .keybox { background: var(--brand-soft); border-left: 3px solid var(--brand); }
+  .note b, .warnbox b, .keybox b { color: inherit; }
+
+  /* ===== 图示（纯 CSS 分层图） ===== */
+  .fig { margin: 4mm 0 5mm; break-inside: avoid; page-break-inside: avoid; }
+  .fig__cap { font-size: 9pt; color: var(--ink-3); text-align: center; margin-top: 2mm; }
+
+  .arch { border: 1px solid var(--rule); border-radius: 2mm; overflow: hidden; }
+  .arch__band { border-bottom: 1px solid var(--rule-soft); }
+  .arch__band:last-child { border-bottom: none; }
+  .arch__head {
+    display: flex; align-items: center; gap: 2.5mm; padding: 2.2mm 3mm;
+    background: #f6f8f9; border-bottom: 1px solid var(--rule-soft);
+  }
+  .arch__tag {
+    flex: 0 0 auto; font-size: 8.4pt; font-weight: 700; letter-spacing: .04em;
+    padding: .8mm 2mm; border-radius: 1.2mm; background: var(--brand); color: #fff;
+  }
+  .arch__tag--accent { background: var(--accent); }
+  .arch__tag--ink { background: #55606c; }
+  .arch__label { font-size: 9.6pt; font-weight: 600; color: var(--ink-2); }
+  .arch__cells { display: flex; flex-wrap: wrap; gap: 2mm; padding: 2.6mm 3mm; }
+  .cell {
+    flex: 1 1 0; min-width: 26mm; padding: 2mm 2.4mm; border: 1px solid var(--rule);
+    border-radius: 1.4mm; background: #fff; font-size: 8.9pt; line-height: 1.42;
+  }
+  .cell b { display: block; font-size: 9.3pt; margin-bottom: .6mm; }
+  .cell span { color: var(--ink-3); font-size: 8.2pt; }
+  .cell--brand { border-color: var(--brand); background: #f4faf8; }
+  .cell--accent { border-color: var(--accent); background: #f4f7fc; }
+  .cell--dash { border-style: dashed; color: var(--ink-3); }
+
+  .flow { display: flex; align-items: center; gap: 1.6mm; flex-wrap: wrap; margin: 3mm 0; }
+  .flow__item {
+    padding: 1.8mm 2.6mm; border: 1px solid var(--rule); border-radius: 1.4mm;
+    background: #fff; font-size: 8.9pt; white-space: nowrap;
+  }
+  .flow__item--brand { border-color: var(--brand); background: #f4faf8; font-weight: 600; }
+  .flow__arrow { color: var(--ink-3); font-size: 9pt; }
+
+  .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 3mm; }
+  .grid2 > * { min-width: 0; }
+
+  .kpi { display: flex; gap: 3mm; margin: 3.5mm 0; }
+  .kpi__item {
+    flex: 1 1 0; border: 1px solid var(--rule); border-top: 3px solid var(--brand);
+    border-radius: 1.6mm; padding: 2.6mm 3mm; background: #fcfdfd;
+  }
+  .kpi__num { font-size: 15pt; font-weight: 700; color: var(--brand); line-height: 1.2; }
+  .kpi__label { font-size: 8.6pt; color: var(--ink-3); margin-top: .8mm; }
+
+  .avoid { break-inside: avoid; page-break-inside: avoid; }
+  .tight li { margin-bottom: .5mm; }
+</style>
+</head>
+<body>
+
+<!-- ==================== 封面 ==================== -->
+<section class="cover">
+  <div class="cover__kicker">AI Web 开发挑战赛 · 技术文档</div>
+  <h1 class="cover__title">Margin<br />研发辅助 Agent 工作台</h1>
+  <p class="cover__sub">一个工作台 + 多个可插拔 AI 研发助手<br />代码审查 · 架构设计</p>
+  <div><span class="cover__tag">赛题方向 7 · AI 代码开发辅助</span></div>
+
+  <div class="cover__meta">
+    <div><b>参赛组别：</b>【研究生组 / A 组 / B 组 / C 组】</div>
+    <div><b>学校：</b>【学校全称】</div>
+    <div><b>团队成员：</b>【姓名 1（队长）、姓名 2、姓名 3】</div>
+    <div><b>指导教师：</b>【姓名 1、姓名 2】</div>
+    <div class="cover__foot">
+      交付版本：见仓库 Git 提交历史 · 仓库地址：github.com/15667h/Code-review-agent
+    </div>
+  </div>
+</section>
+
+<!-- ==================== 目录 ==================== -->
+<section class="toc">
+  <h2>目录</h2>
+  <ol>
+    <li>项目概述
+      <ul>
+        <li>1.1 一句话说明 · 1.2 要解决的问题 · 1.3 产品形态 · 1.4 与同类工具的差异</li>
+      </ul>
+    </li>
+    <li>需求分析
+      <ul>
+        <li>2.1 目标用户与场景 · 2.2 功能需求 · 2.3 非功能需求 · 2.4 赛题评分维度映射</li>
+      </ul>
+    </li>
+    <li>系统架构设计
+      <ul>
+        <li>3.1 总体架构 · 3.2 Agent = Model + Harness · 3.3 前端工作台 · 3.4 事件流</li>
+        <li>3.5 关键架构决策 · 3.6 技术选型理由</li>
+      </ul>
+    </li>
+    <li>AI 技术方案
+      <ul>
+        <li>4.1 模型集成 · 4.2 Agent 循环 · 4.3 Prompt 工程 · 4.4 工具接口设计</li>
+        <li>4.5 上下文预算与压缩 · 4.6 缓存感知的上下文结构 · 4.7 安全与可控性</li>
+        <li>4.8 规则与模型的交叉验证 · 4.9 结构化产出</li>
+      </ul>
+    </li>
+    <li>核心功能实现
+      <ul>
+        <li>5.1 代码审查助手 · 5.2 架构设计助手 · 5.3 多助手隔离</li>
+        <li>5.4 账号与会话安全 · 5.5 前端设计系统</li>
+      </ul>
+    </li>
+    <li>测试与部署
+      <ul>
+        <li>6.1 测试体系 · 6.2 评估体系 · 6.3 架构助手难度实测 · 6.4 部署与运行</li>
+      </ul>
+    </li>
+    <li>创新点说明
+      <ul>
+        <li>7.1 技术创新点 · 7.2 应用创新点</li>
+      </ul>
+    </li>
+    <li>总结与展望
+      <ul>
+        <li>8.1 已交付能力 · 8.2 已知边界与不足 · 8.3 后续计划</li>
+      </ul>
+    </li>
+  </ol>
+</section>
+
+<!-- ==================== 1 项目概述 ==================== -->
+<h1 class="chapter"><span class="num">1</span>项目概述</h1>
+
+<h2>1.1 一句话说明</h2>
+<p class="lead">
+Margin 是一个面向研发流程的 AI 工作台：它把「读代码、找问题、讲结构」这类需要长时间专注的工作
+交给一组可插拔的 AI 助手，并用一套统一的界面承载它们的产出。
+当前内置两个助手 —— <b>代码审查</b>（产出带证据的发现列表）与 <b>架构设计</b>（产出可评审的分层蓝图）。
+</p>
+
+<h2>1.2 要解决的问题</h2>
+<p>研发过程中有两类高价值但耗时的智力劳动，长期依赖资深工程师的时间：</p>
+
+<table>
+  <thead><tr><th style="width:26%">问题</th><th style="width:37%">传统做法的困难</th><th>本项目的做法</th></tr></thead>
+  <tbody>
+    <tr>
+      <td><b>代码审查</b><br />找缺陷、看资源生命周期、查边界条件</td>
+      <td>人工逐文件阅读，成本高且不稳定；简单静态扫描工具只能覆盖规则化问题，误报多、无法理解语义</td>
+      <td>让 Agent 带着工具循环读代码（读文件、搜符号、看 diff、跑规则），
+          产出的每条发现都必须带<b>文件与行号证据</b>，并按严重级归类</td>
+    </tr>
+    <tr>
+      <td><b>架构理解与设计</b><br />接手陌生仓库、评审分层与依赖</td>
+      <td>需要通读大量代码才能画出结构图；口头结论无法沉淀，评审时缺少可讨论的载体</td>
+      <td>让只读的架构助手产出<b>分层图 + 组件清单 + 关键决策 + 开放问题</b>，
+          每条决策写明「放弃了什么、代价是什么」，形成可评审的方案草稿</td>
+    </tr>
+  </tbody>
+</table>
+
+<h2>1.3 产品形态</h2>
+<p>
+界面是一间「工作室」：左侧是助手轨道与空间（被审仓库）列表，中间是工作台（对话 + 产出），
+下方是输入坞。切换助手时，不只是换一个图标 —— <b>产出形态、工具集、界面文案、强调色</b>
+整套都跟着变。
+</p>
+
+<div class="fig">
+  <div class="arch">
+    <div class="arch__band">
+      <div class="arch__head"><span class="arch__tag">助手轨道</span><span class="arch__label">切换助手 · 每个助手一个强调色</span></div>
+      <div class="arch__cells">
+        <div class="cell cell--brand"><b>review</b><span>代码审查 · 深青</span></div>
+        <div class="cell cell--accent"><b>architect</b><span>架构设计 · 普鲁士蓝</span></div>
+        <div class="cell cell--dash"><b>+</b><span>接入新助手 = 一份声明</span></div>
+      </div>
+    </div>
+    <div class="arch__band">
+      <div class="arch__head"><span class="arch__tag arch__tag--ink">上下文栏</span><span class="arch__label">仓库 · 分支 · 变更 · 运行历史（按助手隔离）</span></div>
+    </div>
+    <div class="arch__band">
+      <div class="arch__head"><span class="arch__tag arch__tag--ink">工作台</span><span class="arch__label">对话与产出：发现列表 / 分层蓝图</span></div>
+    </div>
+    <div class="arch__band">
+      <div class="arch__head"><span class="arch__tag arch__tag--ink">输入坞</span><span class="arch__label">目标 · 范围筛选 · 模型选择 · 发送</span></div>
+    </div>
+  </div>
+  <div class="fig__cap">图 1-1 工作台骨架：轨道 + 上下文栏 + 工作台 + 输入坞</div>
+</div>
+
+<h2>1.4 与同类工具的差异</h2>
+<table>
+  <thead><tr><th style="width:30%">维度</th><th style="width:35%">常见的 AI 编程工具</th><th>Margin 的做法</th></tr></thead>
+  <tbody>
+    <tr><td>定位</td><td>编辑器内的代码补全 / 对话</td><td>独立工作台，承载<b>完整的一次审查或设计任务</b>及其产出</td></tr>
+    <tr><td>产出</td><td>自由文本回复，需人工再整理</td><td><b>结构化产出</b>：发现 / 组件 / 决策 / 开放问题各有 schema，前端按形态渲染</td></tr>
+    <tr><td>证据</td><td>可能给出不存在的行号</td><td>引用核验：结论中引用的位置若不在本次读过的文件里，会被标出待复核</td></tr>
+    <tr><td>扩展</td><td>新能力需要改代码</td><td><b>助手是一份声明</b>（AgentSpec），接入新助手不改既有代码</td></tr>
+    <tr><td>可信度</td><td>难以评估效果</td><td>自带评估链路：8 个靶场 + 双口径指标 + 人工复核，数字由脚本现算</td></tr>
+  </tbody>
+</table>
+
+<h2>1.5 交付规模</h2>
+<div class="kpi">
+  <div class="kpi__item"><div class="kpi__num">29,272</div><div class="kpi__label">行源码（前端 + 后端 + 测试 + 评估）</div></div>
+  <div class="kpi__item"><div class="kpi__num">175</div><div class="kpi__label">项回归测试（全绿）</div></div>
+  <div class="kpi__item"><div class="kpi__num">2</div><div class="kpi__label">个内置 AI 助手（可插拔扩展）</div></div>
+  <div class="kpi__item"><div class="kpi__num">1</div><div class="kpi__label">个外部依赖（httpx）</div></div>
+</div>
+
+<!-- ==================== 2 需求分析 ==================== -->
+<h1 class="chapter"><span class="num">2</span>需求分析</h1>
+
+<h2>2.1 目标用户与场景</h2>
+<table>
+  <thead><tr><th style="width:20%">用户</th><th style="width:32%">场景</th><th>需求本质</th></tr></thead>
+  <tbody>
+    <tr><td>开发者（个人）</td><td>提交前自查；接手陌生模块时快速建立结构认知</td><td>需要一份「可以照着改」的问题清单，而不是一堆风格建议</td></tr>
+    <tr><td>团队评审者</td><td>把 AI 产出当作评审的起点，逐条讨论</td><td>需要证据可追溯、结论可反驳、边界清楚（哪些没看）</td></tr>
+    <tr><td>学生 / 学习者</td><td>用真实仓库练习代码阅读与架构分析</td><td>需要把「为什么这样设计」讲出来，而不只是给答案</td></tr>
+  </tbody>
+</table>
+
+<h2>2.2 功能需求</h2>
+<table>
+  <thead><tr><th style="width:8%">编号</th><th style="width:26%">功能</th><th>说明与验收标准</th></tr></thead>
+  <tbody>
+    <tr><td>F1</td><td>选择被审仓库</td><td>自动列出示例子仓库，也可手动加入任意本地目录；服务端校验路径不得越界</td></tr>
+    <tr><td>F2</td><td>限定审查范围</td><td>可勾选仓库内的相对路径子集；越界项被丢弃且不回显原文</td></tr>
+    <tr><td>F3</td><td>发起智能体运行</td><td>输入目标（自然语言），Agent 自主决定读哪些文件、调哪些工具，直到收尾</td></tr>
+    <tr><td>F4</td><td>实时查看过程</td><td>SSE 流式推送：每一步工具调用、每一次产出登记即时可见</td></tr>
+    <tr><td>F5</td><td>结构化产出</td><td>审查产出发现列表（可按严重级筛选）；架构产出分层图 + 组件 + 决策 + 开放问题</td></tr>
+    <tr><td>F6</td><td>历史会话</td><td>运行结果归档，可重放；<b>按助手隔离</b>，切换助手只看到该助手的历史</td></tr>
+    <tr><td>F7</td><td>可中断</td><td>运行中可停止；被中断的那一轮如实标为未完成</td></tr>
+    <tr><td>F8</td><td>账号系统</td><td>注册 / 登录 / 退出；密码加盐哈希存储；可选强制登录</td></tr>
+    <tr><td>F9</td><td>接入新助手</td><td>写一份声明即可，不改既有代码；前端自动出现入口、文案与配色</td></tr>
+  </tbody>
+</table>
+
+<h2>2.3 非功能需求</h2>
+<table>
+  <thead><tr><th style="width:24%">维度</th><th>要求与实现方式</th></tr></thead>
+  <tbody>
+    <tr><td>安全 — 密钥</td><td>API Key 只存 `.env`（不入库）；一切读取都过密钥文件护栏，且护栏在<b>工具层</b>（因为读取结果会进模型上下文，只挡浏览器不够）</td></tr>
+    <tr><td>安全 — 越界</td><td>路径逃逸、绝对路径、技能目录逃逸一律拒绝；静态路由白名单 + 后缀白名单 + 拒绝点目录</td></tr>
+    <tr><td>安全 — 凭据</td><td>密码 scrypt 加盐哈希，明文不落盘；会话 HttpOnly + SameSite=Strict；登录失败不区分「用户不存在」与「密码错」以防账号枚举</td></tr>
+    <tr><td>可靠性</td><td>失败必须显式（目录不存在不能伪装成「没有匹配」）；归档原子写入；坏文件留档不静默丢弃</td></tr>
+    <tr><td>可审计</td><td>零 web 框架：HTTP 层用标准库实现，依赖只有 httpx —— 这个服务本身也要可被审计</td></tr>
+    <tr><td>可扩展</td><td>助手 = 声明；产出形态 = 声明；渲染器 = 注册表 + 兜底，未知形态不白屏也不冒充实出</td></tr>
+    <tr><td>性能</td><td>首屏无构建、无第三方 JS；后端单进程可并发处理 SSE；模型侧靠缓存命中降低延迟与成本</td></tr>
+    <tr><td>可用性</td><td>无 API Key 时降级为离线规则模式，界面功能完整；窄屏自适应到 430px</td></tr>
+  </tbody>
+</table>
+
+<h2>2.4 赛题评分维度映射</h2>
+<p>下表说明本项目对赛题各评分维度的对应实现，便于评审定位：</p>
+<table>
+  <thead><tr><th style="width:22%">评分维度（权重）</th><th style="width:30%">赛题考察点</th><th>本项目的实现与位置</th></tr></thead>
+  <tbody>
+    <tr>
+      <td rowspan="6"><b>AI 技术深度</b><br />35%</td>
+      <td>大模型集成质量 8%</td>
+      <td>统一的模型客户端（重试 / 退避 / 用量统计）；系统提示分层；产出 schema 强约束；缓存命中率实测 ~87%</td>
+    </tr>
+    <tr>
+      <td>Agent / 工作流设计 8%</td>
+      <td>完整 Agent 循环：规划（任务列表）→ 工具调用 → 观察 → 收敛（finish）；工具集按助手插拔；熔断与迭代上限护栏</td>
+    </tr>
+    <tr>
+      <td>RAG 技术应用 6%</td>
+      <td>以<b>按需检索</b>替代向量检索：工具清单渐进披露（先检索再加载）、代码按符号索引读取 —— 面向代码场景的检索策略</td>
+    </tr>
+    <tr>
+      <td>多模态能力 5%</td>
+      <td>当前版本聚焦文本代码理解，未集成图像/语音（见 8.2 已知边界）</td>
+    </tr>
+    <tr>
+      <td>AI 安全与可控性 4%</td>
+      <td>熔断（连续被拒计数、可恢复）、重复调用检测、引用核验、失败显式化、只读助手硬契约</td>
+    </tr>
+    <tr>
+      <td>MCP / 工具集成 4%</td>
+      <td>工具即契约：JSON Schema 参数、四层错误信息（类型+参数+建议）、工具描述写「何时用/何时不用」</td>
+    </tr>
+    <tr>
+      <td rowspan="3"><b>创新性</b><br />25%</td>
+      <td>选题创新 10%</td>
+      <td>把「代码审查」与「架构设计」放进同一可插拔内核；架构助手产出可评审蓝图而非泛泛描述</td>
+    </tr>
+    <tr><td>技术方案创新 8%</td><td>确定性规则集兼作模型结果的交叉验证器；缓存感知的上下文结构；零依赖后端</td></tr>
+    <tr><td>交互模式创新 7%</td><td>助手切换时产出形态/文案/配色整体切换；分层蓝图的可读化（连线几何、决策与开放问题并列）</td></tr>
+    <tr><td rowspan="3"><b>前端工程质量</b><br />10%</td><td>代码质量 4%</td><td>模块化原生 JS（8 个模块）、统一 UI 原语、无第三方运行时依赖</td></tr>
+    <tr><td>组件化与架构 3%</td><td>渲染器按产出形态注册；视图注册表统一生命周期；助手轨道/上下文栏/工作台解耦</td></tr>
+    <tr><td>性能优化 3%</td><td>零构建直出、无阻塞脚本、SSE 增量渲染、ResizeObserver 按需重绘（并正确释放）</td></tr>
+    <tr><td><b>实用性</b> 10%</td><td>场景真实性与方案有效性</td><td>面向真实仓库；发现带行号与证据可直接定位；架构蓝图可作为评审材料</td></tr>
+    <tr><td rowspan="3"><b>用户体验</b> 10%</td><td>UI 设计 4%</td><td>设计令牌系统（颜色/间距/字体三档）、两套强调色、A4 一致的信息密度</td></tr>
+    <tr><td>交互体验 3%</td><td>运行状态条、任务清单实时更新、空态文案按助手方言区分、430px 起自适应</td></tr>
+    <tr><td>AI 交互体验 3%</td><td>SSE 流式渲染、思考与工具调用可视化、错误边界（失败不伪装）</td></tr>
+    <tr><td><b>社会价值<br />与商业潜力</b> 10%</td><td>社会价值 5%</td><td>降低代码阅读与架构分析门槛，可用于教学与开源维护；评估体系公开可复现</td></tr>
+    <tr><td></td><td>商业潜力 5%</td><td>可插拔内核可扩展到测试生成、文档生成等更多助手；面向团队可私有部署</td></tr>
+  </tbody>
+</table>
+
+<div class="note">
+  <b>关于 RAG 的说明。</b>赛题把 RAG 列为考察点。本项目没有采用向量数据库方案，
+  而是面向代码场景设计了另一套检索策略：<b>工具清单渐进披露 + 符号级读取 + 按需上下文</b>。
+  理由写在 4.4 与 4.8：代码检索的难点不是语义相似度，而是「准确的行号与结构」，
+  以及「不把整个仓库塞进上下文」。二者目标一致（让模型在有限上下文里拿到需要的知识），
+  技术路径不同。
+</div>
+
+<!-- ==================== 3 系统架构设计 ==================== -->
+<h1 class="chapter"><span class="num">3</span>系统架构设计</h1>
+
+<h2>3.1 总体架构</h2>
+<p>
+系统分为四层：浏览器端工作台、HTTP/SSE 服务层、Agent 运行时（Harness）、以及被 Agent 调用的工具与沙箱。
+其中<b>工具层是 Agent 与外部世界（文件系统、命令、模型）之间的唯一通路</b> ——
+所有读写都经过它，因此安全护栏只需在这一层收口。
+</p>
+
+<div class="fig">
+  <div class="arch">
+    <div class="arch__band">
+      <div class="arch__head"><span class="arch__tag">浏览器 · 工作台</span><span class="arch__label">原生 JS + CSS，零构建、零 npm 依赖</span></div>
+      <div class="arch__cells">
+        <div class="cell cell--brand"><b>agents.js</b><span>助手清单 · 轨道 · 方言文案 · 强调色</span></div>
+        <div class="cell cell--brand"><b>blueprint.js</b><span>架构产出渲染器（分层图/决策/开放问题）</span></div>
+        <div class="cell"><b>live.js</b><span>实时会话 · 事件应用 · 会话隔离</span></div>
+        <div class="cell"><b>app.js / api.js</b><span>UI 原语 · 演示模式 · 接口客户端</span></div>
+        <div class="cell"><b>auth.js</b><span>登录 / 注册 / 账号态</span></div>
+      </div>
+    </div>
+
+    <div class="arch__band">
+      <div class="arch__head"><span class="arch__tag arch__tag--accent">服务层 · server.py</span><span class="arch__label">Python 标准库实现 HTTP + SSE + 静态托管（同源，无 CORS）</span></div>
+      <div class="arch__cells">
+        <div class="cell cell--accent"><b>REST 路由</b><span>/api/agents · /api/repos · /api/audit · /api/runs</span></div>
+        <div class="cell cell--accent"><b>SSE 事件流</b><span>历史补发 + 实时推送，同一路径</span></div>
+        <div class="cell cell--accent"><b>认证</b><span>注册/登录/登出/me · 会话 Cookie</span></div>
+        <div class="cell cell--accent"><b>运行注册表</b><span>RunRecord · 事件序列号 · 归档</span></div>
+      </div>
+    </div>
+
+    <div class="arch__band">
+      <div class="arch__head"><span class="arch__tag arch__tag--ink">Agent 运行时 · harness/</span><span class="arch__label">Agent = Model + Harness（上下文管理 + 工具接口 + 约束 + 验证 + 纠正）</span></div>
+      <div class="arch__cells">
+        <div class="cell"><b>agents.py</b><span>AgentSpec 注册表：一份声明 = 一个助手</span></div>
+        <div class="cell"><b>loop.py</b><span>主循环：规划 → 调用 → 观察 → 收敛</span></div>
+        <div class="cell"><b>model.py</b><span>模型客户端（重试 / 退避 / 用量）</span></div>
+        <div class="cell"><b>context.py</b><span>上下文组装 · 预算 · 压缩 · 状态栏</span></div>
+        <div class="cell"><b>guardrails.py</b><span>熔断 · 重复检测 · 引用核验</span></div>
+        <div class="cell"><b>rules.py</b><span>确定性规则集（兼作交叉验证）</span></div>
+      </div>
+    </div>
+
+    <div class="arch__band">
+      <div class="arch__head"><span class="arch__tag arch__tag--ink">工具与沙箱</span><span class="arch__label">Agent 与外部世界的唯一通路 · 护栏在此收口</span></div>
+      <div class="arch__cells">
+        <div class="cell"><b>tools_common.py</b><span>公共工具唯一实现（9 个：读文件/搜索/符号/diff/命令/任务/收尾…）</span></div>
+        <div class="cell"><b>tools_audit.py</b><span>审查特有：登记发现 · 打补丁 · 跑测试 · 静态检查</span></div>
+        <div class="cell"><b>tools_design.py</b><span>架构特有：登记层/组件/决策/开放问题</span></div>
+        <div class="cell cell--dash"><b>sandbox.py</b><span>工作区解析 · 密钥护栏 · 命令白名单</span></div>
+      </div>
+    </div>
+
+    <div class="arch__band">
+      <div class="arch__head"><span class="arch__tag arch__tag--ink">外部</span></div>
+      <div class="arch__cells">
+        <div class="cell cell--dash"><b>大模型 API</b><span>OpenAI 兼容端点（DeepSeek）</span></div>
+        <div class="cell cell--dash"><b>被审仓库</b><span>本地目录（只读或读写按助手声明）</span></div>
+      </div>
+    </div>
+  </div>
+  <div class="fig__cap">图 3-1 总体架构：四层 + 唯一通路原则</div>
+</div>
+
+<h2>3.2 Agent = Model + Harness</h2>
+<p>
+项目的核心抽象来自一个判断：<b>模型本身不可编程，能编程的是它外面的那层骨架</b>。
+把这层骨架（Harness）设计好，同一个模型就能稳定地完成不同任务。
+Harness 由五部分组成：
+</p>
+
+<table>
+  <thead><tr><th style="width:20%">组成</th><th style="width:38%">职责</th><th>本项目的实现</th></tr></thead>
+  <tbody>
+    <tr><td><b>上下文管理</b></td><td>决定模型每一轮看到什么：静态前缀 + 动态追加</td><td>系统提示与核心工具定义恒定；进度、状态、检索到的工具 schema 追加到轨迹末尾</td></tr>
+    <tr><td><b>工具接口</b></td><td>把能力以模型能理解的方式暴露</td><td>JSON Schema 参数；描述写「何时用 / 何时不用」；数组参数显式声明</td></tr>
+    <tr><td><b>约束</b></td><td>限制行为边界，防止失控</td><td>迭代上限、重复调用检测、连续被拒熔断、命令白名单、只读助手硬契约</td></tr>
+    <tr><td><b>验证</b></td><td>检查产出是否可信</td><td>引用核验（行号是否真读过）、参数校验、确定性规则交叉验证</td></tr>
+    <tr><td><b>纠正</b></td><td>出错后给出可操作的修复路径</td><td>错误信息四层（类型 + 参数 + 调用栈 + 建议）；失败显式而非伪装成空结果</td></tr>
+  </tbody>
+</table>
+
+<h2>3.3 前端工作台</h2>
+<p>
+前端不做「一个助手一套页面」，而是<b>一套骨架 + 声明驱动的差异</b>：
+</p>
+<ul>
+  <li><b>骨架共享</b>：助手轨道（56px）+ 上下文栏 + 工作台 + 输入坞，四个助手都走这套结构</li>
+  <li><b>差异来自声明</b>：助手清单由后端 <code>GET /api/agents</code> 下发（未连后端时用内置兜底），
+      前端按 <code>outcome</code> 选产出渲染器，按 <code>accent</code> 注入强调色变量</li>
+  <li><b>文案分两层</b>：与助手有关的（输入框提示、按钮、空态、运行状态）走「方言」表；与助手无关的（品牌、快捷键提示）保持不变</li>
+  <li><b>渲染器注册表 + 兜底</b>：不认识的产出形态按字段原样列出，不白屏、也不冒充实出</li>
+</ul>
+
+<h2>3.4 事件流：一条路径同时服务「实时」与「重放」</h2>
+<p>
+这是架构上刻意避免重复的一点：<b>打开一条还在跑的会话</b>与<b>回放一条已完成的会话</b>
+走的是同一条代码路径 —— 服务端先补发历史事件，再接上实时推送。
+</p>
+
+<div class="flow">
+  <span class="flow__item flow__item--brand">Agent 循环</span>
+  <span class="flow__arrow">→</span>
+  <span class="flow__item">事件钩子</span>
+  <span class="flow__arrow">→</span>
+  <span class="flow__item">RunRecord（带序号）</span>
+  <span class="flow__arrow">→</span>
+  <span class="flow__item">SSE 订阅队列</span>
+  <span class="flow__arrow">→</span>
+  <span class="flow__item">补发历史 + 实时帧</span>
+  <span class="flow__arrow">→</span>
+  <span class="flow__item flow__item--brand">前端 applyEvent</span>
+</div>
+
+<p>每个事件带自增序号，因此断线重连可以按 <code>Last-Event-ID</code> 续传；终态后发送关闭帧并写 chunked 终止序列，客户端不会挂起等待。</p>
+
+<h2>3.5 关键架构决策</h2>
+<table>
+  <thead><tr><th style="width:26%">决策</th><th style="width:34%">选择</th><th>放弃的方案与代价</th></tr></thead>
+  <tbody>
+    <tr>
+      <td><b>助手如何接入</b></td>
+      <td>声明式注册表：写下 id / 工具工厂 / 产出形态 / 强调色，调一次 <code>register</code></td>
+      <td>放弃「写死在代码里的枚举」：那种做法每加一个助手都要改工具、渲染、路由、前端四处，
+          漏一处就是「跑得出来但显示成另一种产出」这种很难发现的问题</td>
+    </tr>
+    <tr>
+      <td><b>产出形态谁说了算</b></td>
+      <td>由助手自己声明 <code>outcome</code>，渲染层按注册表分派，未知形态走通用兜底</td>
+      <td>放弃「统一都叫发现」：架构运行若走审查渲染器，会打印「本次没有记录任何发现」——
+          那不是事实，是把渲染器的不认识说成了产出为空，比不渲染更糟</td>
+    </tr>
+    <tr>
+      <td><b>产出如何存放</b></td>
+      <td>按类型分桶（<code>artifacts: dict[str, list]</code>），发现列表只是其中一个桶的视图</td>
+      <td>放弃单一 <code>findings</code> 字段：那会让第二种产出无处安放，且归档重放时丢桶</td>
+    </tr>
+    <tr>
+      <td><b>只读助手怎么保证</b></td>
+      <td>运行前硬检查：声明 <code>can_edit=False</code> 的助手若注册了中高风险工具，直接让运行失败</td>
+      <td>放弃「靠自觉不给写工具」：声明与能力脱钩时无人发现，等于没有边界</td>
+    </tr>
+    <tr>
+      <td><b>框架依赖</b></td>
+      <td>后端标准库实现 HTTP；前端原生 JS/CSS，无构建</td>
+      <td>放弃了框架带来的开发效率。代价是部分工作要自己写；收益是
+          <b>整套系统可被完整审计、零安装门槛、不受依赖漏洞影响</b> —— 对一个安全审计工具，这个交换值得</td>
+    </tr>
+  </tbody>
+</table>
+
+<h2>3.6 技术选型理由</h2>
+<table>
+  <thead><tr><th style="width:22%">层</th><th style="width:26%">选型</th><th>理由</th></tr></thead>
+  <tbody>
+    <tr><td>模型</td><td>DeepSeek（OpenAI 兼容端点）</td><td>长上下文（约 100 万 token）支撑整仓库分析；缓存计价降低重复上下文成本；国内可直连</td></tr>
+    <tr><td>后端语言</td><td>Python 3.11+</td><td>代码分析生态与规则集实现成本低；标准库自带 HTTP/SSE/hashlib/cryptography 替代品</td></tr>
+    <tr><td>后端框架</td><td>无（标准库）</td><td>服务本身是被审计对象，依赖越少越好审；同源托管前端因此不需要 CORS</td></tr>
+    <tr><td>前端</td><td>原生 JS + CSS（ES2020+ / CSS 自定义属性）</td><td>零构建意味着评审者打开即用；无 npm 供应链风险；样式系统用令牌变量而非预处理器</td></tr>
+    <tr><td>实时通信</td><td>SSE</td><td>单向推送足够（Agent → 界面）；比 WebSocket 简单，且天然支持断线续传</td></tr>
+    <tr><td>持久化</td><td>JSON 文件（运行归档 / 账号表）</td><td>单机工具的数据量不需要数据库；JSON 可用任何工具检查，便于评审与调试</td></tr>
+    <tr><td>认证</td><td>scrypt + 内存会话</td><td>标准库可得的最强密码哈希之一；会话不落盘 = 不把长期凭据写到磁盘</td></tr>
+  </tbody>
+</table>
+
+<!-- ==================== 4 AI 技术方案 ==================== -->
+<h1 class="chapter"><span class="num">4</span>AI 技术方案</h1>
+
+<p class="lead">
+本章是文档的重点：一个能跑起来的 AI 应用与一个可靠的 AI 应用之间的差距，
+几乎全部落在这里 —— 上下文怎么组织、工具怎么设计、失控怎么兜住、产出怎么验证。
+</p>
+
+<h2>4.1 模型集成</h2>
+<h3>4.1.1 集成方式</h3>
+<p>
+模型调用集中在单一的客户端模块中（<code>harness/model.py</code>），对上层暴露一个
+「给消息与工具，返回一次决策」的接口。这样做的好处是：重试策略、退避、用量统计、
+错误分类只写一遍，Agent 循环里不掺协议细节。
+</p>
+
+<table>
+  <thead><tr><th style="width:26%">能力</th><th>实现要点</th></tr></thead>
+  <tbody>
+    <tr><td>失败重试</td><td>只对可重试错误（限流、网络、5xx）重试；指数退避；重试过程以事件形式推给界面（用户能看到「在重试」而不是卡住）</td></tr>
+    <tr><td>用量统计</td><td>累计输入 / 输出 / 缓存命中 token，随运行结果一起归档 —— 成本可回溯</td></tr>
+    <tr><td>工具调用</td><td>走模型的 function calling 通道，参数以 JSON 对象返回；解析失败时（模型偶发输出非 JSON）归类为参数畸形错误并给出重试指引</td></tr>
+    <tr><td>降级</td><td>没有 API Key 时切换到启发式模型：仍走完整 Agent 循环与工具协议，产出由确定性规则给出 —— 界面与流程可以完整演示</td></tr>
+  </tbody>
+</table>
+
+<h3>4.1.2 选型理由</h3>
+<ul>
+  <li><b>长上下文是硬需求</b>：架构分析需要跨文件理解调用链，小窗口模型会频繁触发压缩、丢失结构认知</li>
+  <li><b>缓存计价</b>：Agent 每轮都要重发系统提示与历史轨迹，缓存命中把成本与首字节延迟都压下来（本项目实测命中约 87%）</li>
+  <li><b>OpenAI 兼容协议</b>：换供应商只需改 base_url 与模型名，不绑定单一厂商</li>
+</ul>
+
+<h2>4.2 Agent 循环设计</h2>
+<p>循环的骨架是四步，每一轮都留下可观察的痕迹：</p>
+
+<div class="flow">
+  <span class="flow__item flow__item--brand">组装上下文</span>
+  <span class="flow__arrow">→</span>
+  <span class="flow__item">请求模型决策</span>
+  <span class="flow__arrow">→</span>
+  <span class="flow__item">执行工具调用</span>
+  <span class="flow__arrow">→</span>
+  <span class="flow__item">观察结果入轨迹</span>
+  <span class="flow__arrow">↺</span>
+  <span class="flow__item flow__item--brand">收尾（finish）</span>
+</div>
+
+<h3>4.2.1 规划：把「打算怎么做」显式化</h3>
+<p>
+助手被要求用任务清单工具（<code>update_todo</code>）写下计划，并在推进中更新状态。
+这不只是为了界面好看 —— 显式计划让「读了三个文件就下结论」这种偷懒行为变得可见，
+也让用户能在中途判断方向对不对。
+</p>
+
+<h3>4.2.2 工具调用：能力按需可见</h3>
+<p>
+工具集分两档：<b>核心工具</b>进系统提示的静态前缀，随叫随到；<b>扩展工具</b>不进前缀，
+需要用检索工具先搜出来再加载其 schema。这个设计解决了两个实际问题：
+</p>
+<ul>
+  <li><b>上下文占用</b>：把二十多个工具的完整定义全部前置，会占掉可观的上下文，
+      而在一次具体任务里多数工具根本用不到</li>
+  <li><b>选择质量</b>：候选工具越少，选错工具的概率越低</li>
+</ul>
+
+<h3>4.2.3 收敛：怎么收尾是设计出来的</h3>
+<p>
+收尾工具（<code>finish</code>）受两层约束：一是必须在总结里说明「检查了哪些范围、
+为什么足以判定」，二是它<b>永不进熔断</b> —— 否则模型被护栏锁死时会连收尾都做不到，
+结果一条产出都拿不回来。
+</p>
+
+<div class="warnbox">
+  <b>踩过的坑（真实记录）。</b>早期版本的熔断用「累计被拒次数」判定，
+  一旦打开就再也不会关闭，模型被自己的护栏锁死 —— 连 <code>finish</code> 都被拒绝。
+  现在改成：判据是<b>连续</b>被拒次数（成功一次即归零），且收尾与产出类工具走前缀豁免。
+  这个 bug 的教训是：<b>护栏必须可恢复</b>，否则它就是故障源本身。
+</div>
+
+<h2>4.3 Prompt 工程</h2>
+<h3>4.3.1 分层结构</h3>
+<table>
+  <thead><tr><th style="width:22%">层</th><th style="width:30%">内容</th><th>为什么放这里</th></tr></thead>
+  <tbody>
+    <tr><td>身份与目标</td><td>你最擅长什么；本次任务的判据</td><td>最先进入上下文，决定整体基调</td></tr>
+    <tr><td>工具契约</td><td>核心工具定义（何时用 / 何时不用）</td><td>恒定不变，可被缓存</td></tr>
+    <tr><td>硬约束</td><td>只读边界、证据要求、不得编造行号</td><td>紧跟在目标之后，避免被具体任务细节冲淡</td></tr>
+    <tr><td>失败兜底</td><td>读不到文件怎么办、路径不存在怎么办</td><td>没有兜底规则时模型会即兴发挥，通常发挥得不好</td></tr>
+    <tr><td>风格与格式</td><td>产出字段要求、语言</td><td>放最后，不占早期注意力</td></tr>
+  </tbody>
+</table>
+
+<h3>4.3.2 工具描述的三条规矩</h3>
+<ol>
+  <li><b>写「何时用」也写「何时不用」</b>：只写能力会诱使模型把它当万能工具。
+      例如「只想看结构时用符号表工具，比读全文省 token」这类反向说明，能显著降低误用。</li>
+  <li><b>数组参数必须明说</b>：光有 schema 的 <code>type: array</code> 不够 ——
+      实测模型连续多次把「只有一个条目的数组」写成裸字符串。描述里必须给出目标形态
+      （<code>['...']</code>，即使只有一项）。</li>
+  <li><b>错误信息四层</b>：类型 + 参数 + 调用栈 + 修复建议。缺任何一层，模型要么猜，要么重复同样的错误调用。</li>
+</ol>
+
+<div class="keybox">
+  <b>一条被实测逼出来的纪律。</b>工具层<b>不做静默类型转换</b>。
+  把字符串自动包成数组看起来「贴心」，但它掩盖了模型的表达错误，
+  下次换个字段还会犯；正确做法是拒绝并在错误信息里给出目标形态。
+  这个原则同样适用于产出层：宁可让运行失败并说明原因，也不要生成一份看起来正常的错误数据。
+</div>
+
+<h2>4.4 工具接口设计</h2>
+<table>
+  <thead><tr><th style="width:24%">工具</th><th style="width:30%">作用</th><th>设计要点</th></tr></thead>
+  <tbody>
+    <tr><td><code>list_files</code></td><td>列目录</td><td>目录不存在显式失败（不是「没有匹配」）；跳过点目录与依赖目录</td></tr>
+    <tr><td><code>read_file</code></td><td>读文件（带行号）</td><td>支持分段；行号前缀为证据引用服务；offset 越界显式报错</td></tr>
+    <tr><td><code>grep</code></td><td>正则搜索</td><td>非法正则给出转义提示；命中上限提示「结果不完整」而不静默截断</td></tr>
+    <tr><td><code>read_symbols</code></td><td>符号表（函数/类清单）</td><td>建立结构认知的高性价比手段，避免通读全文</td></tr>
+    <tr><td><code>git_diff</code></td><td>看变更</td><td>审查场景的起点：只看改动比通读全仓更有效率</td></tr>
+    <tr><td><code>discover_tools</code></td><td>检索扩展工具</td><td>渐进披露的入口；按需求检索而非全量列举</td></tr>
+    <tr><td><code>record_*</code></td><td>登记产出（发现/层/组件/决策/问题）</td><td>边确认边登记，不攒到最后；同名去重</td></tr>
+    <tr><td><code>update_todo</code></td><td>任务清单</td><td>让计划可见、可纠偏</td></tr>
+    <tr><td><code>finish</code></td><td>收尾</td><td>必须写范围与理由；统计口径随产出形态变化</td></tr>
+  </tbody>
+</table>
+
+<h2>4.5 上下文预算与压缩</h2>
+<p>
+长任务会超出上下文窗口，因此需要预算管理：
+</p>
+<ul>
+  <li><b>预算对象</b>统计静态前缀、历史轨迹与工具输出的 token 占用</li>
+  <li><b>压缩触发</b>：占用达到窗口的 80% 时，对较早的工具输出做摘要化处理，保留结论与证据，丢弃大段原文</li>
+  <li><b>截断提示</b>：单个工具输出过大时落盘并在上下文里只给摘要与路径，同时明确标注「已截断」，避免模型以为拿到了全部</li>
+</ul>
+
+<h2>4.6 缓存感知的上下文结构</h2>
+<p>
+这是本项目在成本与延迟上的关键优化，做法本身很简单，但需要纪律来维持：
+</p>
+
+<div class="grid2">
+  <div class="note">
+    <b>恒定的静态前缀</b><br />
+    系统提示 + 核心工具定义，顺序与内容<b>永不变化</b>。任何动态内容（时间、进度、状态、
+    按需加载的工具 schema）都追加到轨迹末尾，绝不插进前缀。
+  </div>
+  <div class="note">
+    <b>为什么有效</b><br />
+    主流模型服务按「前缀相同的最长部分」计费与加速。前缀稳定时，
+    每轮只有尾部新增部分需要重新计算 —— 本项目实测 KV 缓存命中约 <b>87%</b>，
+    同时降低了单轮延迟与成本。
+  </div>
+</div>
+
+<div class="warnbox">
+  <b>维持这条纪律的难点。</b>「把当前时间放进系统提示」是很自然的写法，但它会让前缀
+  每轮都变，缓存全部失效。因此项目里把这类信息统一交给「运行时状态栏」追加在轨迹尾部，
+  并以自检方式暴露前缀指纹，防止有人顺手破坏这个不变量。
+</div>
+
+<h2>4.7 AI 安全与可控性</h2>
+<p>模型会犯错，也会被诱导。以下四类护栏分别对应四种失控模式：</p>
+
+<table>
+  <thead><tr><th style="width:22%">失控模式</th><th style="width:26%">护栏</th><th>恢复路径</th></tr></thead>
+  <tbody>
+    <tr>
+      <td>陷入循环<br />（反复调用同一个工具）</td>
+      <td>重复调用检测：连续 N 次相同调用即拒绝</td>
+      <td>拒绝信息明确告知「换个思路」；计数<b>连续</b>语义，换工具即归零</td>
+    </tr>
+    <tr>
+      <td>无限探索<br />（读不完的仓库）</td>
+      <td>迭代上限（硬约束）</td>
+      <td>达到上限时如实标注「未收尾，结论可能不完整」，而不是假装完成</td>
+    </tr>
+    <tr>
+      <td>越权操作<br />（不该改的代码被改）</td>
+      <td>只读助手硬契约 + 命令白名单 + 高风险工具需显式开关</td>
+      <td>声明与能力不符时运行直接失败，暴露问题而不是静默放行</td>
+    </tr>
+    <tr>
+      <td>编造证据<br />（引用不存在的行号）</td>
+      <td>引用核验：结论中的 <code>file:line</code> 若不在本次读过的文件集合里，标为待复核</td>
+      <td>核验结果作为告警单列，不混进「发现」里冒充结论</td>
+    </tr>
+  </tbody>
+</table>
+
+<h3>4.7.1 敏感信息与越界</h3>
+<ul class="tight">
+  <li><b>密钥文件护栏在工具层</b>：模型的读结果会进入上下文与报告，只挡浏览器是不够的</li>
+  <li><b>路径逃逸防护</b>：工作区解析统一收口，<code>..</code>、绝对路径、技能目录逃逸均拒绝</li>
+  <li><b>范围校验在服务端</b>：前端传什么都不能决定边界；越界项丢弃且不回显原文到模型上下文</li>
+  <li><b>只读助手的能力边界</b>：不注册任何中高风险工具，且由运行时检查兜底</li>
+</ul>
+
+<h2>4.8 规则与模型的交叉验证</h2>
+<p>
+本项目有一组确定性规则集（可检出硬编码密钥、危险函数调用、资源未释放等可判定的模式）。
+它的作用有两个，第二个才是关键：
+</p>
+<ol>
+  <li>不接模型时也能产出（离线模式的基础）</li>
+  <li><b>作为模型结果的交叉验证器</b>：规则命中但模型没报 → 标记为疑似漏报；
+      两者都报 → 提高置信度。这是「能确定性判定的就不交给模型」这条原则的落地</li>
+</ol>
+
+<div class="keybox">
+  <b>为什么这是本项目的核心判断。</b>
+  语言模型的强项是语义理解与跨文件推理，弱项是精确的机械判定（某一行是否包含某个模式）。
+  把后者交给规则，前者交给模型，两边互相校验 ——
+  既避免了「用模型做正则的活」这种浪费，也让产出多了一道可验证的关口。
+</div>
+
+<h2>4.9 结构化产出</h2>
+<p>
+所有产出通过工具登记，参数即 schema。这样做的直接收益是：<b>模型不需要「写出一份格式正确的报告」，
+它只需要填字段</b>；渲染、归档、评估都基于结构，而不是解析自由文本。
+</p>
+
+<pre><code>record_component(
+  name        = "session",                  # 组件名
+  layer       = "会话编排层",                # 所属层（必须先登记层）
+  role        = "跨请求状态容器 + 请求编排",
+  interfaces  = ["GET /users/{id}", ...],   # 数组：每项一个接口
+  depends_on  = ["http-adapter", ...],      # 数组：每项一个已登记组件名
+  failure_modes = ["连接池耗尽时排队直到超时"],  # 数组：每项一种失效后果
+  rationale   = "为什么这样切"                # 必填的实质内容
+)</code></pre>
+
+<p>产出层的两条质量约束：</p>
+<ul>
+  <li><b>依赖名对齐</b>：登记组件时把 <code>depends_on</code> 按「忽略大小写与首尾空格」
+      对齐到已登记组件的规范名，自依赖直接剔除，未登记的名字在回复里点名。
+      否则前端画连线时找不到目标，图上就会缺一条边 —— 这种「图缺了一块」极难事后发现。</li>
+  <li><b>未知形态兜底</b>：渲染层对不认识的产出按字段原样列出，不假装它是已知形态</li>
+</ul>
+
+<!-- ==================== 5 核心功能实现 ==================== -->
+<h1 class="chapter"><span class="num">5</span>核心功能实现</h1>
+
+<h2>5.1 代码审查助手</h2>
+
+<h3>5.1.1 工作流程</h3>
+<div class="flow">
+  <span class="flow__item flow__item--brand">选定仓库与范围</span>
+  <span class="flow__arrow">→</span>
+  <span class="flow__item">看变更（git_diff）</span>
+  <span class="flow__arrow">→</span>
+  <span class="flow__item">读文件 / 搜符号</span>
+  <span class="flow__arrow">→</span>
+  <span class="flow__item">登记发现</span>
+  <span class="flow__arrow">→</span>
+  <span class="flow__item">规则交叉验证</span>
+  <span class="flow__arrow">→</span>
+  <span class="flow__item flow__item--brand">收尾报告</span>
+</div>
+
+<h3>5.1.2 发现的结构</h3>
+<table>
+  <thead><tr><th style="width:20%">字段</th><th>说明</th></tr></thead>
+  <tbody>
+    <tr><td>严重级</td><td>阻断 / 警告 / 建议（三级；前端按级筛选）</td></tr>
+    <tr><td>位置</td><td>文件 + 行号 —— 必须指向缺陷所在行，可直接跳转</td></tr>
+    <tr><td>标题 / 说明</td><td>一句话结论 + 具体展开</td></tr>
+    <tr><td>证据</td><td>为什么判定为缺陷（引用代码、说明触发条件）</td></tr>
+  </tbody>
+</table>
+
+<h3>5.1.3 让产出可信的三个机制</h3>
+<ul>
+  <li><b>证据必填</b>：没有证据的发现无法登记，从工具层杜绝「我觉得这里有问题」</li>
+  <li><b>引用核验</b>：登记后核验引用的行号是否真在本次读过的文件里，否则单列为待复核告警</li>
+  <li><b>规则交叉验证</b>：确定性规则命中的模式若模型未报，标记疑似漏报</li>
+</ul>
+
+<h2>5.2 架构设计助手</h2>
+
+<h3>5.2.1 产出形态</h3>
+<p>架构助手的产出不是一段描述，而是四类结构化条目：</p>
+<table>
+  <thead><tr><th style="width:22%">产出</th><th>内容</th></tr></thead>
+  <tbody>
+    <tr><td><b>分层</b></td><td>每一层的名称、职责、边界提示</td></tr>
+    <tr><td><b>组件</b></td><td>所属层、角色、职责、对外接口、依赖、失效后果、切分理由</td></tr>
+    <tr><td><b>关键决策</b></td><td>选了什么 + 为什么 + <b>放弃了什么及代价</b></td></tr>
+    <tr><td><b>开放问题</b></td><td>当前无法确定、需要人来定的问题（可标记是否阻塞）</td></tr>
+  </tbody>
+</table>
+
+<div class="keybox">
+  <b>为什么强调「放弃了什么」。</b>只写「我们选了 A」的文档无法评审 ——
+  评审要讨论的正是被放弃的那条路。因此决策记录强制包含备选方案与代价，
+  这让蓝图从「介绍现状」变成「可供讨论的方案」。
+</div>
+
+<h3>5.2.2 分层图的可读化</h3>
+<p>把结构画成图容易，画得可读不容易。实现中处理了这些细节：</p>
+<ul class="tight">
+  <li><b>层名走左侧栏位</b>：节点排在右侧。否则跨层连线必然横穿每层的说明文字</li>
+  <li><b>连线走廊实测</b>：跨层竖线走在「层名栏位与节点区之间的缝」，缝宽由 DOM 实测而来
+      （写死数值或不按栏位宽计算，窄屏下竖线会压进层名文字）</li>
+  <li><b>横段走空隙中线</b>：节点行之间留有间隔，横线取其中心，保证上下都有净空，
+      既不穿节点也不出层</li>
+  <li><b>同层连线的两种走法</b>：同行且中间不夹节点走「短 U 形」；否则走走廊直角折线 ——
+      固定下沉量的浅弧会从换行后的第二个节点身上穿过去</li>
+  <li><b>线型携带信息</b>：同层实线、跨层虚线（图例标明）</li>
+</ul>
+
+<h2>5.3 多助手隔离</h2>
+<p>「一个工作台 + 多个助手」最容易出的问题是串台。本项目在四个位置做了隔离：</p>
+<table>
+  <thead><tr><th style="width:24%">位置</th><th>规则</th></tr></thead>
+  <tbody>
+    <tr><td>正文归属</td><td>工作区正文归「当前选中的那一条会话」独占；切会话或新建任务先清空再渲染</td></tr>
+    <tr><td>历史过滤</td><td>助手运行列表与仓库计数在<b>服务端</b>按助手过滤，且两处用同一个口径
+        （否则会出现「写着 5 次却点不出来」）</td></tr>
+    <tr><td>未知助手</td><td>一律显式报错并附可用清单，绝不静默回退到审查助手 ——
+        「选错助手却跑出一份完整结果」比直接报错难发现得多</td></tr>
+    <tr><td>演示数据</td><td>每个助手一套演示数据；没有完整记录的会话如实说明，不假装有内容</td></tr>
+  </tbody>
+</table>
+
+<h2>5.4 账号与会话安全</h2>
+<table>
+  <thead><tr><th style="width:26%">环节</th><th>实现</th></tr></thead>
+  <tbody>
+    <tr><td>密码存储</td><td>scrypt（n=2¹⁴ / r=8 / p=1）+ 每账号独立随机盐，存
+        <code>scrypt$n$r$p$salt$hash</code>；比较用恒定时间函数；明文不落盘</td></tr>
+    <tr><td>登录防护</td><td>失败不区分「账号不存在」与「密码错」（防账号枚举）；
+        失败时也执行一次哈希运算以避免时间差泄漏；连续失败达阈值后短期锁定</td></tr>
+    <tr><td>会话</td><td>令牌只存服务端内存；Cookie 为 HttpOnly + SameSite=Strict；
+        退出时服务端吊销（不是仅清前端标记）</td></tr>
+    <tr><td>存储健壮性</td><td>账号文件原子写入（临时文件 + 替换），避免进程中断留下半截 JSON；
+        文件损坏时改名留档而不是静默清空</td></tr>
+    <tr><td>访问控制</td><td>默认不强制登录（本机工具直开即用）；开启后业务接口要求有效会话，
+        未登录返回 401 并带登录页地址，前端自动跳转</td></tr>
+  </tbody>
+</table>
+
+<div class="warnbox">
+  <b>一个关于演示账号的工程细节。</b>测试账号的密码在「前端常量」与「后端种子」两处出现，
+  任何一处漂移的后果都很具体：<b>用户照着页面上写的密码登录会失败</b>。
+  因此页面上的提示文本由前端常量渲染（不硬编码第三处），并加了一条测试把两处钉死 ——
+  改一处忘了另一处，测试立刻失败。
+</div>
+
+<h2>5.5 前端设计系统</h2>
+<table>
+  <thead><tr><th style="width:24%">方面</th><th>实现</th></tr></thead>
+  <tbody>
+    <tr><td>设计令牌</td><td>颜色、间距、字体、层级全部走 CSS 自定义属性；改主题只改令牌</td></tr>
+    <tr><td>强调色分层</td><td><code>--agent</code>（属于「这条运行 / 这个助手」）与
+        <code>--accent</code>（属于「这个产品」）分开；助手切换只改前者</td></tr>
+    <tr><td>响应式</td><td>三档断点（宽屏 / 中屏 / 窄屏 ≤900px 抽屉化）；最小验证到 430px</td></tr>
+    <tr><td>可访问性</td><td>图标按钮有 <code>aria-label</code>；动态内容有 <code>role="status"</code>；
+        折叠操作有 <code>aria-expanded</code>；表单错误用 <code>aria-invalid</code> + 关联错误文本</td></tr>
+    <tr><td>空态与失败</td><td>空态文案按助手方言区分（「还没有审查记录」/「还没有设计记录」）；
+        失败显式提示且给恢复路径，不显示假数据</td></tr>
+  </tbody>
+</table>
+
+<!-- ==================== 6 测试与部署 ==================== -->
+<h1 class="chapter"><span class="num">6</span>测试与部署</h1>
+
+<h2>6.1 测试体系</h2>
+<div class="kpi">
+  <div class="kpi__item"><div class="kpi__num">175</div><div class="kpi__label">回归测试项（全绿）</div></div>
+  <div class="kpi__item"><div class="kpi__num">0</div><div class="kpi__label">跳过的测试</div></div>
+  <div class="kpi__item"><div class="kpi__num">~13s</div><div class="kpi__label">全量测试耗时</div></div>
+</div>
+
+<table>
+  <thead><tr><th style="width:26%">测试文件</th><th style="width:14%">规模</th><th>覆盖内容</th></tr></thead>
+  <tbody>
+    <tr><td><code>test_harness.py</code></td><td>主套件</td><td>主循环、上下文、工具、护栏、规则集、评估数据加载</td></tr>
+    <tr><td><code>test_server.py</code></td><td>服务层</td><td>真起 HTTP 服务的集成测试：路由、范围校验、归档、不泄漏密钥</td></tr>
+    <tr><td><code>test_agents.py</code></td><td>平台层</td><td>助手注册表、产出分桶、渲染分派、工具 schema 一致性、参数健壮性</td></tr>
+    <tr><td><code>test_tools_common.py</code></td><td>工具层</td><td>9 个公共工具的行为（路径逃逸 / 密钥拦截 / 分段 / 非法正则 / 目录不存在 / 白名单）+ SSE 集成</td></tr>
+    <tr><td><code>test_auth.py</code></td><td>认证层</td><td>哈希不落明文、账号枚举防护、限流、会话生命周期、HTTP 往返、强制登录模式</td></tr>
+  </tbody>
+</table>
+
+<h3>6.1.1 两条被测试守住的纪律</h3>
+<div class="grid2">
+  <div class="note">
+    <b>标注隔离</b><br />
+    评估靶场的答案标注绝不能出现在被审计的代码里 —— 答案印在题目下面，指标就是假的。
+    有一条测试遍历所有靶场，检查代码里没有泄漏标注。
+  </div>
+  <div class="note">
+    <b>失败不伪装</b><br />
+    「目录不存在」被说成「没有匹配内容」会驱动假阴性结论。
+    有一条测试断言这类情况必须显式失败并给出修复建议。
+  </div>
+</div>
+
+<h2>6.2 评估体系</h2>
+<p>
+AI 应用最难的部分之一是「怎么知道它做得好不好」。本项目用一套可复现的评估链路回答这个问题，
+并有两条刻意坚持的纪律。
+</p>
+
+<h3>6.2.1 靶场与链路</h3>
+<div class="flow">
+  <span class="flow__item flow__item--brand">8 个靶场仓库</span>
+  <span class="flow__arrow">→</span>
+  <span class="flow__item">批量运行</span>
+  <span class="flow__arrow">→</span>
+  <span class="flow__item">机器可读结果</span>
+  <span class="flow__arrow">→</span>
+  <span class="flow__item">人工复核</span>
+  <span class="flow__arrow">→</span>
+  <span class="flow__item flow__item--brand">报告（脚本现算）</span>
+</div>
+<p>8 个靶场覆盖不同难度：资源生命周期、并发安全、输入路径处理、边界条件、危险调用等，
+每个靶场配有独立答案键（34 条标注）。</p>
+
+<h3>6.2.2 实测结果</h3>
+<table>
+  <thead><tr><th style="width:32%">口径</th><th style="width:22%">召回率</th><th style="width:22%">精确率</th><th>F1</th></tr></thead>
+  <tbody>
+    <tr><td><b>自动匹配</b>（同文件 + 行号 ±2）</td><td>86%</td><td>80%</td><td>82%</td></tr>
+    <tr><td><b>人工复核</b>（逐条判定，带理由）</td><td>97%</td><td>95%</td><td>—</td></tr>
+    <tr><td>确定性规则基线（对照）</td><td>32%</td><td>—</td><td>—</td></tr>
+  </tbody>
+</table>
+
+<div class="keybox">
+  <b>为什么要给两个口径。</b>自动匹配用「同文件 + 行号容差」判定，会产生三类系统性误判：
+  同一缺陷行号略有不同（被算成一漏一多）、模型指出的真问题不在答案键里（被算成误报）、
+  相邻缺陷互相顶替。只报对自己有利的那个口径，等于把度量方式伪装成能力差异 ——
+  因此两个数字都要给，且人工复核的每条判定都写明理由。
+</div>
+
+<h3>6.2.3 度量本身的纪律</h3>
+<ul>
+  <li><b>度量工具出 bug 时先怀疑度量。</b>本项目发生过两次：一次是匹配逻辑重复消费标注，
+      导致召回被低估约 10 个百分点；一次是分组口径把冗余算成误报，精确率从 100% 掉到 58%。
+      两次都不是模型的问题。</li>
+  <li><b>指标对行号容差高度敏感。</b>整体 F1 在容差 ±0 时为 61%，放宽到 ±4 时升到 95% ——
+      所以报单一容差下的数字没有意义。</li>
+  <li><b>单次跑分不可引用。</b>同一个靶场三轮的召回波动可达 100/100/50。
+      因此选型类结论必须跑 3–5 次看均值与波动。</li>
+  <li><b>报告不手抄。</b>交付文档中的数字由脚本从原始结果现算生成，避免手抄与数据脱节。</li>
+</ul>
+
+<h2>6.3 架构助手的三档难度实测</h2>
+<p>
+针对架构助手单独设计了难度刻度，用三个真实开源仓库验证能力边界
+（psf/requests、pytest-dev/pluggy、celery/celery，规模 7k / 12k / 123k 行）：
+</p>
+
+<table>
+  <thead><tr><th style="width:16%">档位</th><th style="width:22%">仓库</th><th>结论</th></tr></thead>
+  <tbody>
+    <tr>
+      <td>中等</td><td>requests</td>
+      <td>正确识别出「requests 本身不做重试，重试在传输适配层的 urllib3」——
+          这是一个「没读代码就一定会说错」的判定点，可作为能力校验的探针</td>
+    </tr>
+    <tr>
+      <td>中等</td><td>pluggy</td>
+      <td>8 条关键决策全部命中真实设计取舍（顺序决策放在注册时刻、用属性命名空间做宿主隔离、
+          刻意不做并发保护）</td>
+    </tr>
+    <tr>
+      <td>困难</td><td>celery</td>
+      <td>任务链路的九个环节齐全，并提出真实存在的结构问题（两套任务状态并存、
+          确认语义分裂在不同层、跨三层直接依赖）</td>
+    </tr>
+  </tbody>
+</table>
+
+<div class="warnbox">
+  <b>实测暴露的两个反直觉结论（如实记录）。</b>
+  ① <b>产出规模不随仓库复杂度缩放</b>：同一个仓库两次运行产出 9 个组件与 19 个组件（波动一倍），
+  而简单仓库与复杂仓库的产出量级相同 —— 因此<b>不能把产出计数当作质量或难度的代理指标</b>。
+  ② <b>困难案例显著更难收敛</b>：复杂仓库运行中出现「读了 43 个文件仍撞到迭代上限」，
+  需要在产品上给出更明确的收尾引导。
+</div>
+
+<h2>6.4 部署与运行</h2>
+<table>
+  <thead><tr><th style="width:24%">方式</th><th>命令 / 说明</th></tr></thead>
+  <tbody>
+    <tr><td>本地运行（推荐）</td><td><code>cd backend &amp;&amp; python -m harness.server --port 8000</code>，
+        打开 <code>http://127.0.0.1:8000/</code></td></tr>
+    <tr><td>命令行模式</td><td><code>python -m harness -r &lt;仓库&gt; --goal "..."</code>；
+        加 <code>--scan-only</code> 走纯规则扫描（不调模型）</td></tr>
+    <tr><td>离线模式</td><td>不配置 API Key 即可运行，走确定性规则 + 启发式模型</td></tr>
+    <tr><td>演示模式</td><td>直接打开 <code>index.html</code>，使用内置演示数据（无需后端）</td></tr>
+    <tr><td>运行依赖</td><td>Python 3.11+ 与 <code>httpx</code>；无 Node.js、无数据库</td></tr>
+    <tr><td>数据目录</td><td><code>.runs/</code>（运行归档）、<code>.auth/</code>（账号表）—— 均不入库</td></tr>
+  </tbody>
+</table>
+
+<h2>6.5 代码质量与工程纪律</h2>
+<ul>
+  <li><b>注释写「为什么」而不是「做什么」</b>：关键决策点都记录了放弃的方案与实测依据，
+      并保留被验证为错的做法的说明（例如熔断为什么必须可恢复）</li>
+  <li><b>一次实现，多处使用</b>：公共工具只有一处实现（两个助手共享），
+      重复实现必然导致行为分叉</li>
+  <li><b>安全边界用测试守住</b>：密钥不入库、标注不泄漏、失败不伪装，都有对应测试</li>
+  <li><b>提交历史保留真实开发过程</b>：可看到问题如何被发现与修复（含被推翻的结论）</li>
+</ul>
+
+<!-- ==================== 7 创新点说明 ==================== -->
+<h1 class="chapter"><span class="num">7</span>创新点说明</h1>
+
+<h2>7.1 技术创新点</h2>
+
+<h3>创新点 1：助手即声明（Agent as a Declaration）</h3>
+<p>
+把「一个 AI 助手」抽象成一份声明：标识、系统提示、工具工厂、产出形态、强调色、只读边界。
+接入新助手只需写这份声明并注册，<b>工具层、渲染层、HTTP 层、前端轨道都不需要改动</b>。
+更进一步：声明是<b>可执行的契约</b> —— 声明只读的助手若注册了写工具，运行会在启动时直接失败，
+而不是靠自觉。
+</p>
+
+<h3>创新点 2：产出形态由助手声明，渲染层注册表 + 兜底</h3>
+<p>
+产出不是「统一都叫发现」，而是由助手自己声明形态（发现列表 / 分层蓝图 / 其他），
+渲染层按注册表分派，遇到未注册的形态走通用兜底（按字段原样列出）。
+这消灭了一类很难发现的问题：<b>把「渲染器不认识」说成「产出为空」</b>。
+</p>
+
+<h3>创新点 3：确定性规则与语言模型的交叉验证</h3>
+<p>
+「能确定性判定的就不交给模型」—— 规则集既独立产出，又作为模型结果的验证器：
+规则命中而模型未报标记为疑似漏报，两者都报提高置信度。
+实测中这一机制把规则难以覆盖的语义类缺陷 与 模型容易忽略的机械模式 各自补齐。
+</p>
+
+<h3>创新点 4：缓存感知的上下文结构</h3>
+<p>
+静态前缀（系统提示 + 核心工具定义）恒定不变，一切动态信息追加到轨迹末尾，
+使模型侧 KV 缓存命中率实测达到约 <b>87%</b>，显著降低长任务成本与延迟。
+项目还把「前缀指纹」做成自检项，防止后续改动无意破坏这个不变量。
+</p>
+
+<h3>创新点 5：可审计的零依赖架构</h3>
+<p>
+后端 HTTP/SSE 层用标准库实现（外部依赖仅 httpx），前端原生 JS/CSS 无构建。
+对一个<b>安全审计类工具</b>而言这不是「简陋」，而是设计选择：
+依赖越少越可审计、零安装门槛、不受供应链风险影响。整套系统可在无 Node.js、
+无数据库的机器上完整运行。
+</p>
+
+<h3>创新点 6：面向代码场景的检索策略（替代向量 RAG）</h3>
+<p>
+代码检索的难点不是语义相似度，而是<b>准确的行号与结构</b>。项目采用三条路径替代向量检索：
+工具清单渐进披露（先检索再加载 schema）、符号级读取（只看函数/类清单建立结构认知）、
+按需上下文（读到的内容带行号，作为证据可核验）。目标与 RAG 一致（在有限上下文里拿到需要的知识），
+路径更贴合代码场景。
+</p>
+
+<h2>7.2 应用创新点</h2>
+
+<h3>创新点 7：审查与设计共用一个可插拔内核</h3>
+<p>
+把两类差异很大的研发任务（找缺陷 / 讲结构）放进同一工作台，共享同一套 Agent 运行时、
+工具协议、事件流与界面骨架，差异全部由声明表达。这验证了内核的通用性 ——
+新增助手不再是「再造一个应用」，而是补一份声明。
+</p>
+
+<h3>创新点 8：架构蓝图的可评审化</h3>
+<p>
+架构助手的产出不是描述性文字，而是「分层 + 组件 + 决策（含放弃的方案与代价）+ 开放问题」。
+其中<b>开放问题</b>尤其有价值：它明确标出「当前无法确定、需要人来定」的部分，
+把 AI 的边界如实交付给使用者，而不是用流畅的语言掩盖不确定性。
+</p>
+
+<h3>创新点 9：面向评审的诚实性设计</h3>
+<p>
+一系列刻意的「不假装」：
+失败必须显式（目录不存在 ≠ 没有匹配）、产出计数不当质量指标、
+无法确定的问题单列、渲染器不认识就说认识不了、被中断的运行如实标注未完成、
+演示数据与真实数据在界面上明确区分。<b>在 AI 应用里，可信度本身就是产品能力。</b>
+</p>
+
+<h3>创新点 10：评估驱动开发</h3>
+<p>
+项目自带完整的评估链路（靶场 → 批量运行 → 人工复核 → 报告现算），并在开发过程中
+反复修正<b>度量本身</b>的错误（匹配逻辑重复消费标注、分组口径把冗余算成误报），
+最终形成「双口径报告 + 单次不可引用 + 数字不手抄」的纪律。
+</p>
+
+<!-- ==================== 8 总结与展望 ==================== -->
+<h1 class="chapter"><span class="num">8</span>总结与展望</h1>
+
+<h2>8.1 已交付能力</h2>
+<table>
+  <thead><tr><th style="width:26%">能力</th><th>状态</th></tr></thead>
+  <tbody>
+    <tr><td>可插拔多助手内核</td><td>✅ 内置两个助手，接新助手 = 一份声明</td></tr>
+    <tr><td>代码审查助手</td><td>✅ 带证据的发现列表，8 靶场人工复核 R=97% / P=95%</td></tr>
+    <tr><td>架构设计助手</td><td>✅ 分层图 + 组件 + 决策 + 开放问题，三个真实仓库验证</td></tr>
+    <tr><td>实时交互</td><td>✅ SSE 流式事件，历史补发与实时推送同路径</td></tr>
+    <tr><td>安全与可控</td><td>✅ 密钥护栏、路径逃逸防护、范围服务端校验、引用核验、四类护栏</td></tr>
+    <tr><td>账号系统</td><td>✅ 注册 / 登录 / 退出，scrypt 哈希，可选强制登录</td></tr>
+    <tr><td>测试与评估</td><td>✅ 175 项回归 + 完整评估链路（含人工复核）</td></tr>
+    <tr><td>响应式界面</td><td>✅ 三档断点，430px 起可用</td></tr>
+  </tbody>
+</table>
+
+<h2>8.2 已知边界与不足</h2>
+<p>如实说明当前能力边界，这些是后续版本要解决的问题：</p>
+
+<table>
+  <thead><tr><th style="width:30%">边界</th><th>影响与现状</th></tr></thead>
+  <tbody>
+    <tr>
+      <td><b>未集成多模态</b></td>
+      <td>当前聚焦代码文本理解，未支持图像 / 语音 / 视频输入。
+          对于「看界面截图找问题」这类场景尚不支持</td>
+    </tr>
+    <tr>
+      <td><b>产出规模不稳定</b></td>
+      <td>实测同一仓库两次运行的组件数可相差一倍（9 vs 19）；
+          复杂仓库偶发「撞迭代上限未收尾」。已在文档中如实标注，不把产出计数当质量指标</td>
+    </tr>
+    <tr>
+      <td><b>归档未脱敏</b></td>
+      <td>运行归档会保存工具输出原文；若被审仓库在非密钥命名文件里夹带凭据，
+          会被明文归档（已记为待改进项）</td>
+    </tr>
+    <tr>
+      <td><b>会话不持久化</b></td>
+      <td>会话令牌只在服务端内存，服务重启需要重新登录 —— 这是「不把长期凭据写盘」的取舍</td>
+    </tr>
+    <tr>
+      <td><b>单机定位</b></td>
+      <td>服务默认只绑定回环地址，面向单机使用；未做多用户隔离与配额管理</td>
+    </tr>
+    <tr>
+      <td><b>评估样本量</b></td>
+      <td>8 靶场 34 条标注，够看难度梯度但不足以做模型选型；
+          答案键已知不完整（人工复核发现 6 处真缺陷未被收录）</td>
+    </tr>
+  </tbody>
+</table>
+
+<h2>8.3 后续计划</h2>
+<ol>
+  <li><b>收敛性改进</b>：为复杂仓库引入「先分层后细化」的两阶段策略，并在接近迭代上限时
+      主动提示收尾，降低「读了 43 个文件仍没结论」的概率</li>
+  <li><b>产出规模校准</b>：把「组件粒度」显式写入助手声明（粒度指导），
+      并对规模异常（过细 / 过粗）给出运行时提示</li>
+  <li><b>多模态接入</b>：支持设计稿与界面截图作为输入，扩展「看图找实现问题」的场景</li>
+  <li><b>归档脱敏</b>：对运行归档中的凭据模式做替换，进一步收紧数据卫生</li>
+  <li><b>助手生态</b>：按同一份声明扩展测试生成、文档生成、依赖升级评估等助手，
+      验证内核的可扩展边界</li>
+  <li><b>团队协作</b>：多用户隔离、运行配额与评审工作流（把当前的单机工具推进到团队可用）</li>
+</ol>
+
+<div class="keybox" style="margin-top:8mm">
+  <b>一句话总结。</b>
+  本项目的价值不在于「用 AI 写了一个工具」，而在于把<b>如何让 AI 可靠地做研发工作</b>
+  这件事工程化：能力用声明表达、边界用运行时强制、产出用结构化收口、
+  错误用可恢复的护栏兜住、效果用双口径评估验证、不足如实写进文档。
+</div>
+
+</body>
+</html>

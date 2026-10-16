@@ -1,0 +1,13 @@
+# Margin Harness 的运行时依赖
+#
+# 刻意做到最小：平台核心（harness/、eval/）只用 Python 标准库 ——
+# 这个服务本身也是要被审计的代码，依赖越少越好审。
+# 唯一的外部依赖是 httpx（调用大模型 API）。
+
+httpx>=0.27,<1.0
+
+# 测试依赖（开发环境需要，生产运行不需要）
+#   pytest>=8.0
+#
+# 前端零依赖：原生 JavaScript + CSS，无构建步骤、无 npm 包。
+# 直接用浏览器打开或由 harness.server 同源托管即可。
