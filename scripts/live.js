@@ -737,6 +737,11 @@
     var findingsSection = null;
     var findingsList = null;
     var findings = [];
+    /* 已渲染过的发现 id。后端对同一条发现会发两种事件 —— `finding` 与
+       `artifact{kind:'finding'}`（前者给审查视图，后者给通用产出通道），
+       两条都进 addFinding 就会渲染成两张卡、表头计数也翻倍。
+       实测：5 条发现显示成 10 张卡、表头写「全部 10」。 */
+    var seenFindings = {};
     var summaryNode = null;
     var statsNode = null;
     /* 非 findings 形态的产出（蓝图 / 通用）由这一层渲染 */
@@ -795,6 +800,17 @@
       },
 
       addFinding: function (finding) {
+        if (!finding) {
+          return;
+        }
+        // 按 id 去重：同一发现可能经 finding 与 artifact 两条事件到达
+        var key = finding.id || finding.fingerprint;
+        if (key) {
+          if (seenFindings[key]) {
+            return;
+          }
+          seenFindings[key] = true;
+        }
         if (!findingsSection) {
           var section = ui.buildFindings([]);
           findingsSection = section.root;
