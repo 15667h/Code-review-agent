@@ -1199,9 +1199,59 @@
     return el('div', 'pop__empty', text);
   }
 
-  /* ---------- 回形针：把仓库加入工作区 ---------- */
+  /* ---------- 回形针：浏览电脑目录并加入工作区 ---------- */
 
-  function renderAttachPop(state) {
+  /* 浏览器的状态。路径必须是**服务端给的绝对路径** —— 浏览器读不到本机
+     文件系统，只能由同源的 harness 代列目录（它只列，不返回任何文件内容）。 */
+  var attachState = {
+    path: '',
+    data: null,
+    /* 快捷位置只在「起点」（空路径）时由后端返回，进目录后就没了 ——
+       但用户随时想跳去另一个盘，所以拿到一次就记住，之后一直显示。 */
+    shortcuts: [],
+    loading: false,
+    error: '',
+    repos: [],
+  };
+
+  var ICON_DIR =
+    '<svg width="14" height="14" viewBox="0 0 16 16" aria-hidden="true" focusable="false">' +
+    '<path d="M1.6 4.2c0-.6.4-1 1-1h3l1.2 1.4h6.6c.6 0 1 .4 1 1v6.2c0 .6-.4 1-1 1H2.6c-.6 0-1-.4-1-1V4.2z" ' +
+    'fill="none" stroke="currentColor" stroke-width="1.25" stroke-linejoin="round"/></svg>';
+  var ICON_FILE =
+    '<svg width="14" height="14" viewBox="0 0 16 16" aria-hidden="true" focusable="false">' +
+    '<path d="M4 1.8h5L12.2 5v9.2H4z" fill="none" stroke="currentColor" stroke-width="1.25" stroke-linejoin="round"/>' +
+    '<path d="M9 1.8V5h3.2" fill="none" stroke="currentColor" stroke-width="1.25" stroke-linejoin="round"/></svg>';
+
+  function attachBrowse(path) {
+    if (!workspaceProvider) {
+      renderAttachPop();
+      return;
+    }
+    attachState.loading = true;
+    attachState.error = '';
+    renderAttachPop();
+    workspaceProvider.browse(path).then(function (data) {
+      attachState.loading = false;
+      if (data && data.error) {
+        attachState.error = data.error;
+        renderAttachPop();
+        return;
+      }
+      attachState.data = data || {};
+      attachState.path = (data && data.path) || '';
+      if (data && data.shortcuts && data.shortcuts.length) {
+        attachState.shortcuts = data.shortcuts;
+      }
+      renderAttachPop();
+    }).catch(function () {
+      attachState.loading = false;
+      attachState.error = '读取目录失败：后端没有响应。';
+      renderAttachPop();
+    });
+  }
+
+  function renderAttachPop() {
     if (!attachPop) {
       return;
     }
@@ -1209,7 +1259,7 @@
     attachPop.appendChild(
       popHead(
         '添加到工作区',
-        '把仓库目录加入左侧工作区。相对路径按项目根解析；加入后可以随时移除。'
+        '浏览电脑上的目录，选中后加入左侧工作区。加入的目录会作为一个可审查的仓库。'
       )
     );
 
@@ -1223,60 +1273,129 @@
       return;
     }
 
-    if (state.loading) {
-      attachPop.appendChild(popEmpty('正在读取候选目录…'));
+    var data = attachState.data || {};
+
+    /* 快捷位置：常用目录与盘符，任何时候都在，方便来回切换 */
+    var spots = data.shortcuts || attachState.shortcuts || [];
+    if (spots.length) {
+      var chips = el('div', 'pop__chips');
+      spots.forEach(function (spot) {
+        var chip = el('button', 'pop__chip', spot.name);
+        chip.type = 'button';
+        chip.setAttribute('translate', 'no');
+        chip.setAttribute('title', spot.path);
+        chip.addEventListener('click', function () {
+          attachBrowse(spot.path);
+        });
+        chips.appendChild(chip);
+      });
+      attachPop.appendChild(chips);
+    }
+
+    /* 导航：上一级 + 当前位置 */
+    if (attachState.path) {
+      var nav = el('div', 'pop__nav');
+      if (data.parent) {
+        var up = el('button', 'pop__up');
+        up.type = 'button';
+        up.setAttribute('aria-label', '上一级');
+        up.appendChild(el('span', 'pop__up-arrow', '↑'));
+        up.appendChild(el('span', null, '上一级'));
+        up.addEventListener('click', function () {
+          attachBrowse(data.parent);
+        });
+        nav.appendChild(up);
+      }
+      var crumb = el('span', 'pop__crumb', attachState.path);
+      crumb.setAttribute('translate', 'no');
+      crumb.setAttribute('title', attachState.path);
+      nav.appendChild(crumb);
+      attachPop.appendChild(nav);
+    }
+
+    if (attachState.loading) {
+      attachPop.appendChild(popEmpty('正在读取…'));
       return;
     }
 
-    var list = el('div', 'pop__list');
-    var candidates = state.candidates || [];
-
-    if (!candidates.length) {
-      list.appendChild(popEmpty('项目根下没有可加入的目录，直接在下面填路径。'));
+    /* 把「当前所在目录」加入工作区 */
+    if (attachState.path && data.can_add) {
+      var bar = el('div', 'pop__row');
+      var addHere = el(
+        'button',
+        'pop__btn pop__btn--wide',
+        data.in_workspace ? '当前目录已在工作区' : '把当前目录加入工作区'
+      );
+      addHere.type = 'button';
+      if (data.in_workspace) {
+        addHere.disabled = true;
+      } else {
+        addHere.addEventListener('click', function () {
+          addWorkspacePath(attachState.path);
+        });
+      }
+      bar.appendChild(addHere);
+      attachPop.appendChild(bar);
     }
 
-    candidates.forEach(function (item) {
-      var row = el('button', 'pop__item');
-      row.type = 'button';
-      row.setAttribute('aria-pressed', String(!!item.added));
-      if (item.in_workspace && !item.added) {
-        row.disabled = true;
-      }
+    /* 条目：目录可进入或直接就加入；文件只列出（工作区加的是目录） */
+    var entries = data.entries || [];
+    var list = el('div', 'pop__list');
+    if (!entries.length && attachState.path) {
+      list.appendChild(popEmpty('这个目录下没有可选的子目录。'));
+    }
+    entries.forEach(function (item) {
+      var row = el('div', 'pop__entry' + (item.is_dir ? '' : ' is-file'));
 
+      var main = el('button', 'pop__entry-main');
+      main.type = 'button';
+      var icon = el('span', 'pop__entry-icon');
+      icon.innerHTML = item.is_dir ? ICON_DIR : ICON_FILE;
+      main.appendChild(icon);
       var name = el('span', 'pop__name', item.name);
       name.setAttribute('translate', 'no');
-      row.appendChild(name);
-
-      var meta = item.added
-        ? '已在工作区'
-        : item.in_workspace
-          ? '内置样本'
-          : item.files + ' 文件';
-      row.appendChild(el('span', 'pop__meta num', meta));
-
-      if (!item.added && !item.in_workspace) {
-        row.addEventListener('click', function () {
-          addWorkspacePath(item.path);
+      main.appendChild(name);
+      if (item.is_dir) {
+        main.setAttribute('title', item.path);
+        main.addEventListener('click', function () {
+          attachBrowse(item.path);
         });
+      } else {
+        main.disabled = true; // 目录才是可加入的单位，文件只作为上下文出现
+      }
+      row.appendChild(main);
+
+      if (item.is_dir) {
+        if (item.in_workspace) {
+          row.appendChild(el('span', 'pop__meta', '已在工作区'));
+        } else {
+          var quick = el('button', 'pop__quick', '加入');
+          quick.type = 'button';
+          quick.setAttribute('aria-label', '把 ' + item.name + ' 加入工作区');
+          quick.addEventListener('click', function (event) {
+            event.stopPropagation();
+            addWorkspacePath(item.path);
+          });
+          row.appendChild(quick);
+        }
       }
       list.appendChild(row);
     });
-
     attachPop.appendChild(list);
 
-    /* 这里刻意用 div 而不是 form：它嵌在输入坞的 <form> 里，
-       表单嵌套是无效结构 —— 内层提交会冒泡到外层，点「加入」会顺带触发
-       一次审查提交。改成 div 并自己处理 Enter。 */
-    var row = el('div', 'pop__row');
+    /* 手动输入：浏览不到的路径（网络盘、很深的目录）仍可直接粘贴。
+       这里是 div 不是 form —— 它嵌在输入坞的 <form> 里，嵌套表单会在回车时
+       连带提交一次审查。 */
+    var row2 = el('div', 'pop__row');
     var text = el('input', 'pop__input');
     text.type = 'text';
-    text.placeholder = '或输入路径，例如 backend 或 D:/code/app';
+    text.placeholder = '或粘贴路径，例如 D:/code/app';
     text.setAttribute('aria-label', '仓库路径');
     text.spellcheck = false;
     var submit = el('button', 'pop__btn', '加入');
     submit.type = 'button';
-    row.appendChild(text);
-    row.appendChild(submit);
+    row2.appendChild(text);
+    row2.appendChild(submit);
 
     function commit() {
       addWorkspacePath(text.value);
@@ -1288,14 +1407,13 @@
         commit();
       }
     });
-    attachPop.appendChild(row);
+    attachPop.appendChild(row2);
 
-    if (state.error) {
-      attachPop.appendChild(el('div', 'pop__error', state.error));
+    if (attachState.error) {
+      attachPop.appendChild(el('div', 'pop__error', attachState.error));
     }
 
-    var inWorkspace = state.repos || [];
-    var removable = inWorkspace.filter(function (item) {
+    var removable = (attachState.repos || []).filter(function (item) {
       return item.removable;
     });
     if (removable.length) {
@@ -1312,31 +1430,41 @@
     }
   }
 
-  function loadAttachPop() {
+  /* 「移除」区列的是已加入的工作区 —— 与浏览目录无关，单独拉一次，
+     加入/移除之后再拉，保证按钮列表跟得上。 */
+  function attachRefreshRepos() {
     if (!workspaceProvider) {
-      renderAttachPop({});
       return;
     }
-    renderAttachPop({ loading: true });
     workspaceProvider.list().then(function (data) {
-      renderAttachPop({
-        candidates: (data && data.candidates) || [],
-        repos: (data && data.repos) || [],
-      });
+      attachState.repos = (data && data.repos) || [];
+      renderAttachPop();
     });
+  }
+
+  function loadAttachPop() {
+    attachState.data = null;
+    attachState.error = '';
+    attachRefreshRepos();
+    attachBrowse('');
   }
 
   function addWorkspacePath(path) {
     if (!workspaceProvider || !path) {
       return;
     }
-    renderAttachPop({ loading: true });
+    attachState.loading = true;
+    renderAttachPop();
     workspaceProvider.add(path).then(function (result) {
       if (result && result.error) {
-        renderAttachPop({ error: result.error });
+        attachState.loading = false;
+        attachState.error = result.error;
+        renderAttachPop();
         return;
       }
-      loadAttachPop();
+      attachState.loading = false;
+      attachRefreshRepos();
+      attachBrowse(attachState.path); // 刷新标记（停在当前目录，不跳回起点）
       // 侧栏要立刻出现新空间，所以让 live.js 重新拉一次仓库列表，
       // 并把「刚加入的仓库」告诉它，好让 refresh 完自动选中
       if (onWorkspaceChange) {
@@ -1349,13 +1477,18 @@
     if (!workspaceProvider) {
       return;
     }
-    renderAttachPop({ loading: true });
+    attachState.loading = true;
+    renderAttachPop();
     workspaceProvider.remove(path).then(function (result) {
       if (result && result.error) {
-        renderAttachPop({ error: result.error });
+        attachState.loading = false;
+        attachState.error = result.error;
+        renderAttachPop();
         return;
       }
-      loadAttachPop();
+      attachState.loading = false;
+      attachRefreshRepos();
+      attachBrowse(attachState.path);
       if (onWorkspaceChange) {
         onWorkspaceChange('');
       }

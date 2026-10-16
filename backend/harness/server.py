@@ -686,6 +686,97 @@ def remove_repo(raw_path: str) -> tuple[bool, str]:
     return True, ""
 
 
+def fs_shortcuts() -> list[dict[str, str]]:
+    """文件浏览器的起点：常用位置 + 可用盘符。
+
+    「加入工作区」的入口不该强迫用户记住路径 —— 点回形针就该能直接浏览自己的电脑。
+    """
+    spots: list[dict[str, str]] = []
+    home = Path.home()
+    for name, path in (("主目录", home), ("桌面", home / "Desktop"), ("下载", home / "Downloads")):
+        if path.is_dir():
+            spots.append({"name": name, "path": str(path.resolve())})
+    spots.append({"name": "项目根", "path": str(PROJECT_ROOT)})
+    if os.name == "nt":
+        import string
+
+        for letter in string.ascii_uppercase:
+            drive = Path(f"{letter}:\\")
+            try:
+                if drive.exists():
+                    spots.append({"name": f"{letter}: 盘", "path": str(drive)})
+            except OSError:
+                continue
+    else:
+        spots.append({"name": "根目录", "path": "/"})
+    return spots
+
+
+def fs_list(raw_path: str = "") -> tuple[dict[str, Any] | None, str]:
+    """列出一个目录下的条目（**只一层**），供前端浏览并选目录加入工作区。
+
+    只列一层是有意的：递归统计会让大目录卡住几十秒，而「这一层里有什么」
+    才是用户选目录时需要的信息。有没有可审文件由 add_repo 在加入时校验。
+
+    返回 ``(结果, 错误信息)``。不返回任何文件内容 —— 这里只是目录导航。
+    """
+    if not (raw_path or "").strip():
+        return {"shortcuts": fs_shortcuts(), "entries": [], "path": "", "parent": ""}, ""
+
+    try:
+        target = _resolve_user_path(raw_path)
+    except ValueError as exc:
+        return None, str(exc)
+    if not target.is_dir():
+        return None, f"不是一个目录：{target}"
+
+    # 路径比较用 normcase 规范化 —— Windows 上 `C://Users//ME` 与 `c://users//me`
+    # 是同一个目录，直接比字符串会让「已在工作区」漏标、也让人能重复加入同一目录。
+    def key(value: str) -> str:
+        return os.path.normcase(str(value))
+
+    added = {key(p) for p in _load_registered()}
+    existing = {key(item["path"]) for item in list_repos()}
+    entries: list[dict[str, Any]] = []
+    try:
+        children = sorted(target.iterdir(), key=lambda c: (not c.is_dir(), c.name.lower()))
+    except PermissionError:
+        return None, f"没有权限读取：{target}"
+    except OSError as exc:
+        return None, f"读取失败：{exc}"
+
+    for child in children:
+        name = child.name
+        if name.startswith(".") or name in DENY_PARTS:
+            continue  # 点目录与工具缓存不进列表，与 Agent 的可见范围保持一致
+        try:
+            is_dir = child.is_dir()
+        except OSError:
+            continue
+        resolved = str(child.resolve())
+        entries.append(
+            {
+                "name": name,
+                "path": resolved,
+                "is_dir": is_dir,
+                "in_workspace": key(resolved) in existing or key(resolved) in added,
+                "added": key(resolved) in added,
+            }
+        )
+
+    parent = str(target.parent) if target.parent != target else ""
+    return {
+        "path": str(target),
+        "parent": parent,
+        "name": target.name or str(target),
+        "in_workspace": key(target) in existing or key(target) in added,
+        "added": key(target) in added,
+        "can_add": target != target.parent and len(target.parts) > 1
+        and not any(part in DENY_PARTS for part in target.parts),
+        "entries": entries,
+    }, ""
+
+
 def list_repo_files(repo_path: str, *, limit: int = 300) -> tuple[list[str], str]:
     """列出某仓库内的可审文件（相对路径），供「审查范围」勾选。
 
@@ -1111,6 +1202,15 @@ class Handler(BaseHTTPRequestHandler):
 
         if path == "/api/workspace/candidates":
             self._send_json({"candidates": workspace_candidates()})
+
+        if path == "/api/fs/list":
+            # 文件浏览器：?path= 留空返回起点（常用位置 + 盘符）
+            raw = (query.get("path") or [""])[0]
+            result, error = fs_list(raw)
+            if error:
+                self._send_json({"error": error}, 400)
+                return
+            self._send_json(result)
             return
 
         if path == "/api/repo-files":

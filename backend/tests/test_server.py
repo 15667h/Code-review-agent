@@ -756,3 +756,125 @@ def test_archived_workspace_file_is_not_a_run(tmp_path: Path) -> None:
     assert registry.load_archived() == 1, "只应加载真正是运行的那个文件"
     ids = [r["run_id"] for r in registry.list()]
     assert ids == ["abc123"], ids
+
+
+# =============================================================================
+# 文件浏览器（回形针里选目录加入工作区）
+# =============================================================================
+
+
+def test_fs_list_starts_with_shortcuts() -> None:
+    """空路径返回起点：常用位置 + 盘符 —— 点回形针就能开始浏览，不用记路径。"""
+    result, error = server.fs_list("")
+    assert error == ""
+    names = [spot["name"] for spot in result["shortcuts"]]
+    assert "主目录" in names and "项目根" in names
+    for spot in result["shortcuts"]:
+        assert Path(spot["path"]).is_dir(), spot
+
+
+def test_fs_list_lists_one_level_only(tmp_path: Path) -> None:
+    """只列一层：递归统计会让大目录卡住，而选目录只需要看这一层。"""
+    (tmp_path / "sub").mkdir()
+    (tmp_path / "sub" / "deep.txt").write_text("x", encoding="utf-8")
+    (tmp_path / "note.txt").write_text("x", encoding="utf-8")
+
+    result, error = server.fs_list(str(tmp_path))
+    assert error == ""
+    names = {item["name"] for item in result["entries"]}
+    assert names == {"sub", "note.txt"}, names  # 不含 sub/deep.txt
+    assert result["parent"]
+
+
+def test_fs_list_hides_dot_and_denied_dirs(tmp_path: Path) -> None:
+    """点目录与工具缓存不进列表 —— 与 Agent 的可见范围保持一致。"""
+    (tmp_path / ".git").mkdir()
+    (tmp_path / "node_modules").mkdir()
+    (tmp_path / "src").mkdir()
+    result, _ = server.fs_list(str(tmp_path))
+    assert {item["name"] for item in result["entries"]} == {"src"}
+
+
+def test_fs_list_rejects_missing_directory(tmp_path: Path) -> None:
+    result, error = server.fs_list(str(tmp_path / "nope"))
+    assert result is None
+    assert "不是一个目录" in error
+
+
+def test_fs_list_marks_workspace_members(tmp_path: Path, monkeypatch) -> None:
+    """已在工作区的目录要标出来，且大小写不同也算同一目录（Windows 语义）。"""
+    target = tmp_path / "Repo"
+    target.mkdir()
+    (target / "a.py").write_text("x", encoding="utf-8")
+
+    monkeypatch.setattr(server, "_load_registered", lambda: [target])
+    result, _ = server.fs_list(str(tmp_path))
+    row = next(item for item in result["entries"] if item["name"] == "Repo")
+    assert row["in_workspace"] is True and row["added"] is True
+
+    # 换一种大小写写法，仍应认出来（normcase 生效）
+    monkeypatch.setattr(server, "_load_registered", lambda: [Path(str(target).upper())])
+    result2, _ = server.fs_list(str(tmp_path))
+    row2 = next(item for item in result2["entries"] if item["name"] == "Repo")
+    assert row2["in_workspace"] is True, "大小写不同被当成了另一个目录"
+
+
+# =============================================================================
+# 文件浏览器（回形针里选目录加入工作区）
+# =============================================================================
+
+
+def test_fs_list_starts_with_shortcuts() -> None:
+    """空路径返回起点：常用位置 + 盘符 —— 点回形针就能开始浏览，不用记路径。"""
+    result, error = server.fs_list("")
+    assert error == ""
+    names = [spot["name"] for spot in result["shortcuts"]]
+    assert "主目录" in names and "项目根" in names
+    for spot in result["shortcuts"]:
+        assert Path(spot["path"]).is_dir(), spot
+
+
+def test_fs_list_lists_one_level_only(tmp_path: Path) -> None:
+    """只列一层：递归统计会让大目录卡住，而选目录只需要看这一层。"""
+    (tmp_path / "sub").mkdir()
+    (tmp_path / "sub" / "deep.txt").write_text("x", encoding="utf-8")
+    (tmp_path / "note.txt").write_text("x", encoding="utf-8")
+
+    result, error = server.fs_list(str(tmp_path))
+    assert error == ""
+    names = {item["name"] for item in result["entries"]}
+    assert names == {"sub", "note.txt"}, names  # 不含 sub/deep.txt
+    assert result["parent"]
+
+
+def test_fs_list_hides_dot_and_denied_dirs(tmp_path: Path) -> None:
+    """点目录与工具缓存不进列表 —— 与 Agent 的可见范围保持一致。"""
+    (tmp_path / ".git").mkdir()
+    (tmp_path / "node_modules").mkdir()
+    (tmp_path / "src").mkdir()
+    result, _ = server.fs_list(str(tmp_path))
+    assert {item["name"] for item in result["entries"]} == {"src"}
+
+
+def test_fs_list_rejects_missing_directory(tmp_path: Path) -> None:
+    result, error = server.fs_list(str(tmp_path / "nope"))
+    assert result is None
+    assert "不是一个目录" in error
+
+
+def test_fs_list_marks_workspace_members(tmp_path: Path, monkeypatch) -> None:
+    """已在工作区的目录要标出来，且大小写不同也算同一目录（Windows 语义）。"""
+    target = tmp_path / "Repo"
+    target.mkdir()
+    (target / "a.py").write_text("x", encoding="utf-8")
+
+    monkeypatch.setattr(server, "_load_registered", lambda: [target])
+    result, _ = server.fs_list(str(tmp_path))
+    row = next(item for item in result["entries"] if item["name"] == "Repo")
+    assert row["in_workspace"] is True and row["added"] is True
+
+    # 换一种大小写写法，仍应认出来（normcase 生效）
+    monkeypatch.setattr(server, "_load_registered", lambda: [Path(str(target).upper())])
+    result2, _ = server.fs_list(str(tmp_path))
+    row2 = next(item for item in result2["entries"] if item["name"] == "Repo")
+    assert row2["in_workspace"] is True, "大小写不同被当成了另一个目录"

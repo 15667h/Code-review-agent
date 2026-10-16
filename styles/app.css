@@ -2324,6 +2324,144 @@ a.rail__user-name:hover {
   font-variant-numeric: tabular-nums;
 }
 
+/* 回形针的文件浏览器：快捷位置 / 路径导航 / 目录行。
+   与原来的候选列表共用 .pop__list / .pop__name / .pop__meta，只补新增结构。 */
+.pop__chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-bottom: var(--sp-2);
+}
+
+.pop__chip {
+  padding: 3px 9px;
+  border: 1px solid var(--rule);
+  border-radius: 999px;
+  background: var(--surface-quiet);
+  color: var(--ink-2);
+  font-size: 11.5px;
+  white-space: nowrap;
+  transition-property: background-color, border-color, color;
+  transition-duration: var(--dur-fast);
+  transition-timing-function: var(--ease-out);
+}
+
+.pop__chip:hover {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  color: var(--accent-deep);
+}
+
+.pop__nav {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  padding-bottom: var(--sp-2);
+  margin-bottom: var(--sp-1);
+  border-bottom: 1px solid var(--rule-soft);
+}
+
+.pop__up {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: 3px;
+  padding: 2px 7px;
+  border-radius: var(--r-sm);
+  color: var(--ink-2);
+  font-size: 11.5px;
+}
+
+.pop__up:hover {
+  background: var(--surface-sunk);
+  color: var(--ink);
+}
+
+.pop__up-arrow {
+  font-size: 12px;
+  line-height: 1;
+}
+
+.pop__crumb {
+  flex: 1 1 auto;
+  min-width: 0;
+  color: var(--ink-3);
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pop__entry {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: var(--sp-2);
+  border-radius: var(--r-md);
+  transition-property: background-color;
+  transition-duration: var(--dur-fast);
+  transition-timing-function: var(--ease-out);
+}
+
+.pop__entry:hover {
+  background: var(--surface-sunk);
+}
+
+/* 文件不可加入（工作区加的是目录），弱化但保留在列表里作为上下文 */
+.pop__entry.is-file {
+  opacity: 0.6;
+}
+
+.pop__entry-main {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+  height: 40px;
+  padding: 0 var(--sp-2);
+  color: var(--ink-2);
+  text-align: left;
+}
+
+.pop__entry-main:disabled {
+  cursor: default;
+}
+
+.pop__entry-icon {
+  display: inline-flex;
+  flex: none;
+  color: var(--ink-3);
+}
+
+.pop__entry:hover .pop__entry-icon {
+  color: var(--accent);
+}
+
+.pop__quick {
+  flex: none;
+  margin-right: var(--sp-1);
+  padding: 3px 10px;
+  border: 1px solid var(--rule);
+  border-radius: var(--r-sm);
+  background: var(--surface);
+  color: var(--ink-2);
+  font-size: 11.5px;
+  transition-property: background-color, border-color, color;
+  transition-duration: var(--dur-fast);
+  transition-timing-function: var(--ease-out);
+}
+
+.pop__quick:hover {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  color: var(--accent-deep);
+}
+
+.pop__btn--wide {
+  flex: 1 1 auto;
+}
+
 .pop__row {
   display: flex;
   gap: var(--sp-2);

@@ -167,6 +167,11 @@
       });
     },
 
+    /* 浏览电脑上的目录（回形针的文件浏览器用）。path 留空返回起点：常用位置 + 盘符。 */
+    fsList: function (path) {
+      return jsonFetch('/api/fs/list' + qs({ path: path || '' }));
+    },
+
     addRepo: function (path) {
       return jsonFetch('/api/repos', { method: 'POST', body: { path: path } });
     },

@@ -141,6 +141,9 @@
       add: function (path) {
         return api.addRepo(path);
       },
+      browse: function (path) {
+        return api.fsList(path);
+      },
       remove: function (path) {
         return api.removeRepo(path);
       },
