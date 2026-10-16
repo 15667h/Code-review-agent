@@ -558,9 +558,10 @@ def test_corrector_escalates_then_circuit_breaks() -> None:
 
 
 def test_completion_check_catches_unreported_empty_result() -> None:
+    """产出为空却没说明范围 —— 对任何 agent 都成立，所以文案不写死「发现」。"""
     state = RunState(goal="g")
     problems = check_completion_claims(state, "审计完成。")
-    assert any("发现数为 0" in item for item in problems)
+    assert any("没有任何产出" in item for item in problems)
 
 
 def test_completion_check_passes_when_limitations_stated() -> None:

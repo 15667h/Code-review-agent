@@ -24,12 +24,23 @@ ApprovalFn = Callable[[ToolCall, Risk], tuple[bool, str]]
 # 连续被拒熔断的豁免名单。
 #
 # 熔断的唯一目的是「别让模型把预算烧死在被禁止的操作上」，而不是切断它的全部能力。
-# 这三类工具本身不改动外部环境（风险由参数校验与状态写入承担），一旦被熔断牵连：
+# 这几类工具本身不改动外部环境（风险由参数校验与状态写入承担），一旦被熔断牵连：
 #   - finish 被拒 → 循环无法正常收尾，只能撞到 max_iterations；
-#   - record_finding / update_todo 被拒 → 已经查实的发现全部丢失。
+#   - record_* / update_todo 被拒 → 已经查实的产出全部丢失。
 # 也就是把一次「纪律问题」放大成「结果丢失」。真实运行中已经踩到过：
 # 模型连试几次高风险工具后，14 条发现一条都没能落库。
-CIRCUIT_EXEMPT = frozenset({"finish", "record_finding", "update_todo"})
+#
+# record_* 用**前缀**而不是逐个列举：每加一个 agent 就会多出几个产出工具，
+# 名单写死就得记得同步改，漏一个就是「熔断期间该类产出全部丢失」这种很难复现的 bug。
+_EXEMPT_NAMES = frozenset({"finish", "update_todo"})
+_RECORD_PREFIX = "record_"
+
+CIRCUIT_EXEMPT = _EXEMPT_NAMES | {"record_finding"}
+
+
+def is_circuit_exempt(name: str) -> bool:
+    """该工具是否不受熔断影响。"""
+    return name in _EXEMPT_NAMES or name.startswith(_RECORD_PREFIX)
 
 
 # =============================================================================
@@ -85,7 +96,7 @@ class Constrainer:
         # 注意一个边界：同一次响应里的多个并行调用会连续累加计数，
         # 所以一批 5 个高风险调用就能打开熔断。这是可接受的 ——
         # 打开后只拦非豁免工具，模型仍能记录发现并正常收尾。
-        if call.name not in CIRCUIT_EXEMPT and state.reject_streak >= self.reject_streak_limit:
+        if not is_circuit_exempt(call.name) and state.reject_streak >= self.reject_streak_limit:
             return ConstraintDecision(
                 allowed=False,
                 reason="reject_streak",
@@ -247,8 +258,10 @@ def check_completion_claims(state: RunState, final_text: str) -> list[str]:
     """
     problems: list[str] = []
 
-    if not state.findings and "没有" not in final_text and "未发现" not in final_text:
-        problems.append("发现数为 0，但总结里没有说明「检查了哪些范围」")
+    # 泛化成「没有任何产出」：架构助手的产出是组件与决策，写死「发现数为 0」
+    # 会让它在没产出时收到一条与自己无关的检查。
+    if not any(state.artifacts.values()) and "没有" not in final_text and "未发现" not in final_text:
+        problems.append("本次没有任何产出，但总结里没有说明「检查了哪些范围 / 为什么没有结论」")
 
     if state.todos:
         unfinished = [todo for todo in state.todos if todo.status not in {"completed", "cancelled"}]

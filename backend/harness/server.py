@@ -53,8 +53,14 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, urlparse
 
+from .agents import (
+    UnknownAgent,
+    default_id as default_agent_id,
+    get as get_agent,
+    manifests,
+)
 from .config import Config, load_config, parse_env_file
-from .loop import resolve_workspace, run_audit
+from .loop import resolve_workspace, run_agent
 from .model import DeepSeekModel, ModelError
 from .offline import HeuristicModel
 from .report import render_markdown
@@ -113,6 +119,9 @@ class RunRecord:
     model: str
     offline: bool
     allow_high_risk: bool
+    # 用哪个 agent 跑。记进记录是因为产出形态由它决定 ——
+    # 回放历史时要知道这份结果是发现列表还是架构方案。
+    agent: str = field(default_factory=default_agent_id)
     # 本次审查限定的路径（仓库内相对路径）。
     # 记进记录是为了可审计：事后能看出这次审查到底覆盖了哪些文件。
     scope: list[str] = field(default_factory=list)
@@ -163,6 +172,7 @@ class RunRecord:
                 "model": self.model,
                 "offline": self.offline,
                 "allow_high_risk": self.allow_high_risk,
+                "agent": self.agent,
                 "scope": list(self.scope),
                 "context_note": self.context_note,
                 "status": self.status,
@@ -195,11 +205,25 @@ class RunRegistry:
         with self._lock:
             return self._runs.get(run_id)
 
-    def list(self, *, repo: str | None = None, limit: int = 50) -> list[dict[str, Any]]:
+    def list(
+        self,
+        *,
+        repo: str | None = None,
+        agent: str | None = None,
+        limit: int = 50,
+    ) -> list[dict[str, Any]]:
+        """列出运行摘要。
+
+        ``agent`` 过滤放在这里而不是调用方：同一条「某个助手有哪些运行」的规则
+        要被会话列表和仓库的 runs 计数共用 —— 分开写必然有一天对不上
+        （列表显示 3 条、旁边计数写 5）。
+        """
         with self._lock:
             records = list(self._runs.values())
         if repo:
             records = [r for r in records if r.repo == repo]
+        if agent:
+            records = [r for r in records if r.agent == agent]
         records.sort(key=lambda r: r.created_at, reverse=True)
         return [r.snapshot() for r in records[:limit]]
 
@@ -228,11 +252,20 @@ class RunRegistry:
                 payload = json.loads(path.read_text(encoding="utf-8"))
             except (OSError, json.JSONDecodeError):
                 continue
+
+            # 归档目录里不只有运行：工作区清单 workspace.json 也放在这里。
+            # 按「长得像不像一条运行」来筛，而不是按文件名 —— 名字会变，
+            # 形状不会。否则侧栏会多出一条空的「未命名任务」。
+            if not isinstance(payload, dict):
+                continue
+            if not payload.get("run_id") and not payload.get("created_at"):
+                continue
             record = RunRecord(
                 id=str(payload.get("run_id") or path.stem),
                 repo=str(payload.get("repo", "")),
                 repo_name=str(payload.get("repo_name", "")),
                 goal=str(payload.get("goal", "")),
+                agent=str(payload.get("agent") or default_agent_id()),
                 model=str(payload.get("model", "")),
                 offline=bool(payload.get("offline")),
                 allow_high_risk=bool(payload.get("allow_high_risk")),
@@ -282,7 +315,7 @@ def _first_line(text: str, limit: int = 76) -> str:
 
 
 class EventBridge:
-    """把 ``run_audit`` 的事件钩子翻译成前端契约。
+    """把 ``run_agent`` 的事件钩子翻译成前端契约。
 
     之所以在这里翻译而不是让前端解析 harness 内部结构：
     前端不该知道 `ToolResult.render()` 长什么样，接口要挡在中间。
@@ -348,8 +381,18 @@ class EventBridge:
         )
 
     def _on_finding(self, payload, now) -> None:
+        """审查产出的旧契约。新前端请用 ``artifact`` 事件。"""
         finding = payload["finding"]
         self.record.emit("finding", finding.to_dict())
+
+    def _on_artifact(self, payload, now) -> None:
+        """通用产出事件。``kind`` 决定前端渲染成发现卡片还是图上的节点。"""
+        item = payload["artifact"]
+        data = item.to_dict() if hasattr(item, "to_dict") else dict(item)
+        self.record.emit(
+            "artifact",
+            {"kind": payload.get("kind", ""), "iteration": payload.get("iteration"), **data},
+        )
 
     def _on_retry(self, payload, now) -> None:
         self.record.emit("retry", dict(payload))
@@ -388,8 +431,11 @@ def _finish(record: RunRecord, *, status: str, final: dict[str, Any] | None, err
     record.finished_at = time.time()
 
     if final is not None:
-        # 事件里不带 findings：发现已经逐条推过了，重复推一份纯属浪费带宽
-        record.emit("done", {k: v for k, v in final.items() if k != "findings"})
+        # 事件里不带产出明细：产出已经逐条推过了，重复推一份纯属浪费带宽
+        record.emit(
+            "done",
+            {k: v for k, v in final.items() if k not in ("findings", "artifacts")},
+        )
     elif error:
         record.emit("error", {"message": error})
     REGISTRY.persist(record)
@@ -407,6 +453,8 @@ def _worker(record: RunRecord, options: dict[str, Any]) -> None:
             "model": record.model,
             "offline": record.offline,
             "allow_high_risk": record.allow_high_risk,
+            "agent": record.agent,
+            "outcome": options.get("outcome") or get_agent(record.agent).outcome,
             "scope": list(record.scope),
         },
     )
@@ -414,7 +462,7 @@ def _worker(record: RunRecord, options: dict[str, Any]) -> None:
     config: Config = options["config"]
     try:
         workspace = resolve_workspace(record.repo)
-        model = HeuristicModel() if record.offline else DeepSeekModel(config)
+        model = HeuristicModel(agent=record.agent) if record.offline else DeepSeekModel(config)
     except (ModelError, PathEscape, OSError) as exc:
         _finish(record, status="error", final=None, error=str(exc))
         return
@@ -422,8 +470,9 @@ def _worker(record: RunRecord, options: dict[str, Any]) -> None:
     bridge = EventBridge(record)
     started = time.time()
     try:
-        result = run_audit(
+        result = run_agent(
             goal=record.goal,
+            agent=record.agent,
             workspace=workspace,
             model=model,
             config=config,
@@ -444,6 +493,16 @@ def _worker(record: RunRecord, options: dict[str, Any]) -> None:
 
     counts = result.severity_counts
     final = {
+        "agent": result.agent,
+        "outcome": result.outcome,
+        "artifacts": {
+            kind: [item.to_dict() for item in items]
+            for kind, items in result.artifacts.items()
+        },
+        # counts 保持严重级别语义：既有前端按 counts.blocker 渲染。
+        # 架构助手没有严重级别，此时三项都是 0 —— 通用计数看 artifact_counts。
+        "counts": counts,
+        "artifact_counts": result.artifact_counts,
         "stop_reason": result.stop_reason,
         "iterations": result.iterations,
         "elapsed": round(time.time() - started, 2),
@@ -458,7 +517,7 @@ def _worker(record: RunRecord, options: dict[str, Any]) -> None:
             if result.usage.prompt_tokens
             else 0.0
         ),
-        "counts": counts,
+        # findings 保留：既有前端与评估脚本按这个字段取审查结果
         "findings": [item.to_dict() for item in result.findings],
         "warnings": list(result.warnings),
         "summary": result.summary,
@@ -470,8 +529,14 @@ def _worker(record: RunRecord, options: dict[str, Any]) -> None:
 
 
 def start_run(options: dict[str, Any]) -> RunRecord:
-    """建记录、起线程，立刻返回 —— 调用方拿 run_id 去订阅事件流。"""
+    """建记录、起线程，立刻返回 —— 调用方拿 run_id 去订阅事件流。
+
+    ``agent`` 在这里校验而不是等到线程里：未知 id 若静默回退成审查助手，
+    用户会拿到一份跑完了但答非所问的结果，这种错误越早暴露越好。
+    """
     repo = str(options["repo"])
+    agent = str(options.get("agent") or default_agent_id())
+    get_agent(agent)  # 未知 id 抛 UnknownAgent，由 HTTP 层转 400
     record = RunRecord(
         id=uuid.uuid4().hex[:12],
         repo=repo,
@@ -480,6 +545,7 @@ def start_run(options: dict[str, Any]) -> RunRecord:
         model=str(options.get("model") or options["config"].model),
         offline=bool(options.get("offline")),
         allow_high_risk=bool(options.get("allow_high_risk")),
+        agent=agent,
         scope=[str(s) for s in (options.get("scope") or [])],
         context_note=str(options.get("context_note") or ""),
     )
@@ -653,7 +719,7 @@ def workspace_candidates() -> list[dict[str, Any]]:
     return candidates
 
 
-def list_repos(root: Path | None = None) -> list[dict[str, Any]]:
+def list_repos(root: Path | None = None, agent: str | None = None) -> list[dict[str, Any]]:
     """列出可审计的仓库。
 
     两个来源合并：
@@ -676,13 +742,13 @@ def list_repos(root: Path | None = None) -> list[dict[str, Any]]:
             if not _looks_like_repo(audit_root):
                 continue
             seen.add(str(audit_root.resolve()))
-            repos.append(_repo_entry(child.name, audit_root, source="examples"))
+            repos.append(_repo_entry(child.name, audit_root, source="examples", agent=agent))
 
     for extra in _load_registered():
         if str(extra) in seen:
             continue
         seen.add(str(extra))
-        repos.append(_repo_entry(extra.name, extra, source="added"))
+        repos.append(_repo_entry(extra.name, extra, source="added", agent=agent))
 
     return repos
 
@@ -716,13 +782,20 @@ def _count_files(root: Path, cap: int = 20000) -> int:
     return total
 
 
-def _repo_entry(name: str, audit_root: Path, *, source: str) -> dict[str, Any]:
+def _repo_entry(
+    name: str,
+    audit_root: Path,
+    *,
+    source: str,
+    agent: str | None = None,
+) -> dict[str, Any]:
     return {
         "id": name,
         "name": name,
         "path": str(audit_root),
         "files": _count_files(audit_root),
-        "runs": len(REGISTRY.list(repo=str(audit_root), limit=500)),
+        # 计数与会话列表同口径：都按同一个助手过滤，否则两边数字会打架
+        "runs": len(REGISTRY.list(repo=str(audit_root), agent=agent, limit=500)),
         "source": source,
         "removable": source == "added",
     }
@@ -972,6 +1045,13 @@ class Handler(BaseHTTPRequestHandler):
             self._send_json(config_payload(config))
             return
 
+        # agent 清单：前端的助手轨道直接由它渲染，新增 agent 不需要改前端代码
+        if path == "/api/agents":
+            self._send_json(
+                {"agents": manifests(), "default": default_agent_id()}
+            )
+            return
+
         if path == "/api/models":
             force = query.get("force", ["0"])[0] not in ("0", "false", "")
             payload = models_cached(config, ttl=0.0 if force else 300.0)
@@ -980,7 +1060,13 @@ class Handler(BaseHTTPRequestHandler):
 
         if path == "/api/repos":
             root = query.get("root", [""])[0]
-            self._send_json({"repos": list_repos(Path(root) if root else None), "root": root})
+            agent, problem = self._agent_filter(query)
+            if problem:
+                self._send_json(problem, 400)
+                return
+            self._send_json(
+                {"repos": list_repos(Path(root) if root else None, agent=agent), "root": root}
+            )
             return
 
         if path == "/api/workspace/candidates":
@@ -998,7 +1084,11 @@ class Handler(BaseHTTPRequestHandler):
 
         if path == "/api/runs":
             repo = query.get("repo", [""])[0]
-            self._send_json({"runs": REGISTRY.list(repo=repo or None)})
+            agent, problem = self._agent_filter(query)
+            if problem:
+                self._send_json(problem, 400)
+                return
+            self._send_json({"runs": REGISTRY.list(repo=repo or None, agent=agent)})
             return
 
         if path.startswith("/api/audit/"):
@@ -1006,6 +1096,27 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         self._send_json({"error": "未知接口", "path": path}, 404)
+
+    def _agent_filter(
+        self, query: dict[str, list[str]]
+    ) -> tuple[str | None, dict[str, Any] | None]:
+        """解析 ``?agent=``。返回 ``(过滤值, 错误载荷)``，二者必有其一为 None。
+
+        缺省表示「不过滤」（列出全部助手的运行），但**一旦显式传了就必须有效** ——
+        传了一个不存在的 id 却返回全部或空列表，都属于静默回退，
+        前端会以为「这个助手确实没有历史」，用户无从分辨。
+        """
+        raw = str(query.get("agent", [""])[0] or "").strip()
+        if not raw:
+            return None, None
+        try:
+            return get_agent(raw).id, None
+        except UnknownAgent as exc:
+            return None, {
+                "error": str(exc),
+                "code": "unknown_agent",
+                "agents": [item["id"] for item in manifests()],
+            }
 
     def _route_audit_get(self, path: str, query: dict[str, list[str]], config: Config) -> None:
         parts = path.strip("/").split("/")  # api / audit / <id> [/ stream|report]
@@ -1151,6 +1262,22 @@ class Handler(BaseHTTPRequestHandler):
         if not repo_raw:
             self._send_json({"error": "缺少 repo"}, 400)
             return
+
+        # agent 在这里校验，不静默回退。选了一个不存在的助手却跑出一份
+        # 审查结果，比直接报错难发现得多。
+        agent_raw = str(body.get("agent") or "").strip() or default_agent_id()
+        try:
+            spec = get_agent(agent_raw)
+        except UnknownAgent as exc:
+            self._send_json(
+                {
+                    "error": str(exc),
+                    "code": "unknown_agent",
+                    "agents": [item["id"] for item in manifests()],
+                },
+                400,
+            )
+            return
         # 相对路径按**项目根**解析，而不是服务进程的 CWD。
         # 服务的 CWD 是实现细节（取决于从哪启动），不该泄漏进接口契约 ——
         # 否则同一个 "backend/examples/x" 在不同启动方式下时灵时不灵。
@@ -1190,9 +1317,7 @@ class Handler(BaseHTTPRequestHandler):
             )
             return
 
-        goal = str(body.get("goal") or "").strip() or (
-            "审查这个仓库中的缺陷，重点是会导致错误行为、资源泄漏或安全问题的实现。"
-        )
+        goal = str(body.get("goal") or "").strip() or spec.default_goal
 
         # 本次审查的限定范围（用户在输入坞里勾选的文件/目录）。
         # 校验放在服务端：前端传什么都不能让范围越出仓库根。
@@ -1211,7 +1336,7 @@ class Handler(BaseHTTPRequestHandler):
                 accepted.append(workspace.relative(resolved))
             if accepted:
                 scope_note = (
-                    "本次审查**限定在以下路径**，其余文件可跳过（但若发现跨文件的因果关系，"
+                    "本次任务**限定在以下路径**，其余文件可跳过（但若发现跨文件的因果关系，"
                     "可以扩大范围并说明理由）：\n"
                     + "\n".join(f"- {path}" for path in accepted)
                 )
@@ -1233,6 +1358,10 @@ class Handler(BaseHTTPRequestHandler):
                 "goal": goal,
                 "offline": offline,
                 "allow_high_risk": bool(body.get("allow_high_risk")),
+                "agent": spec.id,
+                # 事件流里要能自证「这次产出的是哪种形态」—— 回放时没有第二处
+                # 可以再告诉你，缺了它渲染层只能猜。
+                "outcome": spec.outcome,
                 "context_note": context_note,
                 "scope": [str(s) for s in (raw_scope or [])][:200] if isinstance(raw_scope, list) else [],
                 "config": config,
@@ -1241,6 +1370,8 @@ class Handler(BaseHTTPRequestHandler):
         self._send_json(
             {
                 "run_id": record.id,
+                "agent": record.agent,
+                "outcome": spec.outcome,
                 "stream": f"/api/audit/{record.id}/stream",
                 "snapshot": f"/api/audit/{record.id}",
             },
@@ -1360,13 +1491,21 @@ def _render_report(record: RunRecord) -> str:
     刻意不缓存渲染结果：报告是终态的纯函数，重算比维护两处一致性便宜。
     """
     from .loop import AuditResult
-    from .types import Finding, Usage
+    from .types import Usage, revive_artifacts
 
     final = record.final or {}
     usage = final.get("usage") or {}
+    # 每个桶都要还原，不能只还原 finding：
+    # 只还原 finding 会让架构报告渲染出「本次没有登记分层」，那是回放丢了一半产出。
+    artifacts = revive_artifacts(final.get("artifacts") or {})
+    if not artifacts and final.get("findings"):
+        # 改造前落盘的历史记录没有 artifacts 字段
+        artifacts = revive_artifacts({"finding": final["findings"]})
     result = AuditResult(
         goal=record.goal,
-        findings=[Finding(**item) for item in final.get("findings") or []],
+        agent=final.get("agent") or record.agent,
+        artifacts=artifacts,
+        outcome=final.get("outcome") or "findings",
         summary=final.get("summary") or "",
         iterations=final.get("iterations") or 0,
         stop_reason=final.get("stop_reason") or "",

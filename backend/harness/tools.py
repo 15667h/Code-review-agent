@@ -118,7 +118,12 @@ def validate_arguments(schema: dict[str, Any], arguments: dict[str, Any]) -> lis
 
         expected = spec.get("type")
         if expected and not _matches_type(value, expected):
-            errors.append(f"参数 `{key}` 应为 {expected}，实际是 {type(value).__name__}")
+            detail = f"参数 `{key}` 应为 {expected}，实际是 {type(value).__name__}"
+            if expected == "array":
+                # 实测：模型最常把「只有一个条目的数组」写成裸字符串。错误信息必须
+                # 直接给出目标形态，否则它下一轮还猜。拒绝但不静默转换，是纪律。
+                detail += "；即使只有一项，也要写成 ['...'] 的形式，传字符串会被拒绝"
+            errors.append(detail)
             continue
 
         if "enum" in spec and value not in spec["enum"]:
@@ -223,6 +228,9 @@ class ToolRegistry:
 
     def all(self) -> list[Tool]:
         return [self._tools[name] for name in self.names()]
+
+    def is_core(self, name: str) -> bool:
+        return name in self._core
 
     def core_schemas(self) -> list[dict[str, Any]]:
         """静态前缀里的工具定义：只含核心工具 + 发现工具。**顺序固定**，不按热度排序。"""
@@ -414,6 +422,23 @@ Returns: a list of 3-5 candidate tools, each with name, purpose and full paramet
     risk=Risk.LOW,
     keywords=("discover", "find", "tool", "capability", "检索", "工具", "发现", "能力"),
 )
+
+
+_RISK_LABEL = {Risk.LOW: "只读", Risk.MEDIUM: "写/执行", Risk.HIGH: "高风险"}
+
+
+def tool_report(registry: ToolRegistry) -> str:
+    """人类可读的工具清单，用于 CLI 展示。
+
+    核心/按需的判定来自注册表本身，而不是某个 agent 写死的名单 ——
+    否则给架构工具箱打标签时会全都标成「按需」。
+    """
+    lines = []
+    for tool in registry.all():
+        tag = _RISK_LABEL.get(tool.risk, "未知")
+        core = "核心" if registry.is_core(tool.name) else "按需"
+        lines.append(f"  {tool.name:<22} [{tag:<6}] [{core}]  {tool.summary}")
+    return "\n".join(lines)
 
 
 def bind_discovery(registry: ToolRegistry) -> Tool:

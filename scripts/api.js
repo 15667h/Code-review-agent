@@ -21,6 +21,20 @@
     return served ? origin + path : path;
   }
 
+  /* 只拼有值的项 —— 值为空的键不能出现在请求里，否则服务端会以为
+     调用方真的在要「某个空 id」的记录。 */
+  function qs(params) {
+    var bits = [];
+    Object.keys(params || {}).forEach(function (key) {
+      var value = params[key];
+      if (value === null || value === undefined || value === '') {
+        return;
+      }
+      bits.push(encodeURIComponent(key) + '=' + encodeURIComponent(value));
+    });
+    return bits.length ? '?' + bits.join('&') : '';
+  }
+
   function jsonFetch(path, options) {
     var opts = options || {};
     return fetch(url(path), {
@@ -54,6 +68,15 @@
 
     /* ---- 服务与配置 ---- */
 
+    /* Agent 清单。取不到返回 null（而不是空数组）：调用方要区分
+       「后端没有这个接口」和「后端确实一个 agent 都没有」——
+       前者要退回内置清单，后者是后端坏了，该报错。 */
+    agents: function () {
+      return jsonFetch('/api/agents').catch(function () {
+        return null;
+      });
+    },
+
     health: function () {
       if (!served) {
         return Promise.resolve(null);
@@ -83,15 +106,19 @@
 
     /* ---- 仓库与历史 ---- */
 
-    repos: function () {
-      return jsonFetch('/api/repos').catch(function () {
+    /* agent：把名单限定到某一个助手。不传 = 全部。
+
+       注意这里**不把服务端错误吞成空列表**：未知 agent 会被服务端判 400
+       （unknown_agent），吞掉它就变成「这个助手没有历史」—— 用户没法分辨
+       「真的没跑过」和「点了一个不存在的助手」。错误原样往上抛。 */
+    repos: function (agent) {
+      return jsonFetch('/api/repos' + qs({ agent: agent })).catch(function () {
         return { repos: [] };
       });
     },
 
-    runs: function (repo) {
-      var query = repo ? '?repo=' + encodeURIComponent(repo) : '';
-      return jsonFetch('/api/runs' + query).catch(function () {
+    runs: function (repo, agent) {
+      return jsonFetch('/api/runs' + qs({ repo: repo, agent: agent })).catch(function () {
         return { runs: [] };
       });
     },
@@ -149,8 +176,11 @@
     stream: function (runId, handlers, onOpen) {
       var source = new EventSource(url('/api/audit/' + runId + '/stream'));
 
+      /* artifact 是产出的统一入口：kind=finding 走发现卡片，
+         其余（layer / component / decision / open_question）走蓝图面板。
+         旧的 finding 事件保留，老归档里只有它。 */
       var TYPES = [
-        'run', 'prefix', 'step', 'tool', 'finding',
+        'run', 'prefix', 'step', 'tool', 'finding', 'artifact',
         'retry', 'compression', 'stopping', 'done', 'error', 'close',
       ];
 

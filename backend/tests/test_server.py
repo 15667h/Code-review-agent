@@ -529,3 +529,231 @@ def test_audit_records_scope_and_rejects_escaping_paths(live_server: str) -> Non
     assert "app/files.py" in note
     assert "passwd" not in note, "越界路径的原文不应出现在模型上下文里"
     assert "1 个路径超出仓库范围" in note, "只报个数，不回显路径"
+
+
+# =============================================================================
+# 可插拔 Agent（HTTP 层）
+#
+# 这一层要挡住的是「用户选了一个不存在的助手，却拿到一份跑完了的结果」——
+# 那比直接报错难发现得多。同时要确认产出不是只有 findings 一种形状。
+# =============================================================================
+
+
+def test_agents_endpoint_lists_manifests(live_server: str) -> None:
+    status, body = get(live_server, "/api/agents")
+    assert status == 200
+    payload = json.loads(body)
+    ids = [item["id"] for item in payload["agents"]]
+    assert "review" in ids and "architect" in ids
+    assert payload["default"] == "review"
+
+    # 前端的助手轨道完全靠这些字段渲染，缺一个就得改前端
+    architect = next(item for item in payload["agents"] if item["id"] == "architect")
+    assert architect["outcome"] == "blueprint"
+    assert architect["artifact_kinds"] == ["layer", "component", "decision", "open_question"]
+    assert architect["accent"].startswith("#")
+    assert architect["can_edit"] is False
+
+
+def test_audit_rejects_unknown_agent(live_server: str) -> None:
+    status, body = post(
+        live_server,
+        "/api/audit",
+        {"repo": "backend/examples/s3-input-paths/repo", "goal": "x", "offline": True, "agent": "nope"},
+    )
+    assert status == 400
+    payload = json.loads(body)
+    assert payload.get("code") == "unknown_agent"
+    assert "review" in payload["error"], "错误信息要告诉调用方有哪些可用"
+
+
+def test_audit_runs_architect_and_returns_blueprint_artifacts(live_server: str) -> None:
+    status, body = post(
+        live_server,
+        "/api/audit",
+        {
+            "repo": "backend/examples/s3-input-paths/repo",
+            "goal": "盘一下结构",
+            "offline": True,
+            "agent": "architect",
+        },
+    )
+    assert status == 201
+    started = json.loads(body)
+    assert started["agent"] == "architect"
+    assert started["outcome"] == "blueprint"
+
+    run_id = started["run_id"]
+    deadline = time.time() + 90
+    record = None
+    while time.time() < deadline:
+        _, raw = get(live_server, f"/api/audit/{run_id}")
+        record = json.loads(raw)
+        if record.get("status") in ("finished", "error", "stopped"):
+            break
+        time.sleep(0.2)
+
+    assert record is not None
+    assert record["status"] == "finished", record.get("error")
+    assert record["agent"] == "architect", "历史回放也要知道这次用的是哪个 agent"
+
+    result = record["result"]
+    assert result["outcome"] == "blueprint"
+    artifacts = result["artifacts"]
+    assert artifacts["component"], "架构运行应当产出组件"
+    assert artifacts["layer"], "架构运行应当产出分层"
+    # 架构助手不产出发现，findings 保持为空
+    assert result["findings"] == []
+    # counts 仍是严重级别语义（前端按 counts.blocker 渲染），通用计数另看 artifact_counts
+    assert result["counts"]["blocker"] == 0
+    assert result["artifact_counts"]["component"] >= 1
+
+
+def test_audit_defaults_to_review_agent(live_server: str) -> None:
+    """不传 agent 时行为必须与改造前一致。"""
+    status, body = post(
+        live_server,
+        "/api/audit",
+        {"repo": "backend/examples/vulnerable-service/repo", "goal": "找缺陷", "offline": True},
+    )
+    assert status == 201
+    started = json.loads(body)
+    assert started["agent"] == "review"
+    assert started["outcome"] == "findings"
+
+    run_id = started["run_id"]
+    deadline = time.time() + 90
+    record = None
+    while time.time() < deadline:
+        _, raw = get(live_server, f"/api/audit/{run_id}")
+        record = json.loads(raw)
+        if record.get("status") in ("finished", "error", "stopped"):
+            break
+        time.sleep(0.2)
+
+    assert record is not None
+    assert record["status"] == "finished", record.get("error")
+    assert record["result"]["findings"], "审查运行应当产出发现"
+    assert record["result"]["artifacts"]["finding"]
+
+
+def test_report_replays_every_artifact_bucket(live_server: str) -> None:
+    """报告是从终态 JSON 重放的，重放必须还原**全部**产出桶。
+
+    只还原 finding 会让架构报告渲染出「本次没有登记分层」——
+    那不是事实，只是回放路径丢了一半产出。
+    """
+    status, body = post(
+        live_server,
+        "/api/audit",
+        {"repo": "backend/examples/s3-input-paths/repo", "goal": "盘一下", "offline": True, "agent": "architect"},
+    )
+    assert status == 201
+    run_id = json.loads(body)["run_id"]
+
+    deadline = time.time() + 90
+    record = None
+    while time.time() < deadline:
+        _, raw = get(live_server, f"/api/audit/{run_id}")
+        record = json.loads(raw)
+        if record.get("status") in ("finished", "error", "stopped"):
+            break
+        time.sleep(0.2)
+    assert record is not None and record["status"] == "finished"
+
+    status, text = get(live_server, f"/api/audit/{run_id}/report")
+    assert status == 200
+    assert "# 架构设计报告" in text
+    assert "本次没有登记分层" not in text, "重放丢了分层产出"
+    assert "本次没有登记组件" not in text, "重放丢了组件产出"
+    assert "开放问题" in text
+
+
+def _wait_run(base: str, run_id: str) -> dict:
+    deadline = time.time() + 90
+    while time.time() < deadline:
+        _, raw = get(base, f"/api/audit/{run_id}")
+        record = json.loads(raw)
+        if record.get("status") in ("finished", "error", "stopped"):
+            return record
+        time.sleep(0.2)
+    raise AssertionError("运行超时未结束")
+
+
+def test_runs_and_repos_can_be_scoped_to_one_agent(live_server: str) -> None:
+    """助手之间的历史必须隔离：列表与仓库计数都得跟着过滤。
+
+    这两处如果不同口径（列表按助手过滤、计数算全部），用户会看到
+    「这个助手名下 5 次」但一条都点不出来 —— 信任问题。
+    """
+    repo = "backend/examples/s1-obvious-danger/repo"
+    status, body = post(live_server, "/api/audit", {"repo": repo, "goal": "审一下", "offline": True, "agent": "review"})
+    assert status == 201
+    review_run = json.loads(body)["run_id"]
+    _wait_run(live_server, review_run)
+
+    status, body = post(live_server, "/api/audit", {"repo": repo, "goal": "盘一下", "offline": True, "agent": "architect"})
+    assert status == 201
+    arch_run = json.loads(body)["run_id"]
+    _wait_run(live_server, arch_run)
+
+    _, raw = get(live_server, "/api/runs")
+    every = {r["run_id"]: r["agent"] for r in json.loads(raw)["runs"]}
+    assert every[review_run] == "review"
+    assert every[arch_run] == "architect"
+
+    _, raw = get(live_server, "/api/runs?agent=architect")
+    archs = [r["run_id"] for r in json.loads(raw)["runs"]]
+    assert archs, "架构助手名下应当有自己的运行"
+    assert review_run not in archs, "审查运行混进了架构助手的历史里"
+    assert all(every[r] == "architect" for r in archs), "过滤后混入了别的助手"
+
+
+def test_unknown_agent_is_rejected_on_every_list_endpoint(live_server: str) -> None:
+    """/api/audit 已经拒绝未知助手；列表接口也必须同样严格。
+
+    静默返回「空列表」会让前端以为这个助手没有历史。
+    """
+    for path in ("/api/runs?agent=nope", "/api/repos?agent=nope"):
+        status, body = get(live_server, path)
+        assert status == 400, path
+        payload = json.loads(body)
+        assert payload["code"] == "unknown_agent", path
+        assert payload["agents"], "错误里要带上可用清单，方便调用方纠正"
+
+
+def test_repo_run_count_matches_filtered_session_count(live_server: str) -> None:
+    """仓库卡上的「N 次」必须等于这一栏里能点出来的条数。"""
+    repo = "backend/examples/s2-resources-errors/repo"
+    status, body = post(live_server, "/api/audit", {"repo": repo, "goal": "盘一下", "offline": True, "agent": "architect"})
+    assert status == 201
+    _wait_run(live_server, json.loads(body)["run_id"])
+
+    _, raw = get(live_server, "/api/repos?agent=architect")
+    repos = json.loads(raw)["repos"]
+    entry = next(r for r in repos if r["path"].endswith("s2-resources-errors\\repo") or r["path"].endswith("s2-resources-errors/repo"))
+
+    _, raw = get(live_server, "/api/runs?agent=architect")
+    listed = [r for r in json.loads(raw)["runs"] if r["repo"] == entry["path"]]
+
+    assert entry["runs"] == len(listed), "仓库计数与会话列表不同口径"
+
+
+def test_archived_workspace_file_is_not_a_run(tmp_path: Path) -> None:
+    """.runs/ 目录里混着工作区清单 workspace.json，它不能被当成一条运行。
+
+    读进来会变成一条 id=workspace、目标为空的记录，侧栏里就多出
+    一个谁也说不清的「未命名任务」。按形状筛，不按文件名筛。
+    """
+    from harness.server import RunRegistry
+
+    (tmp_path / "workspace.json").write_text('{"roots": []}', encoding="utf-8")
+    (tmp_path / "abc123.json").write_text(
+        json.dumps({"run_id": "abc123", "created_at": 1.0, "repo": "r", "status": "finished"}),
+        encoding="utf-8",
+    )
+
+    registry = RunRegistry(runs_dir=tmp_path)
+    assert registry.load_archived() == 1, "只应加载真正是运行的那个文件"
+    ids = [r["run_id"] for r in registry.list()]
+    assert ids == ["abc123"], ids

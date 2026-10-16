@@ -6,9 +6,9 @@
     <meta name="theme-color" content="#f4f6f5" />
     <meta
       name="description"
-      content="Margin 是面向代码评审的 agent 工作台：按空间组织审查记录，运行可追溯的审查计划，逐条给出带行号的发现。"
+      content="Margin 是一个工作台，多个研发辅助 Agent：按空间组织仓库，运行可追溯的助手计划，产出形态由助手自己声明。"
     />
-    <title>Margin · 代码审查工作台</title>
+    <title>Margin · 研发助手工作台</title>
 
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
@@ -25,6 +25,11 @@
     <a class="skip-link" href="#conversation">跳到审查对话</a>
 
     <div class="shell" id="shell">
+      <!-- ===================== 最左：助手轨道 =====================
+           56px。助手是身份级概念：能不能一眼看见，决定「可插拔」是否成立。
+           内容由 scripts/agents.js 按后端 /api/agents 渲染。 -->
+      <nav class="tray" id="agentTray" aria-label="助手"></nav>
+
       <!-- ===================== 左侧：空间栏 ===================== -->
       <aside class="rail" id="rail" aria-label="空间与审查记录">
         <div class="rail__head">
@@ -151,6 +156,8 @@
               </svg>
             </button>
 
+            <span class="context__agent" id="wsAgent" translate="no" hidden></span>
+
             <span class="context__divider" aria-hidden="true"></span>
 
             <span class="context__repo" id="wsRepo" translate="no"></span>
@@ -235,7 +242,10 @@
         <div class="dock">
           <div class="runbar" id="runbar" role="status" aria-live="polite" hidden>
             <span class="runbar__pulse" aria-hidden="true"></span>
-            <span class="runbar__label" id="runbarLabel">正在运行审查计划…</span>
+            <!-- 文案由 scripts/app.js 按当前助手的方言写入。
+                 这里刻意留一个中性的占位：静态写死「审查计划」会让架构助手
+                 在启动的一瞬间显示成审查。 -->
+            <span class="runbar__label" id="runbarLabel" role="status">正在运行…</span>
             <span class="runbar__step num" id="runbarStep"></span>
             <button class="runbar__stop" type="button" id="runbarStop">停止</button>
           </div>
@@ -371,9 +381,14 @@
               </div>
             </div>
 
-            <p class="composer__hint">
-              <kbd>Enter</kbd> 发送 · <kbd translate="no">Shift</kbd> + <kbd translate="no">Enter</kbd> 换行 ·
-              发现均为静态分析结果，合并前请人工确认
+            <!-- 快捷键提示与「这句话说了什么」是两个可独立取舍的部分：
+                 极窄屏只留后者，所以按键那半句必须整块包起来 ——
+                 单独藏 <kbd> 会在行里留下一个孤零零的「+」。 -->
+            <p class="composer__hint" id="composerHint">
+              <span class="composer__keys">
+                <kbd>Enter</kbd> 发送 · <kbd translate="no">Shift</kbd> + <kbd translate="no">Enter</kbd> 换行 ·
+              </span>
+              <span id="composerHintText">发现均为静态分析结果，合并前请人工确认</span>
             </p>
 
             <!-- 两个浮层挂在整个输入坞上，而不是各自的按钮里：
@@ -402,6 +417,8 @@
 
     <script src="scripts/mock-data.js"></script>
     <script src="scripts/api.js"></script>
+    <script src="scripts/agents.js"></script>
+    <script src="scripts/blueprint.js"></script>
     <script src="scripts/live.js"></script>
     <script src="scripts/app.js"></script>
   </body>

@@ -6,6 +6,8 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 from .loop import AuditResult
 from .types import Finding
 
@@ -36,6 +38,14 @@ def sort_findings(findings: list[Finding]) -> list[Finding]:
 
 
 def render_markdown(result: AuditResult, *, repo: str = "", model: str = "") -> str:
+    """按产出形态分派渲染器。
+
+    架构运行若走审查的渲染，会打印「本次没有记录任何发现」—— 那不是事实，
+    只是渲染器不认识它的产出。这种误导比不渲染更糟。
+    """
+    if result.outcome == "blueprint":
+        return render_blueprint_markdown(result, repo=repo, model=model)
+
     counts = result.severity_counts
     lines: list[str] = []
 
@@ -122,11 +132,155 @@ def render_markdown(result: AuditResult, *, repo: str = "", model: str = "") -> 
 
 
 # =============================================================================
+# 架构方案
+# =============================================================================
+
+
+def _meta_lines(result: AuditResult, *, repo: str, model: str, task: str) -> list[str]:
+    lines = [f"- **{task}**：{result.goal}"]
+    if repo:
+        lines.append(f"- **仓库路径**：`{repo}`")
+    if model:
+        lines.append(f"- **驱动模型**：`{model}`")
+    lines.append(f"- **迭代轮数**：{result.iterations}")
+    lines.append(f"- **结束原因**：`{result.stop_reason}`")
+    lines.append(f"- **耗时**：{result.elapsed:.1f}s")
+    lines.append(
+        f"- **Token**：prompt {result.usage.prompt_tokens} / completion "
+        f"{result.usage.completion_tokens} / 缓存命中 {result.usage.cached_tokens}"
+    )
+    lines.append("")
+    return lines
+
+
+def render_blueprint_markdown(result: AuditResult, *, repo: str = "", model: str = "") -> str:
+    """架构方案的 Markdown 渲染。
+
+    顺序刻意是「层 → 组件 → 决策 → 开放问题」：读的人先看骨架，
+    再看每个部件，最后看取舍与未定的事。反过来读会先被细节淹没。
+    """
+    layers = result.artifacts.get("layer", [])
+    components = result.artifacts.get("component", [])
+    decisions = result.artifacts.get("decision", [])
+    questions = result.artifacts.get("open_question", [])
+
+    lines: list[str] = ["# 架构设计报告", ""]
+    lines.extend(_meta_lines(result, repo=repo, model=model, task="设计任务"))
+
+    lines.append("## 结论")
+    lines.append("")
+    lines.append(result.summary.strip() or "（本次未给出文字结论）")
+    lines.append("")
+
+    # ---- 分层 ---- #
+    lines.append(f"## 分层（{len(layers)}）")
+    lines.append("")
+    if not layers:
+        lines.append("本次没有登记分层。")
+        lines.append("")
+    else:
+        ordered_layers = sorted(layers, key=lambda item: getattr(item, "order", 0))
+        for index, layer in enumerate(ordered_layers, start=1):
+            lines.append(f"{index}. **{layer.name}** — {layer.purpose or '（未说明职责）'}")
+            if layer.hint:
+                lines.append(f"   - 边界：{layer.hint}")
+        lines.append("")
+
+    # ---- 组件：按层分组，与分层图的读法一致 ---- #
+    lines.append(f"## 组件（{len(components)}）")
+    lines.append("")
+    if not components:
+        lines.append("本次没有登记组件。")
+        lines.append("")
+    else:
+        by_layer: dict[str, list[Any]] = {}
+        for component in components:
+            by_layer.setdefault(component.layer or "未分层", []).append(component)
+        for layer_name, group in by_layer.items():
+            lines.append(f"### {layer_name}")
+            lines.append("")
+            for component in group:
+                title = component.name
+                if component.role:
+                    title += f"（{component.role}）"
+                lines.append(f"- **{title}**")
+                if component.responsibility:
+                    lines.append(f"  - 职责：{component.responsibility}")
+                if component.interfaces:
+                    lines.append(f"  - 接口：{'、'.join(component.interfaces)}")
+                if component.depends_on:
+                    lines.append(f"  - 依赖：{'、'.join(component.depends_on)}")
+                if component.failure_modes:
+                    for mode in component.failure_modes:
+                        lines.append(f"  - 失效：{mode}")
+                if component.rationale:
+                    lines.append(f"  - 为什么这样切：{component.rationale}")
+            lines.append("")
+
+    # ---- 决策 ---- #
+    lines.append(f"## 决策（{len(decisions)}）")
+    lines.append("")
+    if not decisions:
+        lines.append("本次没有登记决策。")
+        lines.append("")
+    else:
+        for index, decision in enumerate(decisions, start=1):
+            lines.append(f"### {index}. {decision.title}")
+            lines.append("")
+            if decision.decision:
+                lines.append(f"- **选择**：{decision.decision}")
+            if decision.rationale:
+                lines.append(f"- **理由**：{decision.rationale}")
+            if decision.alternatives:
+                lines.append("- **放弃的方案**：")
+                for alt in decision.alternatives:
+                    lines.append(f"  - {alt}")
+            if decision.consequences:
+                lines.append(f"- **代价**：{decision.consequences}")
+            lines.append("")
+
+    # ---- 开放问题 ---- #
+    blocking = [item for item in questions if item.blocking]
+    lines.append(f"## 开放问题（{len(questions)}，其中 {len(blocking)} 项阻塞）")
+    lines.append("")
+    if not questions:
+        lines.append("本次没有登记开放问题。")
+        lines.append("")
+        lines.append("> 一次架构设计若无任何未定事项，通常说明不确定被抹平了，而不是真的都定了。")
+        lines.append("")
+    else:
+        ordered_questions = sorted(questions, key=lambda item: not item.blocking)
+        for item in ordered_questions:
+            mark = "**[阻塞]**" if item.blocking else "[待确认]"
+            lines.append(f"- {mark} {item.question}")
+            if item.why_it_matters:
+                lines.append(f"  - 影响：{item.why_it_matters}")
+        lines.append("")
+
+    _append_warnings(lines, result)
+    return "\n".join(lines)
+
+
+def _append_warnings(lines: list[str], result: AuditResult) -> None:
+    if not result.warnings:
+        return
+    lines.append("## 运行提示")
+    lines.append("")
+    for warning in result.warnings:
+        for line in warning.splitlines():
+            lines.append(f"- {line}")
+    lines.append("")
+
+
+# =============================================================================
 # 终端
 # =============================================================================
 
 
 def render_terminal(result: AuditResult, *, color: bool = True) -> str:
+    if result.outcome == "blueprint":
+        return render_blueprint_terminal(result, color=color)
+
     def paint(text: str, code: str) -> str:
         return f"{code}{text}{_RESET}" if color else text
 
@@ -184,6 +338,54 @@ def render_terminal(result: AuditResult, *, color: bool = True) -> str:
     return "\n".join(lines)
 
 
+def render_blueprint_terminal(result: AuditResult, *, color: bool = True) -> str:
+    """架构方案的终端摘要。与审查那份一样，只报代码算得准的计数。"""
+
+    def paint(text: str, code: str) -> str:
+        return f"{code}{text}{_RESET}" if color else text
+
+    layers = result.artifacts.get("layer", [])
+    components = result.artifacts.get("component", [])
+    decisions = result.artifacts.get("decision", [])
+    questions = [item for item in result.artifacts.get("open_question", [])]
+    blocking = sum(1 for item in questions if item.blocking)
+
+    lines: list[str] = ["", paint("─" * 64, _DIM), paint("  设计完成", _BOLD), paint("─" * 64, _DIM)]
+    lines.append(
+        f"  轮数 {result.iterations}   耗时 {result.elapsed:.1f}s   结束原因 {result.stop_reason}"
+    )
+    lines.append(
+        f"  token: prompt {result.usage.prompt_tokens} / completion "
+        f"{result.usage.completion_tokens} / 缓存命中 {result.usage.cached_tokens}"
+    )
+    lines.append(
+        f"  产出: 分层 {len(layers)} / 组件 {len(components)} / 决策 {len(decisions)}"
+        + (paint(f" / 开放问题 {len(questions)}（阻塞 {blocking}）", _YELLOW) if questions else "")
+    )
+
+    if components:
+        lines.append("")
+        for component in components:
+            deps = "、".join(component.depends_on) or "无"
+            lines.append(f"  - {component.name}（{component.layer or '未分层'}）→ 依赖 {deps}")
+
+    if result.summary:
+        lines.append("")
+        lines.append(paint("  结论：", _BOLD))
+        for line in result.summary.strip().splitlines():
+            lines.append(f"    {line}")
+
+    if result.warnings:
+        lines.append("")
+        lines.append(paint("  运行提示：", _YELLOW))
+        for warning in result.warnings:
+            for line in warning.splitlines():
+                lines.append(f"    {line}")
+
+    lines.append("")
+    return "\n".join(lines)
+
+
 def render_findings_oneline(findings: list[Finding]) -> str:
     """给评估脚本用的紧凑表示：`severity file:line`。"""
     return "; ".join(
@@ -191,4 +393,11 @@ def render_findings_oneline(findings: list[Finding]) -> str:
     ) or "(none)"
 
 
-__all__ = ["render_markdown", "render_terminal", "render_findings_oneline", "sort_findings"]
+__all__ = [
+    "render_blueprint_markdown",
+    "render_blueprint_terminal",
+    "render_findings_oneline",
+    "render_markdown",
+    "render_terminal",
+    "sort_findings",
+]

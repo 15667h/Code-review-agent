@@ -25,6 +25,7 @@
   var currentRunId = null;
   var view = null;            // 当前运行的视图句柄
   var modelOverride = null;   // 用户在模型菜单里选的模型
+  var live = false;           // tryBoot 是否成功接管（app.js 据此决定走哪条分支）
 
   /* ==========================================================================
      小工具
@@ -105,7 +106,7 @@
     }
 
     setConnection('live', health.model || '已连接');
-    ui.setPlaceholder('描述这次审查的重点，回车开始真实审计…');
+    ui.setPlaceholder((ui.dialect ? ui.dialect().placeholder : '') || '描述这次任务，回车开始…');
 
     ui.onModelChange(function (id) {
       modelOverride = id;
@@ -163,18 +164,47 @@
       },
     });
 
+    live = true;
     await refresh();
     return true;
   }
 
-  /* 切换到一个还没有审查记录的仓库时的空态 */
+  /* 切换助手：另一位助手有另一套历史，正文与侧栏都得重来。
+     少了这一步就会出现「助手已经切成架构了，正文里还挂着审查的发现」。 */
+  async function refocus() {
+    if (!live) {
+      return;
+    }
+    /* 正在来回不了头的流要断开，否则它会继续往新助手的正文里写内容 */
+    if (source) {
+      source.close();
+      source = null;
+    }
+    if (ui.isBusy()) {
+      ui.setBusy(false);
+      setConnection('live', '切换助手');
+    }
+    openRunId = null;
+    currentRunId = null;
+    view = null;
+    await refresh();
+  }
+
+  function isLive() {
+    return live;
+  }
+
+  /* 切换到一个还没有运行记录的仓库时的空态 */
   function showEmptyWorkspace(space) {
+    var template =
+      (ui.dialect && ui.dialect().empty) ||
+      '还没有记录。在下面写明目标并回车，就会为 %s 新建一次任务。';
     var wrap = el('div', 'turn turn--agent');
-    wrap.appendChild(el('p', 'run__intro', '还没有审查记录。在下面写明审查重点并回车，就会为 ' + space.name + ' 新建一次审查。'));
+    wrap.appendChild(el('p', 'run__intro', template.replace('%s', space.name)));
 
     var note = el('p', 'run__note');
     note.textContent =
-      '只审某几个文件时，用输入框左侧的筛选按钮勾选范围；' +
+      '只跑某几个文件时，用输入框左侧的筛选按钮勾选范围；' +
       '要把别的仓库加进工作区，用回形针按钮。';
     wrap.appendChild(note);
 
@@ -202,8 +232,35 @@
   }
 
   /* 拉取仓库、历史、模型与配置，重建侧栏与模型菜单 */
+  /* 名单属于哪个助手。它既是请求参数，也是「为什么这一栏只有一半历史」的答案，
+     所以只在这里算一次，refresh 与 refreshRailOnly 共用同一份。 */
+  function agentScope() {
+    return currentAgentId();
+  }
+
+  /* 列表取不到时必须让用户看见。吞掉它就变成「这个助手没有历史」——
+     和「真的没跑过」长得一模一样，用户无从分辨。 */
+  function guardListing() {
+    for (var i = 0; i < arguments.length; i += 1) {
+      var payload = arguments[i];
+      if (payload && payload.error) {
+        notice('读取列表失败：' + payload.error);
+        if (window.console && console.warn) {
+          console.warn('[margin] 列表接口报错：', payload);
+        }
+        return;
+      }
+    }
+  }
+
   async function refresh() {
-    var results = await Promise.all([api.repos(), api.runs(), api.models(), api.config()]);
+    var results = await Promise.all([
+      api.repos(agentScope()),
+      api.runs(null, agentScope()),
+      api.models(),
+      api.config(),
+    ]);
+    guardListing(results[0], results[1]);
     var repos = (results[0] && results[0].repos) || [];
     var runs = (results[1] && results[1].runs) || [];
     var models = (results[2] && results[2].models) || [];
@@ -318,7 +375,9 @@
       goal = goal.slice(0, 22) + '…';
     }
     var mark = { running: '运行中', queued: '排队中', error: '失败', stopped: '已停止' }[run.status];
-    return mark ? mark + ' · ' + (goal || '未命名') : goal || '未命名审查';
+    /* 不再给标题加「设计 · 」前缀：会话列表已经按助手隔离了，
+       同一个助手名下不可能混进另一种产出，前缀只是噪音。 */
+    return mark ? mark + ' · ' + (goal || '未命名') : goal || '未命名任务';
   }
 
   /* ==========================================================================
@@ -333,10 +392,11 @@
     if (replaying || (ui.isBusy() && !silent)) {
       return;
     }
-    if (!session || !session.runId || session.status === 'running') {
+    if (!session || !session.runId) {
       return;
     }
-    // 已经展示过这一次就不再重复追加，避免点两次出现两份相同内容
+    /* 幂等：同一条会话已经在正文里了就不再重来。这只防重复，
+       不代表「追加」—— 正文永远只属于当前选中的那一条会话。 */
     if (session.runId === openRunId) {
       return;
     }
@@ -348,22 +408,40 @@
 
     replaying = true;
     try {
-      var handle = createView({
+      /* 正文先清空，再渲染这一条会话。少了这一步，
+         点第二个任务就会把它的输出接在第一个任务下面 —— 看起来像
+         「所有任务共用一个对话框」，其实是会话之间压根没有边界。 */
+      ui.replaceThread(null);
+      openRunId = session.runId;
+      currentRunId = session.runId;
+
+      var meta = {
         repo_name: snapshot.repo_name,
         model: snapshot.model,
         goal: snapshot.goal,
         offline: snapshot.offline,
-        replay: true,
-      });
+        agent: snapshot.agent,
+        outcome: outcomeFor(snapshot),
+      };
+
+      /* 还在跑：SSE 会先补齐历史事件再实时推，所以「接着看」和
+         从头回放走的是同一条路径，不需要在这里再渲染一遍快照里的事件。 */
+      if (snapshot.status === 'running') {
+        var liveHandle = createView(meta);
+        liveHandle.runId = session.runId;
+        streamRun(session.runId, liveHandle);
+        setConnection('busy', snapshot.repo_name);
+        return;
+      }
+
+      var handle = createView(Object.assign({ replay: true }, meta));
       handle.runId = session.runId;
       snapshot.events.forEach(function (event) {
         applyEvent(event.type, event.data, handle, true);
       });
       finishView(handle, snapshot.result || {}, true);
-      openRunId = session.runId;
-      currentRunId = session.runId;
       ui.setBusy(false);
-      ui.setStatus('审查完成', plural(handle.steps, '轮'));
+      ui.setStatus('运行完成', plural(handle.steps, '轮'));
     } finally {
       replaying = false;
     }
@@ -376,15 +454,29 @@
      发起一次真实审计
      ========================================================================== */
 
+  function currentAgentId() {
+    return ui.agentId ? ui.agentId() : 'review';
+  }
+
+  function currentOutcome() {
+    return window.MARGIN_AGENTS ? window.MARGIN_AGENTS.outcome() : 'findings';
+  }
+
   async function startAudit(text) {
     var active = ui.getActive();
     var space = active && active.space;
+    var dialect = ui.dialect ? ui.dialect() : {};
 
+    /* 新建一次任务 = 进入一条新会话：正文必须清空。
+       否则这次运行的输出会接在上一条会话的输出后面，用户会以为
+       「问了新的一句话，AI 却还在回答上一个任务」。 */
+    ui.replaceThread(null);
+    openRunId = null;
     ui.renderUserTurn(text);
     ui.markSent();
 
     if (!space || !space.path) {
-      notice('请先在左侧选择一个仓库，再描述审查重点。');
+      notice(dialect.noRepo || '请先在左侧选择一个仓库，再描述任务目标。');
       return;
     }
 
@@ -395,6 +487,8 @@
       goal: text,
       model: model ? model.id : undefined,
       max_iterations: 40,
+      /* 用哪个助手跑由后端校验：未知 id 会直接 400，绝不静默回退成审查 */
+      agent: currentAgentId(),
     };
     if (scope.length) {
       payload.scope = scope;
@@ -405,10 +499,12 @@
       model: model ? model.id : '',
       goal: text,
       offline: false,
+      agent: currentAgentId(),
+      outcome: currentOutcome(),
     });
 
     if (scope.length) {
-      handle.note('本次审查限定 ' + scope.length + ' 个路径：' + scope.join('、'));
+      handle.note('本次任务限定 ' + scope.length + ' 个路径：' + scope.join('、'));
     }
 
     ui.setBusy(true);
@@ -435,6 +531,8 @@
 
     currentRunId = response.run_id;
     handle.runId = response.run_id;
+    // 这次运行已经占了正文：再点侧栏里它自己时应当是 no-op，而不是重新回放
+    openRunId = response.run_id;
     streamRun(response.run_id, handle);
   }
 
@@ -487,6 +585,9 @@
       finding: function (data) {
         handle.addFinding(data);
       },
+      artifact: function (data) {
+        handle.addArtifact(data);
+      },
       retry: function (data) {
         handle.note('模型重试：' + (data.error || ''));
       },
@@ -531,7 +632,8 @@
 
   /* 运行结束后只刷新侧栏，不重放（否则会把刚跑完的流覆盖掉） */
   async function refreshRailOnly() {
-    var results = await Promise.all([api.repos(), api.runs()]);
+    var results = await Promise.all([api.repos(agentScope()), api.runs(null, agentScope())]);
+    guardListing(results[0], results[1]);
     var repos = (results[0] && results[0].repos) || [];
     var runs = (results[1] && results[1].runs) || [];
     var byRepo = {};
@@ -584,7 +686,32 @@
       bits.push(meta.repo_name);
     }
     bits.push(meta.offline ? '离线规则模式' : meta.model || '模型未指定');
-    return '已连接后端，开始审查 ' + bits.join(' · ') + '。';
+    /* 同一个输入坞，不同助手说不同的话：审查 / 设计。
+       走 outcomeFor 而不是只看 meta.outcome —— run 事件里的元数据未必
+       带 outcome（老归档只有 agent），少了这一步回放旧记录会显示「开始审查」。 */
+    var verb = outcomeFor(meta) === 'blueprint' ? '设计' : '审查';
+    return '已连接后端，开始' + verb + ' ' + bits.join(' · ') + '。';
+  }
+
+  /* 这次运行用哪套产出渲染器。终态里带了 outcome 就以它为准，
+     否则按 agent id 查清单 —— 历史记录是旧版本跑的，没有 outcome 字段。 */
+  function outcomeFor(snapshot) {
+    if (snapshot && snapshot.result && snapshot.result.outcome) {
+      return snapshot.result.outcome;
+    }
+    var id = snapshot && snapshot.agent;
+    if (id && window.MARGIN_AGENTS) {
+      var found = null;
+      window.MARGIN_AGENTS.list().forEach(function (item) {
+        if (item.id === id) {
+          found = item;
+        }
+      });
+      if (found) {
+        return found.outcome;
+      }
+    }
+    return 'findings';
   }
 
   function createView(meta) {
@@ -592,12 +719,19 @@
     var intro = el('p', 'run__intro is-animated', introFor(meta));
     turn.appendChild(intro);
 
-    var plan = ui.buildPlan([]);
+    // 计划面板的标题跟着**这一次运行**的产出形态走，不是当前选中的助手 ——
+    // 否则切到审查去看一条旧的架构记录，面板会写「审查计划」。
+    var plan = ui.buildPlan([], meta && meta.outcome);
     plan.total.textContent = '0 轮';
     turn.appendChild(plan.root);
 
     var tools = el('div', 'tools');
     turn.appendChild(tools);
+
+    /* 产出插槽：固定插在工具区之后。产出是逐条推来的，提示也可能插进来，
+       有了这个槽，产出区的位置就不会因为「谁先到」而变。 */
+    var slot = el('div', 'run__outcome');
+    turn.appendChild(slot);
 
     var noticeBox = null;
     var findingsSection = null;
@@ -605,6 +739,8 @@
     var findings = [];
     var summaryNode = null;
     var statsNode = null;
+    /* 非 findings 形态的产出（蓝图 / 通用）由这一层渲染 */
+    var artifactView = null;
 
     var handle = {
       meta: meta,
@@ -613,6 +749,9 @@
       begin: Date.now(),
       open: null,
       turn: turn,
+      outcome: (meta && meta.outcome) || 'findings',
+      artifactView: null,
+      slot: slot,
 
       setIntro: function (text) {
         intro.textContent = text;
@@ -660,14 +799,38 @@
           var section = ui.buildFindings([]);
           findingsSection = section.root;
           findingsList = section.list;
-          // 插在工具区之后、结语之前
-          turn.appendChild(findingsSection);
+          slot.appendChild(findingsSection);
         }
         findings.push(finding);
         var card = ui.buildFinding(finding);
         card.classList.add('is-animated');
         findingsList.appendChild(card);
         ui.refreshFindingsHead(findingsSection, findings);
+        ui.follow();
+      },
+
+      /* 产出的统一入口：kind 决定去哪。
+         finding 走发现卡片（带严重级别筛选），其余交给该助手的渲染器。 */
+      addArtifact: function (data) {
+        if (!data || !data.kind) {
+          return;
+        }
+        // 事件体是 { kind, artifact, iteration }；产出本体在 artifact 里。
+        // 直接把整个事件丢给渲染器，画出来的会是「kind/iteration」两个字段。
+        var item = data.artifact || data;
+        if (data.kind === 'finding') {
+          handle.addFinding(item);
+          return;
+        }
+        if (!artifactView) {
+          artifactView = ui.createOutcome(handle.outcome);
+          if (!artifactView) {
+            return;
+          }
+          handle.artifactView = artifactView;
+          slot.appendChild(artifactView.root);
+        }
+        artifactView.add(data.kind, item);
         ui.follow();
       },
 
@@ -715,6 +878,26 @@
     var turn = handle.turn;
     if (!turn) {
       return;
+    }
+
+    /* 终态里带着完整产出。两件事靠它兜底：
+       ① 事件流缺尾（服务中途重启）→ 补齐；
+       ② 老归档只有 finding 事件、但这次是蓝图 → 至少把产出显示出来。 */
+    if (payload.artifacts && handle.outcome !== 'findings' && handle.slot) {
+      var kinds = Object.keys(payload.artifacts || {});
+      var hasNonFinding = kinds.some(function (kind) {
+        return kind !== 'finding';
+      });
+      if (hasNonFinding && !handle.artifactView) {
+        var created = ui.createOutcome(handle.outcome);
+        if (created) {
+          handle.artifactView = created;
+          handle.slot.appendChild(created.root);
+        }
+      }
+    }
+    if (handle.artifactView && payload.artifacts) {
+      handle.artifactView.fill(payload.artifacts);
     }
 
     if (payload.stop_reason === 'stopped') {
@@ -848,6 +1031,9 @@
       case 'finding':
         handle.addFinding(data);
         break;
+      case 'artifact':
+        handle.addArtifact(data);
+        break;
       case 'done':
         handle.setResult(data);
         break;
@@ -859,5 +1045,7 @@
   window.MARGIN_LIVE = {
     tryBoot: tryBoot,
     setConnection: setConnection,
+    refocus: refocus,
+    isLive: isLive,
   };
 })();

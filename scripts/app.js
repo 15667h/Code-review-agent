@@ -173,12 +173,17 @@
     return { el: li, mark: mark, dur: dur, meta: meta };
   }
 
-  function buildPlan(steps) {
+  /* outcome 可选：回放一条历史记录时传本次运行的形态，
+     不传就按当前选中的助手。 */
+  function buildPlan(steps, outcome) {
+    // 计划面板的标题随助手变：审查叫「审查计划」，架构叫「设计计划」。
+    // 不跟着变的话，同一个面板会一边说「开始设计」一边说「审查计划」。
+    var planTitle = wordsFor(outcome).planTitle || '执行计划';
     var root = el('section', 'plan is-animated');
-    root.setAttribute('aria-label', '审查计划');
+    root.setAttribute('aria-label', planTitle);
 
     var head = el('header', 'plan__head');
-    head.appendChild(el('h3', 'plan__title', '审查计划'));
+    head.appendChild(el('h3', 'plan__title', planTitle));
     var total = el('span', 'plan__meta num');
     total.textContent = steps.length + ' 步';
     head.appendChild(total);
@@ -437,15 +442,40 @@
   var busy = false;
   var sentOnce = false;
 
+  /* 输入坞的措辞随助手变：审查说「开始审查」，架构说「开始设计」。
+     取不到清单时用审查的话术，不要留空。 */
+  function words() {
+    if (window.MARGIN_AGENTS && window.MARGIN_AGENTS.dialect) {
+      return window.MARGIN_AGENTS.dialect();
+    }
+    return { send: '开始审查', follow: '继续追问', running: '正在运行…' };
+  }
+
+  /* 按产出形态取方言（不是按当前选中的助手）。
+     回放一条历史记录时要按「这条记录的形态」取词，否则切到审查去看
+     一条旧的架构记录，面板标题会自相矛盾。 */
+  function wordsFor(outcome) {
+    if (outcome && window.MARGIN_AGENTS && window.MARGIN_AGENTS.dialectFor) {
+      return window.MARGIN_AGENTS.dialectFor(outcome);
+    }
+    return words();
+  }
+
   function setBusy(state) {
     busy = state;
+    /* 运行中把发送按钮**收起来**，而不是摆一个禁用的「运行中」：
+       ① 运行中本来就发不出去，一个点不动的按钮不提供任何信息；
+       ② 窄屏（320~430px）上「运行中」+「停止」两个按钮一起挤，
+          submit 区会顶出输入坞右边 —— 实测溢出 74~185px，
+          在 320px 下发送按钮完全在屏幕外。 */
     sendBtn.disabled = state;
+    sendBtn.hidden = state;
     stopBtn.hidden = !state;
     runbar.hidden = !state;
     if (state) {
-      sendLabel.textContent = '运行中';
+      runbarLabel.textContent = words().running || '正在运行…';
     } else {
-      sendLabel.textContent = sentOnce ? '继续追问' : '开始审查';
+      sendLabel.textContent = sentOnce ? words().follow : words().send;
     }
   }
 
@@ -547,6 +577,32 @@
       }
     }
 
+    /* --- 架构产出：分层 → 组件 → 决策 → 开放问题 --- */
+    if (run.blueprint && window.MARGIN_BLUEPRINT) {
+      var bp = window.MARGIN_BLUEPRINT.create({ el: el, esc: esc });
+      turn.appendChild(bp.root);
+      follow(true);
+
+      var kinds = ['layer', 'component', 'decision', 'open_question'];
+      for (var k = 0; k < kinds.length; k += 1) {
+        var items = run.blueprint[kinds[k]] || [];
+        for (var m = 0; m < items.length; m += 1) {
+          if (cancelled) {
+            finishTurn(turn);
+            return;
+          }
+          bp.add(kinds[k], items[m]);
+          follow();
+          await sleep(280 * speed);
+        }
+      }
+      if (!cancelled) {
+        bp.redraw();
+        follow();
+        await sleep(160 * speed);
+      }
+    }
+
     /* --- 结语 --- */
     if (run.summary) {
       if (cancelled) {
@@ -570,17 +626,38 @@
   }
 
   /* ==========================================================================
+     演示数据：按当前助手取一套
+     实时模式不走这里 —— 那里的数据全部来自后端。
+     ========================================================================== */
+
+  function demoPack() {
+    var key = 'review';
+    if (window.MARGIN_AGENTS) {
+      var agent = window.MARGIN_AGENTS.current();
+      if (agent && agent.outcome === 'blueprint') {
+        key = 'architect';
+      }
+    }
+    return (DATA.agents && DATA.agents[key]) || DATA;
+  }
+
+  function demoReplies() {
+    return demoPack().replies || DATA.replies || [];
+  }
+
+  /* ==========================================================================
      追问快捷入口
      ========================================================================== */
 
   function renderFollowUps() {
-    if (!DATA.followUps || thread.querySelector('.followups')) {
+    var followUps = demoPack().followUps || DATA.followUps;
+    if (!followUps || thread.querySelector('.followups') || demoStubShown) {
       return;
     }
     var wrap = el('div', 'followups is-animated');
     wrap.setAttribute('aria-label', '继续追问');
 
-    DATA.followUps.forEach(function (item) {
+    followUps.forEach(function (item) {
       var chip = el('button', 'followup');
       chip.type = 'button';
       chip.textContent = item.label;
@@ -616,7 +693,7 @@
      ========================================================================== */
 
   async function send(text) {
-    /* 实时模式：这句话就是一次真实审计的审计目标 */
+    /* 实时模式：这句话就是一次真实运行的任务目标 */
     if (liveSend) {
       await liveSend(text);
       return;
@@ -625,7 +702,7 @@
     renderUserTurn(text);
     sentOnce = true;
 
-    var run = DATA.replies[replyIndex % DATA.replies.length];
+    var run = demoReplies()[replyIndex % demoReplies().length];
     replyIndex += 1;
 
     await playRun(run, { speed: 1 });
@@ -775,7 +852,7 @@
     var total = spaces.reduce(function (sum, space) {
       return sum + space.sessions.length;
     }, 0);
-    var note = spaces.length + ' 个空间 · ' + total + ' 次审查';
+    var note = spaces.length + ' 个空间 · ' + total + ' 次运行';
     if (liveSend) {
       note += ' · 已连接后端';
     }
@@ -784,13 +861,58 @@
 
   function selectSession(space, session) {
     draftSpace = null;
+    var wasCurrent = activeSession && activeSession.id === session.id;
     applyContext(space, session);
 
-    // 只有「用户点击」这条路径才通知外部，程序化选中走 applyContext
     if (onSessionSelect) {
+      // 只有「用户点击」这条路径才通知外部，程序化选中走 applyContext
       onSessionSelect(space, session);
+    } else if (!wasCurrent) {
+      /* 演示模式：每套数据只有一条完整脚本。点了别的会话不能假装它有内容，
+         但也不能毫无反应 —— 那和「点坏了」看不出区别。 */
+      if (session.id === demoAuthoredKey) {
+        playDemo().catch(function (error) {
+          if (window.console && console.warn) {
+            console.warn('[margin] 演示数据回放失败：', error);
+          }
+        });
+      } else {
+        showDemoStub(session);
+      }
     }
     closeDrawer();
+  }
+
+  /* 演示数据里唯一有完整内容的那条会话：第一个空间的第一条记录 */
+  var demoAuthoredKey = null;
+  /* 正文当下是不是那条「没有完整记录」的占位。晚到的追问条要据此止步 ——
+     它们属于已经被替换掉的那份演示内容。 */
+  var demoStubShown = false;
+
+  function markDemoAuthored() {
+    var first = SPACES[0];
+    demoAuthoredKey = first && first.sessions[0] ? first.sessions[0].id : null;
+  }
+
+  function showDemoStub(session) {
+    var wrap = el('div', 'turn turn--agent');
+    wrap.appendChild(el('p', 'run__intro', '演示数据里「' + session.title + '」没有完整记录。'));
+
+    var note = el('p', 'run__note');
+    note.textContent =
+      '每一套演示数据只提供一个助手的一条完整示例；连上后端后，每一次真实运行都会各自归档，可以逐条回放。';
+    wrap.appendChild(note);
+
+    replaceThread(wrap);
+    demoStubShown = true;
+    removeFollowUps();
+  }
+
+  function replaceThread(node) {
+    thread.textContent = '';
+    if (node) {
+      thread.appendChild(node);
+    }
   }
 
   /* 点击空间行：切换到这个仓库并展开；再点一次已选中的行则收起。
@@ -972,8 +1094,9 @@
     composerTarget.classList.toggle('is-draft', !!draftSpace);
     composerTarget.textContent = '';
 
+    // 「新建审查 → X」/「新建设计 → X」：措辞随助手，免得用户不知道这一发会落到哪
     composerTarget.appendChild(
-      document.createTextNode(draftSpace ? '新建审查 → ' : '当前目标 → ')
+      document.createTextNode(draftSpace ? words().draftPrefix : '当前目标 → ')
     );
     var strong = el('b', null, activeSpace.name);
     strong.setAttribute('translate', 'no');
@@ -992,7 +1115,7 @@
       composerTarget.appendChild(document.createTextNode('（' + bits.join(' · ') + '）'));
     }
 
-    var title = '本次审查提交到：' + (activeSpace.path || activeSpace.name);
+    var title = '本次任务提交到：' + (activeSpace.path || activeSpace.name);
     if (scope.length) {
       title += '\n限定范围：\n' + scope.join('\n');
     }
@@ -1628,6 +1751,23 @@
     renderUserTurn: renderUserTurn,
     follow: follow,
 
+    /* 产出渲染器由 outcome 决定。findings 走上面那套（有严重级别筛选）；
+       blueprint 走蓝图；不认识的 outcome 走通用渲染器 ——
+       没见过这个助手也必须能把它的产出显示出来，而不是白屏。 */
+    createOutcome: function (outcome) {
+      if (!window.MARGIN_BLUEPRINT) {
+        return null;
+      }
+      if (outcome === 'blueprint') {
+        return window.MARGIN_BLUEPRINT.create({ el: el, esc: esc });
+      }
+      return window.MARGIN_BLUEPRINT.createGeneric({ el: el, esc: esc });
+    },
+    agentId: function () {
+      return window.MARGIN_AGENTS ? window.MARGIN_AGENTS.currentId() : 'review';
+    },
+    dialect: words,
+
     /* 运行状态 */
     setBusy: setBusy,
     isBusy: function () {
@@ -1701,12 +1841,7 @@
     setPlaceholder: function (text) {
       input.placeholder = text;
     },
-    replaceThread: function (node) {
-      thread.textContent = '';
-      if (node) {
-        thread.appendChild(node);
-      }
-    },
+    replaceThread: replaceThread,
     thread: thread,
     closeDrawer: closeDrawer,
   };
@@ -1717,7 +1852,65 @@
      启动
      ========================================================================== */
 
+  /* 演示模式下切换助手：整套数据都换 —— 空间、会话、开场与追问。
+     只换配色不改数据的话，会出现「助手是架构、侧栏里全是审查记录」。 */
+  async function playDemo() {
+    var pack = demoPack();
+    cancelled = true;      // 让正在播放的那一段演示自己退出
+    await sleep(80);
+    thread.textContent = '';
+    removeFollowUps();
+    sentOnce = false;
+    SPACES = (pack.spaces || DATA.spaces || []).slice();
+    markDemoAuthored();
+    demoStubShown = false;
+    renderRail();
+    var first = SPACES[0] || null;
+    applyContext(first, first && first.sessions[0]);
+    renderUserTurn(pack.user);
+    await playRun(pack, { speed: 0.5 });
+    renderFollowUps();
+  }
+
+  /* 切换助手：两种模式各自把状态重来一遍，都带着「另一位助手有另一套历史」的前提。 */
+  async function onAgentChange() {
+    if (window.MARGIN_LIVE && window.MARGIN_LIVE.isLive && window.MARGIN_LIVE.isLive()) {
+      await window.MARGIN_LIVE.refocus();
+      return;
+    }
+    await playDemo();
+  }
+
   async function boot() {
+    /* 助手清单：实时模式取 /api/agents，演示模式用内置声明。
+       必须在渲染之前拿到 —— 强调色与文案都跟着它走。 */
+    if (window.MARGIN_AGENTS && typeof window.MARGIN_AGENTS.boot === 'function') {
+      try {
+        await window.MARGIN_AGENTS.boot();
+      } catch (error) {
+        if (window.console && console.warn) {
+          console.warn('[margin] 助手清单加载失败，沿用内置声明：', error);
+        }
+      }
+    }
+
+    /* 演示数据的空间也跟着助手走：两个助手各有一份任务清单 */
+    SPACES = (demoPack().spaces || DATA.spaces || []).slice();
+    markDemoAuthored();
+
+    /* 实时模式与演示模式接到同一个回调上。
+       注册必须在 tryBoot 之前：实时模式会在 boot 成功后直接 return，
+       放在末尾的话这条回调永远不会被挂上。 */
+    if (window.MARGIN_AGENTS) {
+      window.MARGIN_AGENTS.onChange(function () {
+        onAgentChange().catch(function (error) {
+          if (window.console && console.warn) {
+            console.warn('[margin] 切换助手失败：', error);
+          }
+        });
+      });
+    }
+
     /* 优先尝试实时模式：页面由后端托管、且后端可达时才成立 */
     if (window.MARGIN_LIVE && typeof window.MARGIN_LIVE.tryBoot === 'function') {
       try {
@@ -1772,7 +1965,7 @@
       railToggle.setAttribute('aria-expanded', 'false');
     }
 
-    var opening = DATA.opening;
+    var opening = demoPack();
 
     if (opening.reviewedAt) {
       var fmt = new Intl.DateTimeFormat('zh-CN', {
@@ -1782,7 +1975,7 @@
       });
       runbarStep.textContent = '';
       input.placeholder =
-        '最近一次审查 ' + fmt.format(new Date(opening.reviewedAt)) + '，继续追问或描述新的审查重点…';
+        '最近一次运行 ' + fmt.format(new Date(opening.reviewedAt)) + '，继续追问或描述新的重点…';
     }
 
     renderUserTurn(opening.user);

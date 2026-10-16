@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import json
 import uuid
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields
 from typing import Any, Literal
 
 Role = Literal["system", "user", "assistant", "tool"]
@@ -245,6 +245,127 @@ class Finding:
         }
 
 
+# =============================================================================
+# 设计域（架构助手的产出）
+# =============================================================================
+#
+# 与「发现」是并列关系，不是它的变体。审查回答「哪里坏了」，
+# 架构回答「该怎么切、为什么、还有什么没定」 —— 后者没有严重级别，
+# 也没有单一的正确位置，所以数据结构从一开始就不一样。
+
+
+@dataclass(slots=True)
+class Layer:
+    """架构分层。层与层之间的依赖方向是设计意图的直接体现。"""
+
+    name: str
+    purpose: str = ""
+    hint: str = ""
+    order: int = 0
+    id: str = field(default_factory=lambda: _new_id("L"))
+    fingerprint: str = ""
+
+    def __post_init__(self) -> None:
+        if not self.fingerprint:
+            self.fingerprint = f"layer:{self.name}".lower()
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "id": self.id,
+            "name": self.name,
+            "purpose": self.purpose,
+            "hint": self.hint,
+            "order": self.order,
+        }
+
+
+@dataclass(slots=True)
+class Component:
+    """一个组件（服务 / 模块 / 存储）。依赖写在 depends_on 里，由前端据此画连线。"""
+
+    name: str
+    layer: str = ""
+    role: str = ""
+    responsibility: str = ""
+    interfaces: list[str] = field(default_factory=list)
+    depends_on: list[str] = field(default_factory=list)
+    failure_modes: list[str] = field(default_factory=list)
+    rationale: str = ""
+    id: str = field(default_factory=lambda: _new_id("C"))
+    fingerprint: str = ""
+
+    def __post_init__(self) -> None:
+        if not self.fingerprint:
+            self.fingerprint = f"component:{self.name}".lower()
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "id": self.id,
+            "name": self.name,
+            "layer": self.layer,
+            "role": self.role,
+            "responsibility": self.responsibility,
+            "interfaces": list(self.interfaces),
+            "depends_on": list(self.depends_on),
+            "failure_modes": list(self.failure_modes),
+            "rationale": self.rationale,
+        }
+
+
+@dataclass(slots=True)
+class DecisionRecord:
+    """一条设计决策。写清「放弃了什么」比写清「选了什么」更有价值。"""
+
+    title: str
+    decision: str = ""
+    rationale: str = ""
+    alternatives: list[str] = field(default_factory=list)
+    consequences: str = ""
+    id: str = field(default_factory=lambda: _new_id("D"))
+    fingerprint: str = ""
+
+    def __post_init__(self) -> None:
+        if not self.fingerprint:
+            self.fingerprint = f"decision:{self.title}".lower()
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "id": self.id,
+            "title": self.title,
+            "decision": self.decision,
+            "rationale": self.rationale,
+            "alternatives": list(self.alternatives),
+            "consequences": self.consequences,
+        }
+
+
+@dataclass(slots=True)
+class OpenQuestion:
+    """一个尚未确定的问题。
+
+    架构助手必须能说「这里我没定」 —— 一个把所有不确定都抹平的方案
+    看起来完整，实际上把风险藏起来了。
+    """
+
+    question: str
+    why_it_matters: str = ""
+    blocking: bool = False
+    id: str = field(default_factory=lambda: _new_id("Q"))
+    fingerprint: str = ""
+
+    def __post_init__(self) -> None:
+        if not self.fingerprint:
+            self.fingerprint = f"question:{self.question}".lower()
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "id": self.id,
+            "question": self.question,
+            "why_it_matters": self.why_it_matters,
+            "blocking": self.blocking,
+        }
+
+
 @dataclass(slots=True)
 class Todo:
     text: str
@@ -266,7 +387,10 @@ class RunState:
     iteration: int = 0
     max_iterations: int = 40
     todos: list[Todo] = field(default_factory=list)
-    findings: list[Finding] = field(default_factory=list)
+    # 产出按类型分桶。审查只有 finding，架构有 layer/component/decision/open_question。
+    # 用字典而不是给每个 agent 加字段，是因为「边录边推、去重、落库、序列化」这条管道
+    # 对所有 agent 都一样，只有桶的名字和里面装的类型不同。
+    artifacts: dict[str, list[Any]] = field(default_factory=dict)
     tool_counts: dict[str, int] = field(default_factory=dict)
     repeat_streak: int = 0
     last_signature: str = ""
@@ -289,15 +413,87 @@ class RunState:
             self.repeat_streak = 1
             self.last_signature = signature
 
+    # ---- 产出 ---- #
+
+    @property
+    def findings(self) -> list[Finding]:
+        """审查产出的视图，指向 ``artifacts["finding"]``。
+
+        保留它是为了让既有代码（报告、护栏、评估）不必改；
+        新增 agent 请用 :meth:`add_artifact` 与 :meth:`artifacts_of`。
+
+        只读：不能用 ``setdefault`` —— 那样只是「读一眼有没有发现」也会凭空建出
+        一个空的 finding 桶，架构运行的结果里就会多出一条 ``finding: 0``。
+        """
+        return self.artifacts.get("finding", [])
+
+    def bucket(self, kind: str) -> list[Any]:
+        """取某个类型的产出桶（不存在就建一个，保证键顺序稳定）。"""
+        return self.artifacts.setdefault(kind, [])
+
+    def artifacts_of(self, kind: str) -> list[Any]:
+        """只读地取某个类型的产出桶。"""
+        return self.artifacts.get(kind, [])
+
+    def add_artifact(self, kind: str, item: Any) -> bool:
+        """登记一条产出。返回 True 表示是新条目，False 表示重复被丢弃。
+
+        去重依赖条目上的 ``fingerprint``；没有该属性的条目不去重。
+        """
+        bucket = self.bucket(kind)
+        fingerprint = getattr(item, "fingerprint", None)
+        if fingerprint:
+            if any(getattr(existing, "fingerprint", None) == fingerprint for existing in bucket):
+                return False
+        bucket.append(item)
+        return True
+
     def add_finding(self, finding: Finding) -> bool:
         """返回 True 表示是新发现，False 表示与已有发现重复。"""
-        if any(existing.fingerprint == finding.fingerprint for existing in self.findings):
-            return False
-        self.findings.append(finding)
-        return True
+        return self.add_artifact("finding", finding)
+
+    def artifact_counts(self) -> dict[str, int]:
+        return {kind: len(items) for kind, items in self.artifacts.items()}
 
     def severity_counts(self) -> dict[str, int]:
         counts = {"blocker": 0, "warn": 0, "note": 0}
         for finding in self.findings:
             counts[finding.severity] = counts.get(finding.severity, 0) + 1
         return counts
+
+
+# =============================================================================
+# 产出的序列化往返
+# =============================================================================
+#
+# 运行结束后，终态以 JSON 落盘；之后回放报告时要把它还原回对象。
+# 只还原 finding 会让架构报告渲染出「本次没有登记分层」——
+# 那不是事实，只是回放路径丢了一半产出。
+
+ARTIFACT_TYPES: dict[str, type] = {
+    "finding": Finding,
+    "layer": Layer,
+    "component": Component,
+    "decision": DecisionRecord,
+    "open_question": OpenQuestion,
+}
+
+
+def revive_artifact(kind: str, data: dict[str, Any]) -> Any:
+    """把一条产出从字典还原成对象。
+
+    未知类型原样返回字典：宁可让渲染器拿到一个 dict，
+    也不要因为不认识这个 kind 就把整份产出丢掉。
+    """
+    cls = ARTIFACT_TYPES.get(kind)
+    if cls is None:
+        return dict(data)
+    known = {field.name for field in fields(cls)}
+    return cls(**{key: value for key, value in data.items() if key in known})
+
+
+def revive_artifacts(raw: dict[str, list[dict[str, Any]]]) -> dict[str, list[Any]]:
+    return {
+        kind: [revive_artifact(kind, item) for item in items]
+        for kind, items in (raw or {}).items()
+    }

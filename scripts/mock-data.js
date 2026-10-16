@@ -458,12 +458,373 @@ window.MARGIN_DATA = {
     },
   ],
 
-  /* ---------- 运行阶段文案 ---------- */
+  /* ---------- 运行阶段文案 ----------
+     刻意不写「审查」：演示态也能切到架构助手，阶段文案跟着一起变才对。
+     助手各自的说法在 MARGIN_AGENTS 的方言里（scripts/agents.js）。 */
   phases: {
     reading: "读取变更…",
-    planning: "生成审查计划…",
+    planning: "生成计划…",
     running: "执行计划…",
-    done: "审查完成",
+    done: "已完成",
     stopped: "已停止",
+  },
+};
+
+/* ==========================================================================
+   演示态的助手分身
+   实时模式下这套数据完全不参与（一切来自 /api/agents 与后端事件流）；
+   只有 file:// 直接打开时才用到，用来验证「切换助手 = 换一整套产出形态」。
+
+   审查沿用上面的开场与追问；架构是一份独立的示例 ——
+   刻意让组件依赖里既有同层相邻、也有同层隔着一个、还有跨层与跳层，
+   这样连线的三种画法（浅弧 / 下方绕行 / 左侧走廊虚线）都能被看到。
+   ========================================================================== */
+
+window.MARGIN_DATA.agents = {
+  review: Object.assign({}, window.MARGIN_DATA.opening, {
+    replies: window.MARGIN_DATA.replies,
+    followUps: window.MARGIN_DATA.followUps,
+    /* 空间与会话也必须跟走：两个助手各有自己的任务清单，
+       共用一份的话，「架构这条历史」会出现在审查助手的侧栏里。 */
+    spaces: window.MARGIN_DATA.spaces,
+  }),
+
+  architect: {
+    spaces: [
+      {
+        id: "payments-api",
+        owner: "meridian-labs",
+        name: "payments-api",
+        open: true,
+        files: 23,
+        sessions: [
+          {
+            id: "arch-payments-1",
+            title: "限流与对账拆开的方案",
+            time: "今天 15:20",
+            current: true,
+            files: 23,
+          },
+          {
+            id: "arch-payments-2",
+            title: "退款链路的幂等边界",
+            time: "10月14日",
+            files: 11,
+          },
+        ],
+      },
+      {
+        id: "ledger-core",
+        owner: "meridian-labs",
+        name: "ledger-core",
+        open: false,
+        files: 61,
+        sessions: [
+          {
+            id: "arch-ledger-1",
+            title: "结算任务的分层草案",
+            time: "10月13日",
+            files: 61,
+          },
+        ],
+      },
+    ],
+    user: "给 payments-api 出一版能拿去评审的架构方案，重点是把限流和对账拆开。",
+
+    reviewedAt: "2026-10-15T15:20:00+08:00",
+
+    intro:
+      "已读完 4 个目录、23 个文件。现在所有能力都压在一个 Express 应用里，限流与对账共用同一个连接池 —— 这是下面这份方案主要要解开的结。",
+
+    plan: [
+      { label: "摸清现有结构", meta: "23 个文件 / 4 个目录", duration: "2.4s" },
+      { label: "定位共享状态", meta: "3 处共用", duration: "1.1s" },
+      { label: "定分层与组件", meta: "3 层 / 8 个组件", duration: "3.6s" },
+      { label: "登记决策与未定项", meta: "5 条决策 / 6 个问题", duration: "1.2s" },
+    ],
+
+    tools: [
+      {
+        name: "list_files",
+        arg: "src/**/*.ts",
+        meta: "23 个文件",
+        duration: "0.4s",
+        output:
+          "src/middleware/rate-limit.ts\n" +
+          "src/lib/redis.ts\n" +
+          "src/lib/db.ts\n" +
+          "src/routes/payment.ts\n" +
+          "src/routes/refund.ts\n" +
+          "src/jobs/reconcile.ts\n" +
+          "src/lib/outbox.ts\n" +
+          "… 另 16 个文件",
+      },
+      {
+        name: "read_symbols",
+        arg: "src/lib/redis.ts",
+        meta: "导出 6 个符号",
+        duration: "0.3s",
+        output:
+          "class RedisPool        L8\n" +
+          "  acquire()            L31\n" +
+          "  release(c)           L44\n" +
+          "  stats()              L71\n" +
+          "function connect()     L12\n",
+      },
+      {
+        name: "grep",
+        arg: "pool\\.acquire",
+        meta: "命中 4 处 / 2 个目录",
+        duration: "0.2s",
+        output:
+          "src/middleware/rate-limit.ts:45  限流路径\n" +
+          "src/middleware/rate-limit.ts:78  同上（无 release）\n" +
+          "src/jobs/reconcile.ts:22         对账路径 ← 与限流共池\n" +
+          "src/routes/payment.ts:57         支付主流程",
+      },
+    ],
+
+    blueprint: {
+      layer: [
+        {
+          id: "L-1",
+          name: "接入层",
+          purpose: "协议转换与流量准入",
+          hint: "不负责业务规则与持久化",
+          order: 0,
+        },
+        {
+          id: "L-2",
+          name: "业务层",
+          purpose: "支付、退款与对账的领域逻辑",
+          hint: "不直接持有连接，只声明要什么",
+          order: 1,
+        },
+        {
+          id: "L-3",
+          name: "数据层",
+          purpose: "持久化、缓存与可靠投递",
+          hint: "不知道任何业务语义",
+          order: 2,
+        },
+      ],
+
+      component: [
+        {
+          id: "C-1",
+          name: "Gateway",
+          layer: "接入层",
+          role: "HTTP 入口",
+          responsibility: "终止 TLS、鉴权透传、把请求转成内部命令。",
+          interfaces: ["POST /v1/payments", "POST /v1/refunds", "GET /v1/payments/:id"],
+          depends_on: [],
+          failure_modes: ["进程重启期间 502，需要上游重试"],
+          rationale: "入口只有一个，鉴权与协议变更才不会散落到每个业务模块里。",
+        },
+        {
+          id: "C-2",
+          name: "RateLimit",
+          layer: "接入层",
+          role: "滑动窗口限流",
+          responsibility: "按租户维度做准入判定，拒绝时返回标准化的 429。",
+          interfaces: ["check(tenant, cost) → verdict"],
+          depends_on: ["Redis Pool"],
+          failure_modes: ["Redis 不可用时降级为本地计数，精度下降但不误杀"],
+          rationale: "限流是准入问题不是业务问题，放在接入层才能挡在业务之前。",
+        },
+        {
+          id: "C-3",
+          name: "PaymentService",
+          layer: "业务层",
+          role: "支付主流程",
+          responsibility: "编排支付单状态机，保证金额与幂等键一致。",
+          interfaces: ["createPayment(cmd)", "capture(id)", "query(id)"],
+          depends_on: ["Gateway", "Postgres", "Outbox"],
+          failure_modes: ["Postgres 不可用时写入直接失败，不做本地缓存"],
+          rationale: "状态机与金额校验必须在一处，拆开就会出现两处各自认为成功。",
+        },
+        {
+          id: "C-4",
+          name: "ReconcileJob",
+          layer: "业务层",
+          role: "对账批处理",
+          responsibility: "按日拉取渠道流水，与本方账目逐笔比对并标记差异。",
+          interfaces: ["run(date)", "report(date)"],
+          depends_on: ["Postgres", "Outbox"],
+          failure_modes: ["跑批超时会留下半比对状态，下次从断点续跑"],
+          rationale: "批处理与在线流量必须分开跑，否则跑批的慢查询会拖垮支付主流程。",
+        },
+        {
+          id: "C-5",
+          name: "RefundService",
+          layer: "业务层",
+          role: "退款",
+          responsibility: "校验可退金额、发起退款、把结果回写给支付单。",
+          interfaces: ["refund(paymentId, amount)"],
+          depends_on: ["PaymentService", "ReconcileJob", "Outbox"],
+          failure_modes: ["对账未完成时的退款会与渠道流水打架，需显式拒绝"],
+          rationale: "退款依赖支付单状态与对账结果，它天然是业务层的下游。",
+        },
+        {
+          id: "C-6",
+          name: "Postgres",
+          layer: "数据层",
+          role: "主存储",
+          responsibility: "存支付单、退款单与对账差异，承担唯一事实来源。",
+          interfaces: ["SQL"],
+          depends_on: [],
+          failure_modes: ["主库切换期间写入阻塞约 10s"],
+          rationale: "金额数据必须有强一致落点，最终一致的存储不适合当账本。",
+        },
+        {
+          id: "C-7",
+          name: "Redis Pool",
+          layer: "数据层",
+          role: "限流计数",
+          responsibility: "承载滑动窗口计数，可丢、可重建。",
+          interfaces: ["acquire()", "release(c)", "incr(key, ttl)"],
+          depends_on: [],
+          failure_modes: ["连接耗尽时限流判定失败，按降级策略放行"],
+          rationale: "计数是易失数据，放在 Redis 而不是库里，才不会把主库写垮。",
+        },
+        {
+          id: "C-8",
+          name: "Outbox",
+          layer: "数据层",
+          role: "可靠投递",
+          responsibility: "把领域事件落库后再异步投递，保证不丢。",
+          interfaces: ["publish(event)", "drain()"],
+          depends_on: ["Postgres"],
+          failure_modes: ["投递积压时事件延迟，但不丢"],
+          rationale: "「写库」与「发消息」必须原子，事务性发件箱是这里唯一稳的做法。",
+        },
+      ],
+
+      decision: [
+        {
+          id: "D-1",
+          title: "限流与对账不再共用一个连接池",
+          decision: "拆成两个独立池：限流池小、可丢；业务池大、可观测。",
+          rationale: "共池时跑批会吃掉限流的连接，限流失效又反过来放大跑批压力 —— 这是现在最主要的一次故障放大路径。",
+          alternatives: [
+            "维持共池，只把限流的超时调小：改动小，但跑批高峰仍会抢占连接。",
+            "限流改用本地计数：完全不依赖 Redis，代价是多实例间计数不一致。",
+          ],
+          consequences: "多一个池要监控；限流池的容量需要单独压测取值。",
+        },
+        {
+          id: "D-2",
+          title: "对账保持批处理，不做流式",
+          decision: "维持按日跑批，只把断点续跑补齐。",
+          rationale: "渠道流水按天出，流式对账要处理乱序与重复，收益撑不起复杂度。",
+          alternatives: ["改成流式对账：实时性好，但渠道侧的数据延迟会制造大量假差异。"],
+          consequences: "差异最长延迟一天才可见，需要人工兜底流程。",
+        },
+        {
+          id: "D-3",
+          title: "退款强依赖对账结果",
+          decision: "当日对账完成前，超过阈值的退款直接拒绝。",
+          rationale: "未对账就退款，事后发现渠道已扣款时无法自动回滚。",
+          alternatives: ["先退款再对账，差异走人工：人工成本随交易量线性增长。"],
+          consequences: "极端情况下退款被拒，需要有明确的用户提示文案。",
+        },
+        {
+          id: "D-4",
+          title: "事件投递用事务性发件箱，不直连消息队列",
+          decision: "事件先落库，再由独立投递进程发出。",
+          rationale: "直连 MQ 时「库写成功、消息没发出」会造成难以发现的沉默丢失。",
+          alternatives: ["业务内直连 MQ：少一个组件，但要自己解决双写一致性。"],
+          consequences: "投递延迟从毫秒级升到秒级，依赖方要能容忍。",
+        },
+        {
+          id: "D-5",
+          title: "暂不拆微服务，先在同一进程内分层",
+          decision: "三层的边界先靠模块与依赖方向约束，不引入服务间调用。",
+          rationale: "当前团队规模与调用量都撑不起分布式事务与链路排查的成本。",
+          alternatives: ["直接拆成三个服务：边界最清楚，但首期就要背上运维与联调成本。"],
+          consequences: "进程内仍可能绕过边界，需要靠静态检查守住依赖方向。",
+        },
+      ],
+
+      open_question: [
+        {
+          id: "Q-1",
+          question: "限流池的容量应该取多少？",
+          why_it_matters: "池太小会误杀正常流量，太大就失去隔离意义；这个数必须由压测给出，拍脑袋一定是错的。",
+          blocking: true,
+        },
+        {
+          id: "Q-2",
+          question: "对账差异的人工兜底由谁处理、多久内处理完？",
+          why_it_matters: "方案里差异最长延迟一天可见，没有责任人就会一直挂着。",
+          blocking: true,
+        },
+        {
+          id: "Q-3",
+          question: "峰值 QPS 的目标量级是多少？",
+          why_it_matters: "它决定限流是单机内存够用还是必须走 Redis，目前只能按现状推断。",
+          blocking: true,
+        },
+        {
+          id: "Q-4",
+          question: "渠道流水有没有重推机制？",
+          why_it_matters: "有的话对账要按流水版本号去重，否则重复流水会被算成差异。",
+          blocking: false,
+        },
+        {
+          id: "Q-5",
+          question: "退款的 SLA 要求是多长？",
+          why_it_matters: "若要求分钟级，D-3 的「对账完成前拒绝」就需要改成按额度放行。",
+          blocking: false,
+        },
+        {
+          id: "Q-6",
+          question: "要不要保留现有的固定窗口实现一段时间的影子比对？",
+          why_it_matters: "影子能验证新限流的判定差异，但会多一路 Redis 写入。",
+          blocking: false,
+        },
+      ],
+    },
+
+    summary:
+      "这套方案的核心取舍是：用「分层 + 连接池拆分」换掉现在的单体共用状态，代价是多两个需要监控的组件。最大的风险不在拆分本身，而在 Q-1 的限流池容量 —— 这个值没有压测数据支撑前，任何数字都是猜测。建议先把 Q-1 到 Q-3 定掉，再进入实施。",
+
+    followUps: [
+      { label: "最大的风险在哪", action: "ask", value: "这份方案最大的风险是什么？如果只能先解决一个，先解决哪个？" },
+      { label: "先落哪一步", action: "ask", value: "按这个方案，第一步应该先拆哪一块？给出最小可验证的改动。" },
+      { label: "哪些问题必须先定", action: "ask", value: "开放问题里哪几个会直接改变方案的形状？" },
+    ],
+
+    replies: [
+      {
+        intro:
+          "先回答「只能先解决一个」：拆连接池。它是唯一一个既能立刻降低故障放大、又不需要改任何业务语义的改动。",
+        plan: [
+          { label: "确认拆池的改动面", meta: "2 个文件", duration: "0.8s" },
+          { label: "估算验证方式", meta: "1 组压测", duration: "0.4s" },
+        ],
+        tools: [
+          {
+            name: "grep",
+            arg: "createPool|poolSize",
+            meta: "命中 3 处",
+            duration: "0.2s",
+            output:
+              "src/lib/redis.ts:8    constructor(size = 64)   ← 唯一入口\n" +
+              "src/middleware/rate-limit.ts:45  池由默认构造给出\n" +
+              "src/jobs/reconcile.ts:22         同上",
+          },
+        ],
+        summary:
+          "改动面只有 src/lib/redis.ts 一处构造加两个调用点，可以用同一组压测对比拆前拆后的限流失效次数。",
+      },
+      {
+        intro:
+          "补一条约束：拆池之后，限流池必须单独设告警，否则它会变成一个没人看的组件。",
+        plan: [{ label: "列出需要的指标", meta: "3 个", duration: "0.3s" }],
+        tools: [],
+        summary: "需要的三个指标：池占用率、acquire 等待时长、降级放行次数。前两个是容量信号，第三个是正确性信号。",
+      },
+    ],
   },
 };

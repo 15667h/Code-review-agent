@@ -23,7 +23,9 @@ from pathlib import Path
 from typing import Any
 
 from .config import Config, load_config
-from .loop import AuditResult, resolve_workspace, run_audit
+from . import agents
+from .agents import UnknownAgent, default_id, get as get_agent
+from .loop import AuditResult, resolve_workspace, run_agent
 from .model import DeepSeekModel, ModelError
 from .offline import HeuristicModel
 from .report import render_markdown, render_terminal
@@ -31,7 +33,7 @@ from .rules import cross_check, scan_tree, to_findings
 from .tools_audit import build_toolbox
 from .types import RunState
 
-DEFAULT_GOAL = "审查这个仓库中的缺陷，重点是会导致错误行为、资源泄漏或安全问题的实现。"
+DEFAULT_GOAL = get_agent(default_id()).default_goal
 
 
 # =============================================================================
@@ -139,7 +141,13 @@ def build_parser() -> argparse.ArgumentParser:
         epilog=__doc__,
     )
     parser.add_argument("-r", "--repo", default=".", help="被审计的仓库路径（默认当前目录）")
-    parser.add_argument("-g", "--goal", default=DEFAULT_GOAL, help="审计目标")
+    parser.add_argument(
+        "-a",
+        "--agent",
+        default="",
+        help=f"用哪个 agent（{', '.join(agents.ids())}；默认 {agents.default_id()}）",
+    )
+    parser.add_argument("-g", "--goal", default="", help="任务目标（不填则用所选 agent 的默认目标）")
     parser.add_argument("--context", default="", help="补充给模型的背景信息")
     parser.add_argument("--out", default="", help="Markdown 报告输出路径")
     parser.add_argument("--json", default="", help="JSON 结果输出路径")
@@ -169,10 +177,17 @@ def main(argv: list[str] | None = None) -> int:
         print(f"错误：仓库路径不存在或不是目录：{repo}", file=sys.stderr)
         return 2
 
+    # agent 在任何实质动作之前校验：跑完了才发现选错助手，成本已经付出去了
+    try:
+        get_agent(args.agent or default_id())
+    except UnknownAgent as exc:
+        print(f"错误：{exc}", file=sys.stderr)
+        return 2
+
     config = _build_config(args, repo)
 
     if args.list_tools:
-        return _print_tools(repo, config)
+        return _print_tools(repo, args, config)
 
     if args.scan_only:
         return _run_scan_only(repo, args)
@@ -191,17 +206,17 @@ def _build_config(args: argparse.Namespace, repo: Path) -> Config:
     return config
 
 
-def _print_tools(repo: Path, config: Config) -> int:
-    from .tools_audit import tool_report
+def _print_tools(repo: Path, args: argparse.Namespace, config: Config) -> int:
+    from .sandbox import CommandRunner
+    from .tools import tool_report
 
+    spec = get_agent(args.agent or default_id())
     workspace = resolve_workspace(repo)
     state = RunState(goal="(list tools)")
-    from .sandbox import CommandRunner
-
     runner = CommandRunner(workspace=workspace, allow=config.allow_commands)
-    toolbox = build_toolbox(workspace, state, runner)
-    print(f"工具集（工作区 {repo}）：")
-    print(tool_report(toolbox.registry))
+    registry = spec.build_tools(workspace, state, runner)
+    print(f"工具集（{spec.name} · 工作区 {repo}）：")
+    print(tool_report(registry))
     print("")
     print(f"允许的命令：{', '.join(sorted(config.allow_commands))}")
     return 0
@@ -230,8 +245,11 @@ def _run_agent(repo: Path, args: argparse.Namespace, config: Config) -> int:
     workspace = resolve_workspace(repo)
     verbose = not args.quiet
 
+    spec = get_agent(args.agent or default_id())
+    goal = args.goal.strip() or spec.default_goal
+
     if args.offline:
-        model = HeuristicModel()
+        model = HeuristicModel(agent=spec.id)
         model_label = "heuristic-offline（规则驱动）"
     else:
         if not config.ready:
@@ -251,13 +269,15 @@ def _run_agent(repo: Path, args: argparse.Namespace, config: Config) -> int:
         model_label = f"{config.model}（DeepSeek）"
 
     print(f"仓库：{repo}")
+    print(f"助手：{spec.name}（{spec.id}）")
     print(f"模型：{model_label}")
-    print(f"目标：{args.goal}")
+    print(f"目标：{goal}")
     print("")
 
     try:
-        result = run_audit(
-            goal=args.goal,
+        result = run_agent(
+            goal=goal,
+            agent=spec.id,
             workspace=workspace,
             model=model,
             config=config,
@@ -274,7 +294,9 @@ def _run_agent(repo: Path, args: argparse.Namespace, config: Config) -> int:
             close()
 
     # ---- 规则交叉验证：规则命中但模型没报的位置，疑似漏报 ----
-    if not args.no_cross_check:
+    # 交叉验证的前提是「这次运行产出的是发现」。架构助手不产出发现，
+    # 对它做这套检查只会得出一条毫无意义的「疑似漏报」。
+    if not args.no_cross_check and "finding" in result.artifacts:
         report = scan_tree(repo)
         missed = cross_check(result.findings, report)
         if missed:
@@ -292,6 +314,12 @@ def _run_agent(repo: Path, args: argparse.Namespace, config: Config) -> int:
     if args.json:
         payload = {
             "goal": result.goal,
+            "agent": result.agent,
+            "outcome": result.outcome,
+            "artifacts": {
+                kind: [item.to_dict() for item in items]
+                for kind, items in result.artifacts.items()
+            },
             "repo": str(repo),
             "model": model_label,
             "iterations": result.iterations,

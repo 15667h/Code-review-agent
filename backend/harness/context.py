@@ -28,74 +28,11 @@ from .budget import Budget, estimate_messages, estimate_tools
 from .types import Finding, Message, RunState, Todo
 
 # =============================================================================
-# 系统提示词（完全静态，不含任何动态内容）
-# =============================================================================
-
-SYSTEM_PROMPT = """# 角色
-
-你是 Margin，一个代码审计 Agent。你的任务是**在给定仓库中找出真实存在的缺陷**，并给出
-可核验的证据，而不是给出泛泛的代码风格建议。
-
-你只能通过工具观察代码。你没有「记忆」——所有判断都必须建立在当前上下文里已经读到的内容之上。
-
-# 工作方式
-
-按下面的顺序推进，每一步都可以回退：
-
-1. **确定范围**：先弄清这次审计看的是哪些改动。有 diff 就先看 diff，没有就从关键文件入手。
-2. **建立结构认知**：用 read_symbols / list_files 认识文件，不要一上来就读整个文件。
-3. **追踪关键路径**：针对高风险点（错误处理、资源生命周期、并发、边界条件、外部输入）
-   把相关代码读透，直到你能完整讲出这条路径。
-4. **验证假设**：能用工具验证的，一定要验证。不要只凭阅读推断。
-5. **记录发现**：每确认一个问题就立刻 record_finding，附上文件、行号与直接证据。
-6. **收尾**：确认覆盖完范围后调用 finish。
-
-# 判定标准
-
-<severity>
-- blocker：会导致数据错误、资源泄漏、服务不可用或安全问题，必须修。
-- warn：在特定条件下会出错，或有明确缺陷但影响可控，应该修。
-- note：可读性、健壮性上的改进，可以修。
-</severity>
-
-<evidence_rules>
-- 只有能给出「文件 + 行号 + 直接证据（代码原文或工具输出）」时才记录发现。
-- 不允许把「可能存在风险」「建议关注」这类主观推测登记为发现。
-- 不允许编造行号。引用前先确认你确实读到过那一行。
-- 如果一个疑点查证后不成立，就放弃它，不要为了凑数而记录。
-- 缺陷的真实影响面要如实说明：只在特定条件下触发就写清楚条件，不要夸大。
-</evidence_rules>
-
-<out_of_scope>
-以下内容默认不算发现，除非它直接导致缺陷：
-- 命名、缩进、注释风格
-- 个人偏好类的重构建议
-- 第三方库自身的已知问题
-</out_of_scope>
-
-# 工具使用规范
-
-<tool_rules>
-- 引用代码位置一律用 `file:line` 格式。
-- 一次可以并行发起多个独立调用（例如同时读三个文件），能省一轮往返。
-- 工具报错时先读错误信息里的 `[建议]`，再决定是改参数重试还是换工具；不要在同一个
-  参数上反复重试同一条失败调用。
-- 上下文里没有的工具，用 discover_tools 检索后再调用；不要把「工具不存在」当作任务失败。
-- 在需要判断「这类问题该按什么标准定级」时，用 read_skill 读审计方法论。
-</tool_rules>
-
-# 输出要求
-
-- 面向读者的最终结论用中文，表述具体、可执行。
-- 不要复述你已经通过工具展示过的代码，除非它构成关键证据。
-- 不确定的地方要显式说明不确定性，不要用肯定的语气掩盖没验证的结论。
-- 如果发现问题数为零，必须在 finish 的 summary 里说明你检查了哪些范围、为什么足以判定没有缺陷。
-"""
-
-
-# =============================================================================
 # 上下文构造
 # =============================================================================
+#
+# 系统提示词不在本文件。它属于 agent 自己的声明（见 ``agents.AgentSpec``），
+# 因为「怎么想」和「能做什么」「产出什么」是一件事的三面，拆开就必然对不上。
 
 
 @dataclass
@@ -167,11 +104,20 @@ _KEY_LINE = re.compile(
 )
 
 
-def render_status(state: RunState, *, note: str = "") -> str:
+def render_status(
+    state: RunState,
+    *,
+    note: str = "",
+    extra_lines: Sequence[str] | None = None,
+) -> str:
     """把运行状态渲染成状态栏文本。
 
     书中的两条维护铁律：状态栏由**代码**维护，不让模型自己统计；
     并且它是对原始上下文的有损投影，只承载「代码算得准」的东西（计数、进度、时间）。
+
+    产出部分按桶计数，不写死「findings」—— 架构助手产出的是 layer / component /
+    decision / open_question，写成「findings: 0」会让它以为自己什么都没做。
+    agent 想补充细节（如严重级别分布）通过 ``extra_lines`` 追加。
     """
     import datetime as _dt
 
@@ -179,13 +125,16 @@ def render_status(state: RunState, *, note: str = "") -> str:
 
     done = sum(1 for todo in state.todos if todo.status == "completed")
     lines.append(f"- iteration: {state.iteration}/{state.max_iterations}")
-    lines.append(f"- findings: {len(state.findings)} (todo_done={done}/{len(state.todos)})")
+    lines.append(f"- todo_done: {done}/{len(state.todos)}")
 
-    counts = state.severity_counts()
-    if state.findings:
-        lines.append(
-            f"- findings_by_severity: blocker={counts['blocker']} warn={counts['warn']} note={counts['note']}"
-        )
+    counts = state.artifact_counts()
+    if counts:
+        lines.append("- artifacts: " + ", ".join(f"{kind}={n}" for kind, n in counts.items()))
+    else:
+        lines.append("- artifacts: (none)")
+
+    for line in extra_lines or []:
+        lines.append(line)
 
     if state.tool_counts:
         hottest = sorted(state.tool_counts.items(), key=lambda pair: pair[1], reverse=True)[:6]
@@ -214,17 +163,25 @@ def render_status(state: RunState, *, note: str = "") -> str:
     return "\n".join(lines)
 
 
-def status_message(state: RunState, *, note: str = "") -> Message:
+def status_message(
+    state: RunState,
+    *,
+    note: str = "",
+    extra_lines: Sequence[str] | None = None,
+) -> Message:
     """状态栏是一条 user 消息，固定放在轨迹最末尾。
 
     放末尾的原因：既不破坏前面的缓存前缀，又能获得最高的注意力权重。
     """
-    return Message(role="user", content=render_status(state, note=note))
+    return Message(role="user", content=render_status(state, note=note, extra_lines=extra_lines))
 
 
-def goal_message(goal: str, context: str = "") -> Message:
-    """首条 user 消息：审计目标。属于轨迹，不属于静态前缀。"""
-    body = f"# 审计目标\n\n{goal.strip()}"
+def goal_message(goal: str, context: str = "", heading: str = "审计目标") -> Message:
+    """首条 user 消息：任务目标。属于轨迹，不属于静态前缀。
+
+    heading 由 agent 声明（审查是「审计目标」，架构是「设计任务」）。
+    """
+    body = f"# {heading}\n\n{goal.strip()}"
     if context.strip():
         body += f"\n\n# 补充信息\n\n{context.strip()}"
     return Message(role="user", content=body)

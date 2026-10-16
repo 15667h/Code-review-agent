@@ -28,12 +28,12 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from .agents import UnknownAgent, default_id, get as get_agent
 from .budget import Budget
 from .config import Config
 from .context import (
     STATUS_OPEN,
     ContextBuilder,
-    SYSTEM_PROMPT,
     compress_trajectory,
     goal_message,
     loaded_tools_message,
@@ -41,7 +41,7 @@ from .context import (
     validate_protocol,
 )
 from .guardrails import (
-    CIRCUIT_EXEMPT,
+    is_circuit_exempt,
     ApprovalFn,
     Constrainer,
     Corrector,
@@ -51,7 +51,7 @@ from .guardrails import (
 )
 from .model import Model, ModelError
 from .sandbox import CommandRunner, Workspace
-from .tools_audit import build_toolbox, tool_report
+from .tools import tool_report
 from .types import Finding, Message, RunState, Usage
 
 EventHook = Callable[[str, dict[str, Any]], None]
@@ -59,9 +59,17 @@ StopHook = Callable[[], bool]
 
 
 @dataclass
-class AuditResult:
+class AgentResult:
+    """一次运行的产出。
+
+    ``artifacts`` 按类型分桶：审查只有 finding，架构有 layer / component /
+    decision / open_question。``findings`` 保留为 finding 桶的视图，
+    让报告、护栏、评估这些既有代码不必改。
+    """
+
     goal: str
-    findings: list[Finding] = field(default_factory=list)
+    agent: str = field(default_factory=default_id)
+    artifacts: dict[str, list[Any]] = field(default_factory=dict)
     summary: str = ""
     iterations: int = 0
     stop_reason: str = ""
@@ -72,6 +80,21 @@ class AuditResult:
     prefix_trace: dict = field(default_factory=dict)
     elapsed: float = 0.0
     tool_summary: str = ""
+    # 产出形态标识，与 AgentSpec.outcome 一致；前端据此选渲染器
+    outcome: str = ""
+
+    @property
+    def findings(self) -> list[Finding]:
+        # 只读，理由与 RunState.findings 相同：读一下不该凭空建桶
+        return self.artifacts.get("finding", [])
+
+    @findings.setter
+    def findings(self, value: list[Finding]) -> None:
+        self.artifacts["finding"] = list(value)
+
+    @property
+    def artifact_counts(self) -> dict[str, int]:
+        return {kind: len(items) for kind, items in self.artifacts.items()}
 
     @property
     def severity_counts(self) -> dict[str, int]:
@@ -79,6 +102,10 @@ class AuditResult:
         for finding in self.findings:
             counts[finding.severity] = counts.get(finding.severity, 0) + 1
         return counts
+
+
+# 旧名字保留：既有代码与测试都用 AuditResult
+AuditResult = AgentResult
 
 
 # =============================================================================
@@ -117,40 +144,47 @@ def _emit(hook: EventHook | None, event: str, payload: dict[str, Any]) -> None:
 # =============================================================================
 
 
-def run_audit(
+def run_agent(
     *,
     goal: str,
     workspace: Workspace,
     model: Model,
     config: Config,
+    agent: str | None = None,
     context_note: str = "",
     on_event: EventHook | None = None,
     approve: ApprovalFn | None = None,
     allow_high_risk: bool = False,
     max_model_retries: int = 2,
     should_stop: Callable[[], bool] | None = None,
-) -> AuditResult:
-    """跑完一次完整审计。
+) -> AgentResult:
+    """跑完一次完整运行。
+
+    ``agent`` 决定用哪套提示词、工具集与产出类型（见 ``agents.AgentSpec``）；
+    不传则用默认 agent。未知 id 抛 :class:`UnknownAgent` —— 调用方要在入口校验，
+    而不是让它在跑完之后才发现答非所问。
 
     ``should_stop`` 是给交互式前端用的外部中断开关：每轮开始时询问一次，
     返回 True 就停在这一轮并将 ``stop_reason`` 置为 ``stopped``。
     刻意做成轮询式而不是抛异常 —— 中断要停在一个干净的边界上，
-    让已经产生的发现和轨迹保持完整，而不是把上下文撕成一半。
+    让已经产出的内容与轨迹保持完整，而不是把上下文撕成一半。
     """
     started = time.time()
 
+    spec = get_agent(agent or default_id())
     state = RunState(goal=goal, max_iterations=config.max_iterations)
+    # 预置产出桶，保证键顺序与 agent 声明一致（前端按这个顺序展示）
+    state.artifacts = {kind: [] for kind in spec.artifact_kinds}
     runner = CommandRunner(
         workspace=workspace,
         allow=config.allow_commands,
         timeout=config.timeout,
     )
-    toolbox = build_toolbox(workspace, state, runner)
-    registry = toolbox.registry
+    registry = spec.build_tools(workspace, state, runner)
     core_tools = registry.core_schemas()
 
     builder = ContextBuilder(
-        system_prompt=SYSTEM_PROMPT,
+        system_prompt=spec.system_prompt,
         core_tools=core_tools,
         budget=Budget(config.context_window),
     )
@@ -163,9 +197,15 @@ def run_audit(
     verifier = Verifier(workspace=workspace.root)
     corrector = Corrector()
 
-    result = AuditResult(goal=goal, prefix_trace=builder.prefix_trace(), tool_summary=tool_report(registry))
+    result = AgentResult(
+        goal=goal,
+        agent=spec.id,
+        outcome=spec.outcome,
+        prefix_trace=builder.prefix_trace(),
+        tool_summary=tool_report(registry),
+    )
 
-    trajectory: list[Message] = [goal_message(goal, context_note)]
+    trajectory: list[Message] = [goal_message(goal, context_note, heading=spec.goal_heading)]
     status_note = ""
 
     _emit(on_event, "start", {"prefix": result.prefix_trace, "goal": goal})
@@ -191,7 +231,10 @@ def run_audit(
             _emit(on_event, "compression", event)
 
         # ---- 构造上下文并调用模型 ----
-        messages = builder.build(trajectory, status_message(state, note=status_note))
+        extra = spec.status_lines(state) if spec.status_lines else None
+        messages = builder.build(
+            trajectory, status_message(state, note=status_note, extra_lines=extra)
+        )
 
         # 发出去之前先本地校验一遍消息协议。这一步是 Harness 的自我保护：
         # 编排错了就让错误停在本地并说清位置，而不是让 API 回一句「tool 消息数量不足」。
@@ -254,13 +297,16 @@ def run_audit(
         for call in decision.tool_calls:
             state.note_tool(call.signature())
             check = constrainer.check(call, state)
-            findings_before = len(state.findings)
+            # 产出边录边推：先快照各桶长度，再看新增了什么。
+            # 用「长度变化」判断而不是「工具名是 record_*」——
+            # 重复条目会被去重吞掉，那时不能凭空推一条并不存在的产出。
+            before = {kind: len(items) for kind, items in state.artifacts.items()}
 
             if check.allowed:
                 # 一次正常工具被放行 → 说明模型已经找到可行路径，连续被拒计数归零。
                 # 豁免类工具（finish / record_finding / update_todo）不参与归零：
                 # 它们只是收尾与落库，不该被用来「洗掉」之前被拒的记录。
-                if call.name not in CIRCUIT_EXEMPT:
+                if not is_circuit_exempt(call.name):
                     state.reject_streak = 0
                 tool_result = registry.execute(call)
             else:
@@ -300,11 +346,16 @@ def run_audit(
                 {"call": call, "result": tool_result, "verification": verification.notes},
             )
 
-            # 发现边录边推：交互式前端可以逐条渲染，而不用等到整轮结束。
-            # 用「长度变化」判断而不是「工具名是 record_finding」——
-            # 重复发现会被去重吞掉，那时不能凭空推一条并不存在的发现。
-            for finding in state.findings[findings_before:]:
-                _emit(on_event, "finding", {"finding": finding, "iteration": state.iteration})
+            for kind, items in state.artifacts.items():
+                for item in items[before.get(kind, 0) :]:
+                    _emit(
+                        on_event,
+                        "artifact",
+                        {"kind": kind, "artifact": item, "iteration": state.iteration},
+                    )
+                    if kind == "finding":
+                        # 旧契约：审查产出的事件名保持不变，既有前端无需改动
+                        _emit(on_event, "finding", {"finding": item, "iteration": state.iteration})
 
             if call.name == "finish" and tool_result.ok:
                 result.summary = str(call.arguments.get("summary", ""))
@@ -325,7 +376,7 @@ def run_audit(
         result.stop_reason = "max_iterations"
 
     # ---- 收尾核验 ----
-    result.findings = list(state.findings)
+    result.artifacts = {kind: list(items) for kind, items in state.artifacts.items()}
     result.iterations = state.iteration
     result.usage = state.usage
     result.trajectory = trajectory
@@ -348,6 +399,16 @@ def run_audit(
 
     _emit(on_event, "done", {"result": result})
     return result
+
+
+def run_audit(**kwargs: Any) -> AgentResult:
+    """审查助手的便捷入口。
+
+    等价于 ``run_agent(agent="review", ...)``。保留它是因为 CLI、评估脚本与
+    既有测试都按这个名字调用；新代码请直接用 :func:`run_agent`。
+    """
+    kwargs.setdefault("agent", "review")
+    return run_agent(**kwargs)
 
 
 # =============================================================================
