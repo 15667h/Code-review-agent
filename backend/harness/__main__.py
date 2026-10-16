@@ -233,7 +233,14 @@ def _run_scan_only(repo: Path, args: argparse.Namespace) -> int:
         print(f"  {_paint('[' + hit.rule.severity + ']', color)} {hit.path}:{hit.line} {hit.rule.id} {hit.rule.title}")
 
     if args.out:
-        result = AuditResult(goal="（确定性规则扫描）", findings=findings, summary="由规则集直接产出，未经模型推理。")
+        # findings 是 artifacts["finding"] 上的只读视图，不能当构造参数传
+        # （dataclass __init__ 不认识它）。平台化后这里必须走 artifacts。
+        result = AuditResult(
+            goal="（确定性规则扫描）",
+            artifacts={"finding": findings},
+            outcome="findings",
+            summary="由规则集直接产出，未经模型推理。",
+        )
         _write_output(args.out, render_markdown(result, repo=str(repo), model="rules-only"))
         print(f"\n报告已写入 {args.out}")
 

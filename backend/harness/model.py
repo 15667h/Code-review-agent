@@ -229,14 +229,3 @@ class ScriptedModel:
         return item
 
 
-def describe_decision(decision: Decision) -> str:
-    """把一次决策压成一行，用于日志。"""
-    if decision.tool_calls:
-        names = ", ".join(call.name for call in decision.tool_calls)
-        return f"tool_calls=[{names}]"
-    preview = decision.content.strip().replace("\n", " ")[:80]
-    return f"final: {preview or '(空)'}"
-
-
-def dumps_arguments(call: ToolCall) -> str:
-    return json.dumps(call.arguments, ensure_ascii=False, sort_keys=True)

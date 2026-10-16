@@ -500,5 +500,3 @@ def _call(call: ToolCall, *, reasoning: str = "") -> Decision:
     return Decision(tool_calls=[call], content="", reasoning=reasoning)
 
 
-def available_rule_ids() -> list[str]:
-    return [rule.id for rule in RULES]

@@ -32,6 +32,11 @@
     return String(name || '').trim().toLowerCase();
   }
 
+  /* 活跃视图注册表。Observer 强引用 canvas，视图被丢弃（切会话/切助手/清正文）时
+     必须 disconnect，否则整棵蓝图树都无法回收 —— 实时模式每回放一条架构会话
+     就泄漏一份。集中在这里，消费方（app.js 的 replaceThread）只需调 destroyAll。 */
+  var views = new Set();
+
   function create(tools) {
     var el = tools.el;          // ui.el
     var esc = tools.esc;        // ui.esc
@@ -587,8 +592,9 @@
     }
 
     /* 画布尺寸变了连线就全错，所以必须跟着重画 */
+    var ro = null;
     if (typeof window.ResizeObserver === 'function') {
-      var ro = new window.ResizeObserver(function () {
+      ro = new window.ResizeObserver(function () {
         drawWires();
       });
       ro.observe(canvas);
@@ -599,6 +605,19 @@
     var handle = {
       root: root,
       outcome: 'blueprint',
+
+      /* 视图被丢弃时调用（切会话、切助手、replaceThread）。
+         不 disconnect 的话，Observer 会一直强引用已脱离文档的 canvas ——
+         连同整棵蓝图树一起无法回收；实时模式每回放一条架构会话就泄漏一份。 */
+      destroy: function () {
+        if (ro) {
+          ro.disconnect();
+          ro = null;
+        } else {
+          window.removeEventListener('resize', drawWires);
+        }
+        views.delete(handle);
+      },
 
       /* 四种产出各有自己的入口：kind 决定去哪个桶。
          按 id 去重 —— 终态补齐（fill）与边跑边推的事件可能给同一条产出两次。 */
@@ -653,6 +672,7 @@
       },
     };
 
+    views.add(handle);
     return handle;
   }
 
@@ -682,7 +702,7 @@
       head.appendChild(el('p', 'bp__count num', total + ' 条'));
     }
 
-    return {
+    var handle = {
       root: root,
       outcome: 'generic',
       add: function (kind, data) {
@@ -770,7 +790,21 @@
       },
       redraw: function () {},
     };
+
+    views.add(handle);
+    return handle;
   }
 
-  window.MARGIN_BLUEPRINT = { create: create, createGeneric: createGeneric };
+  window.MARGIN_BLUEPRINT = {
+    create: create,
+    createGeneric: createGeneric,
+    /* 丢弃全部活跃视图（Observer / resize 监听一并释放）。 */
+    destroyAll: function () {
+      Array.from(views).forEach(function (view) {
+        if (view && typeof view.destroy === 'function') {
+          view.destroy();
+        }
+      });
+    },
+  };
 })();

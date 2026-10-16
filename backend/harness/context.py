@@ -317,10 +317,6 @@ def loaded_tools_message(payload: str) -> Message:
     )
 
 
-class ProtocolError(RuntimeError):
-    """上下文违反了模型 API 的消息协议。属于 Harness 自身的编排错误，不该发生。"""
-
-
 def validate_protocol(messages: Sequence[Message]) -> list[str]:
     """本地校验消息序列是否合法，返回问题描述（空列表 = 合法）。
 
@@ -369,14 +365,3 @@ def validate_protocol(messages: Sequence[Message]) -> list[str]:
     return problems
 
 
-def findings_digest(findings: Sequence[Finding]) -> str:
-    """给状态栏用的发现摘要（短，只列 id / 位置 / 标题）。"""
-    if not findings:
-        return "（暂无）"
-    return "\n".join(
-        f"- {item.id} [{item.severity}] {item.file}:{item.line} {item.title}" for item in findings[-12:]
-    )
-
-
-def todo_digest(todos: Sequence[Todo]) -> str:
-    return "\n".join(todo.to_line() for todo in todos) or "（空）"

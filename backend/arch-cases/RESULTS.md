@@ -104,7 +104,8 @@ E3 两次运行一次 finish 一次撞上限；E1 一次撞一次 finish。方�
 
 ```bash
 cd backend
-python -m harness.server --port 8001 &   # 三个端口可并行
+# 三个端口可并行；用受管理的后台任务起（直接 & 会被父 shell 退出带走）
+python -m harness.server --port 8001
 # POST /api/audit {"repo": "arch-cases/e1-pluggy/repo", "goal": "<brief.md 里的目标>",
 #                  "agent": "architect", "max_iterations": 14}
 ```

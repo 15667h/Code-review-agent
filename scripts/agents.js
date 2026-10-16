@@ -250,6 +250,14 @@
       hint.textContent = words.hint;
     }
 
+    /* 发送按钮也要跟着换。漏了它，实时模式下切到架构助手后按钮仍写「开始审查」，
+       而输入框里已是「开始设计…」—— 同一时刻自相矛盾（app.js 的 setBusy 只在
+       运行开始/结束时刷新，切助手这条路不走它）。 */
+    var sendLabel = document.querySelector('#sendBtn span');
+    if (sendLabel && window.MARGIN_UI && window.MARGIN_UI.sentOnce) {
+      sendLabel.textContent = window.MARGIN_UI.sentOnce() ? words.follow : words.send;
+    }
+
     renderMarker(agent);
   }
 

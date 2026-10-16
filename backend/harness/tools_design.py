@@ -25,7 +25,6 @@ from .tools_common import (
     _tool_read_file,
     _tool_read_skill,
     _tool_read_symbols,
-    _tool_run_command,
     _tool_update_todo,
 )
 from .types import Component, DecisionRecord, Layer, OpenQuestion, RunState, ToolResult
@@ -429,7 +428,12 @@ def build_design_toolbox(
     registry.register(_tool_finish(state, outcome="blueprint"), core=True)
 
     registry.register(_tool_git_diff(workspace, runner))
-    registry.register(_tool_run_command(workspace, runner))
+    # 刻意不注册 run_command：架构助手声明 can_edit=False（只读设计）。
+    # run_command 是 HIGH 风险（白名单命令可代写文件、git checkout、跑脚本），
+    # 用户打开高风险开关后执行层并不拦它 —— 边界要靠「不给工具」保证，
+    # 而不是靠「给了但希望不被用」。要看变更用 git_diff，要看结构用
+    # list_files / read_symbols / grep。run_agent 里的 _enforce_read_only
+    # 会把这条声明变成硬检查：哪天有人又注册进来，运行直接失败。
     registry.register(_tool_read_skill(workspace))
 
     return registry

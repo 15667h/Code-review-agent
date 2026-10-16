@@ -164,6 +164,11 @@ class Workspace:
         base = self.resolve(subdir)
         if base.is_file():
             return [base], False
+        # 目录不存在必须显式失败。早先这里静默返回空列表，于是 list_files/grep
+        # 会把「路径拼错」呈现成「没有匹配内容」—— 审计场景里这会直接驱动假阴性
+        # （「这里没问题」），而两个 handler 里的 FileNotFoundError 分支成了死代码。
+        if not base.exists():
+            raise FileNotFoundError(f"目录不存在：{self.relative(base)}")
 
         results: list[Path] = []
         truncated = False

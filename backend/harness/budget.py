@@ -52,8 +52,9 @@ def estimate_tools(tools: list[dict]) -> int:
 class Budget:
     """上下文预算。
 
-    ``should_compress`` 使用书中的 80% 阈值；``headroom`` 用来在临近上限时
-    给工具输出留出空间，避免“这一轮刚好放不下”导致的硬失败。
+    ``should_compress`` 使用书中的 80% 阈值。早先还有一个 ``headroom`` 想在临近
+    上限时给工具输出留空间，实际没有调用方（压缩由调用方显式触发），已删除 ——
+    docstring 承诺了不存在的行为，比没有承诺更糟。
     """
 
     def __init__(self, window: int = 131_072, trigger_ratio: float = 0.8) -> None:
@@ -72,5 +73,3 @@ class Budget:
     def should_compress(self, prefix_tokens: int, messages: list[Message]) -> bool:
         return self.used(prefix_tokens, messages) >= self.trigger_at
 
-    def headroom(self, prefix_tokens: int, messages: list[Message]) -> int:
-        return max(0, self.window - self.used(prefix_tokens, messages))

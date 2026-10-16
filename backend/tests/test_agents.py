@@ -363,7 +363,8 @@ def test_status_bar_reports_whatever_the_agent_produces() -> None:
     state.add_artifact("component", Component(name="order"))
     text = render_status(state)
     assert "component=1" in text
-    assert "findings" not in text or "artifacts" in text
+    assert "layer=0" in text, "空桶也要报数：评审要看清「有几层、几个组件」"
+    assert "findings" not in text, "形态不是 findings 时不该出现 findings 字样"
 
     review_state = RunState(goal="g")
     review_state.add_finding(
@@ -495,3 +496,51 @@ def test_record_component_drops_self_dependency() -> None:
     registry.get("record_component").handler(name="pool", layer="传输层", depends_on=["POOL"])
     pool = state.artifacts_of("component")[-1]
     assert pool.name == "pool" and pool.depends_on == [], pool.depends_on
+
+
+def test_unknown_outcome_falls_back_to_generic_renderer() -> None:
+    """第三个 agent 的 outcome 没有专用渲染器时，必须走 generic 兜底。
+
+    掉进审查渲染器会打印「本次没有记录任何发现」—— 那不是事实，
+    是误导，比不渲染更糟。注册表 + 兜底就是为消灭这条路径。
+    """
+    from harness.loop import AuditResult
+    from harness.report import render_generic_markdown, render_markdown, render_terminal
+
+    result = AuditResult(
+        goal="盘一遍依赖",
+        agent="architect",
+        outcome="notes",
+        artifacts={"note": [{"title": "观察一", "body": "环形依赖"}]},
+        summary="已记录 1 条",
+    )
+    md = render_markdown(result)
+    assert "没有记录任何发现" not in md, "未知形态掉进了审查渲染器"
+    assert "notes" in md and "环形依赖" in md
+    assert "这一形态还没有专用渲染器" in md
+
+    term = render_terminal(result, color=False)
+    assert "没有记录任何发现" not in term
+    assert "环形依赖" in term
+
+    # generic 渲染器对空产出也要能说话
+    empty = AuditResult(goal="g", outcome="notes", artifacts={})
+    assert "没有登记任何产出" in render_generic_markdown(empty)
+
+
+def test_blueprint_outcome_still_uses_its_own_renderer() -> None:
+    """注册表不能把已注册的形态也漏到 generic 去。"""
+    from harness.loop import AuditResult
+    from harness.report import render_markdown
+
+    from harness.types import Layer
+
+    result = AuditResult(
+        goal="分层",
+        agent="architect",
+        outcome="blueprint",
+        artifacts={"layer": [Layer(name="接入层", purpose="对外")], "component": []},
+    )
+    md = render_markdown(result)
+    assert "这一形态还没有专用渲染器" not in md
+    assert "接入层" in md

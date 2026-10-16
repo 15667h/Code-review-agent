@@ -35,8 +35,6 @@ ApprovalFn = Callable[[ToolCall, Risk], tuple[bool, str]]
 _EXEMPT_NAMES = frozenset({"finish", "update_todo"})
 _RECORD_PREFIX = "record_"
 
-CIRCUIT_EXEMPT = _EXEMPT_NAMES | {"record_finding"}
-
 
 def is_circuit_exempt(name: str) -> bool:
     """该工具是否不受熔断影响。"""
@@ -91,7 +89,7 @@ class Constrainer:
         # ---- 连续被拒熔断 ----
         # 判据是 state.reject_streak（连续），不是 rejected_calls（累计）。
         # 早期版本用累计值且从不归零，于是熔断一旦打开就再也关不上，连 finish 都被拒 ——
-        # 模型被自己的护栏锁死。豁免名单见 CIRCUIT_EXEMPT。
+        # 模型被自己的护栏锁死。豁免判据见 is_circuit_exempt（名单 + record_ 前缀）。
         #
         # 注意一个边界：同一次响应里的多个并行调用会连续累加计数，
         # 所以一批 5 个高风险调用就能打开熔断。这是可接受的 ——
@@ -287,7 +285,13 @@ def verify_citations(text: str, state: RunState) -> list[str]:
     """核对结论里引用的位置是否为本次实际读过的文件。
 
     只做保守判断：如果引用的文件从未出现在 files_read 里，就提示一次 ——
-    可能是编造的行号，也可能是通过 grep 看到的（grep 也会记进 files_read）。
+    可能是编造的行号，也可能是通过 grep 看到的。
+
+    注意：files_read 目前只由 read_file / read_symbols / lint_file 写入
+    （grep 不写）。架构助手大量用 grep 建立结构认知，其总结里引自 grep 的
+    ``file:line`` 会被这里提示「需人工复核」—— 那是**已知的误报**，用来稀释
+    信号总好过把编造的行号一起放过。要消除它就给 grep 命中也记 files_read，
+    但那会让「读过」与「逐行看过」混淆，暂时选择保守。
     """
     cited = extract_cited_locations(text)
     if not cited:

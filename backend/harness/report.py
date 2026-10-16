@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import Any
 
 from .loop import AuditResult
@@ -37,14 +38,114 @@ def sort_findings(findings: list[Finding]) -> list[Finding]:
 # =============================================================================
 
 
-def render_markdown(result: AuditResult, *, repo: str = "", model: str = "") -> str:
-    """按产出形态分派渲染器。
+# =============================================================================
+# generic 兜底：前端「不认识」的 outcome 也不能在报告里消失
+#
+# 与前端 blueprint.js 的 createGeneric 同一职责 —— 后端注册了新 agent 而这一层
+# 还没写专用渲染器时，按字段原样列出。没有它，未知 outcome 会掉进审查渲染器，
+# 打印「本次没有记录任何发现」：那不是事实，是误导。
+# =============================================================================
 
-    架构运行若走审查的渲染，会打印「本次没有记录任何发现」—— 那不是事实，
-    只是渲染器不认识它的产出。这种误导比不渲染更糟。
-    """
-    if result.outcome == "blueprint":
-        return render_blueprint_markdown(result, repo=repo, model=model)
+_SKIP_FIELDS = {"id", "fingerprint"}
+
+
+def _generic_rows(result: AuditResult) -> list[tuple[str, list[Any]]]:
+    rows: list[tuple[str, list[Any]]] = []
+    for kind, items in result.artifacts.items():
+        if items:
+            rows.append((kind, items))
+    return rows
+
+
+def render_generic_markdown(result: AuditResult, *, repo: str = "", model: str = "") -> str:
+    lines: list[str] = []
+    lines.append("# 运行报告")
+    lines.append("")
+    lines.append(f"- **目标**：{result.goal}")
+    if repo:
+        lines.append(f"- **仓库路径**：`{repo}`")
+    if model:
+        lines.append(f"- **驱动模型**：`{model}`")
+    lines.append(f"- **产出形态**：`{result.outcome or '（未声明）'}`")
+    lines.append(f"- **迭代轮数**：{result.iterations}")
+    lines.append(f"- **结束原因**：`{result.stop_reason}`")
+    lines.append("")
+    lines.append("> 这一形态还没有专用渲染器，以下按字段原样列出。")
+    lines.append("")
+
+    rows = _generic_rows(result)
+    if not rows:
+        lines.append("本次运行没有登记任何产出。")
+    for kind, items in rows:
+        lines.append(f"## {kind}（{len(items)} 条）")
+        lines.append("")
+        for item in items:
+            data = item if isinstance(item, dict) else vars(item)
+            for key, value in data.items():
+                if key in _SKIP_FIELDS or value in (None, "", [], {}):
+                    continue
+                if isinstance(value, (list, tuple)):
+                    rendered = "；".join(str(v) for v in value)
+                else:
+                    rendered = str(value)
+                lines.append(f"- **{key}**：{rendered}")
+            lines.append("")
+    if result.summary:
+        lines.append("## 总结")
+        lines.append("")
+        lines.append(result.summary)
+    return "\n".join(lines)
+
+
+def render_generic_terminal(result: AuditResult, *, color: bool = True) -> str:
+    def paint(text: str, code: str) -> str:
+        return f"{code}{text}{_RESET}" if color else text
+
+    lines: list[str] = []
+    lines.append("")
+    lines.append(paint("─" * 64, _DIM))
+    lines.append(paint(f"  运行完成 · 产出形态 {result.outcome or '（未声明）'}", _BOLD))
+    lines.append(paint("─" * 64, _DIM))
+    lines.append("")
+    lines.append(f"  目标：{result.goal}")
+    lines.append(f"  轮数：{result.iterations}    结束原因：{result.stop_reason or '—'}")
+    rows = _generic_rows(result)
+    if not rows:
+        lines.append("")
+        lines.append("  本次运行没有登记任何产出。")
+    for kind, items in rows:
+        lines.append("")
+        lines.append(paint(f"  {kind}（{len(items)} 条）", _BOLD))
+        for item in items:
+            data = item if isinstance(item, dict) else vars(item)
+            summary_bits = [
+                f"{key}={value}"
+                for key, value in data.items()
+                if key not in _SKIP_FIELDS and value not in (None, "", [], {})
+            ]
+            lines.append("    · " + "，".join(summary_bits[:4]))
+    if result.summary:
+        lines.append("")
+        lines.append(f"  总结：{result.summary}")
+    lines.append("")
+    return "\n".join(lines)
+
+
+# outcome → 渲染器。新 agent 注册时在这里加一行即可；**没加也不会走错渲染器** ——
+# 未知 outcome 落到 generic（按字段原样列），而不是掉进审查渲染器打印
+# 「本次没有记录任何发现」（那不是事实，是误导，比不渲染更糟）。
+_MARKDOWN_RENDERERS: dict[str, Callable[..., str]] = {
+    "blueprint": lambda result, **kw: render_blueprint_markdown(result, **kw),
+}
+
+
+def render_markdown(result: AuditResult, *, repo: str = "", model: str = "") -> str:
+    """按产出形态分派渲染器。"""
+    renderer = _MARKDOWN_RENDERERS.get(result.outcome)
+    if renderer is not None:
+        return renderer(result, repo=repo, model=model)
+    if result.outcome != "findings" and "finding" not in result.artifacts:
+        return render_generic_markdown(result, repo=repo, model=model)
 
     counts = result.severity_counts
     lines: list[str] = []
@@ -277,9 +378,18 @@ def _append_warnings(lines: list[str], result: AuditResult) -> None:
 # =============================================================================
 
 
+_TERMINAL_RENDERERS: dict[str, Callable[..., str]] = {
+    "blueprint": lambda result, **kw: render_blueprint_terminal(result, **kw),
+}
+
+
 def render_terminal(result: AuditResult, *, color: bool = True) -> str:
-    if result.outcome == "blueprint":
-        return render_blueprint_terminal(result, color=color)
+    """按产出形态分派渲染器；未知形态走 generic，不冒充实出。"""
+    renderer = _TERMINAL_RENDERERS.get(result.outcome)
+    if renderer is not None:
+        return renderer(result, color=color)
+    if result.outcome != "findings" and "finding" not in result.artifacts:
+        return render_generic_terminal(result, color=color)
 
     def paint(text: str, code: str) -> str:
         return f"{code}{text}{_RESET}" if color else text
@@ -386,17 +496,9 @@ def render_blueprint_terminal(result: AuditResult, *, color: bool = True) -> str
     return "\n".join(lines)
 
 
-def render_findings_oneline(findings: list[Finding]) -> str:
-    """给评估脚本用的紧凑表示：`severity file:line`。"""
-    return "; ".join(
-        f"{item.severity} {item.file}:{item.line}" for item in sort_findings(findings)
-    ) or "(none)"
-
-
 __all__ = [
     "render_blueprint_markdown",
     "render_blueprint_terminal",
-    "render_findings_oneline",
     "render_markdown",
     "render_terminal",
     "sort_findings",

@@ -909,6 +909,11 @@
   }
 
   function replaceThread(node) {
+    /* 先释放旧视图再清空：蓝图视图的 ResizeObserver 强引用已脱离文档的 canvas，
+       不清就会连同整棵树一起泄漏（实时模式每回放一条架构会话漏一份）。 */
+    if (window.MARGIN_BLUEPRINT && window.MARGIN_BLUEPRINT.destroyAll) {
+      window.MARGIN_BLUEPRINT.destroyAll();
+    }
     thread.textContent = '';
     if (node) {
       thread.appendChild(node);
@@ -1844,6 +1849,10 @@
     replaceThread: replaceThread,
     thread: thread,
     closeDrawer: closeDrawer,
+    /* 是否已经发送过（决定按钮显示「开始 X」还是「继续追问」） */
+    sentOnce: function () {
+      return sentOnce;
+    },
   };
 
   window.MARGIN_UI = MARGIN_UI;
@@ -1856,9 +1865,13 @@
      只换配色不改数据的话，会出现「助手是架构、侧栏里全是审查记录」。 */
   async function playDemo() {
     var pack = demoPack();
-    cancelled = true;      // 让正在播放的那一段演示自己退出
+    /* 先把旧循环的定时器真正清掉，再启动新的。只置 cancelled 标志不够 ——
+       新 playRun 一入口就把它重置为 false，旧循环里 >80ms 的 setTimeout
+       到期后会发现标志是 false 而继续跑完，末尾的 finishTurn 会提前解除
+       新运行的忙碌态（发送/停止按钮、runbar 全部错乱）。 */
+    stopAll();
     await sleep(80);
-    thread.textContent = '';
+    replaceThread(null);
     removeFollowUps();
     sentOnce = false;
     SPACES = (pack.spaces || DATA.spaces || []).slice();

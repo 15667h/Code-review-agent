@@ -183,10 +183,6 @@ class Tool:
             },
         }
 
-    def catalog_entry(self) -> str:
-        return f"- {self.name}: {self.summary or self.description.splitlines()[0]}"
-
-
 # =============================================================================
 # 注册表
 # =============================================================================
@@ -236,18 +232,6 @@ class ToolRegistry:
         """静态前缀里的工具定义：只含核心工具 + 发现工具。**顺序固定**，不按热度排序。"""
         names = sorted(self._core)
         return [self._tools[name].schema() for name in names if name in self._tools]
-
-    def schema_for(self, name: str) -> dict[str, Any] | None:
-        tool = self._tools.get(name)
-        return tool.schema() if tool else None
-
-    def catalog(self, limit: int = 40) -> str:
-        """工具目录：只有名字与一句话，用于告诉模型「还有哪些能力可加载」。"""
-        entries = [tool.catalog_entry() for tool in self.all()]
-        if len(entries) > limit:
-            entries = entries[:limit]
-            entries.append(f"- …（另有 {len(self._tools) - limit} 个工具，请用 discover_tools 检索）")
-        return "\n".join(entries)
 
     # ---- 检索（主动工具发现） ----
 

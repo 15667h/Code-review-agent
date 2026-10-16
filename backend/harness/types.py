@@ -163,9 +163,6 @@ class Message:
             payload["name"] = self.name
         return payload
 
-    @property
-    def text_len(self) -> int:
-        return len(self.content)
 
 
 # =============================================================================

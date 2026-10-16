@@ -29,7 +29,6 @@ if str(BACKEND) not in sys.path:
 from harness import server  # noqa: E402
 from harness.config import Config  # noqa: E402
 
-EXAMPLE_REPO = BACKEND / "examples" / "vulnerable-service" / "repo"
 
 
 # =============================================================================

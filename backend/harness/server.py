@@ -325,6 +325,9 @@ class EventBridge:
         self.record = record
         self._last_at = time.time()
         self._step_durations: list[float] = []
+        # 收到但没有处理方法的事件名。正常应为空；非空说明 loop 与
+        # server 的事件契约漂移了（测试对此断言）。
+        self.unhandled: list[str] = []
 
     def __call__(self, name: str, payload: dict[str, Any]) -> None:
         now = time.time()
@@ -334,6 +337,11 @@ class EventBridge:
                 handler(payload, now)
             except Exception:  # noqa: BLE001 - 观察者绝不能影响主流程
                 pass
+        else:
+            # 事件名对不上时不能静默：早先 loop 发 model_retry 而这里只有
+            # _on_retry，前端永远看不到模型重试，且没有任何迹象。
+            # 记下来供测试与排查断言（观察者仍然不影响主流程）。
+            self.unhandled.append(name)
         self._last_at = now
 
     # -- 各事件 -- #
@@ -395,7 +403,12 @@ class EventBridge:
         )
 
     def _on_retry(self, payload, now) -> None:
+        # loop 侧发的是 model_retry；转发给前端的事件名叫 retry（前端契约）。
+        # 两个名字都要认，别让「事件名对不上」静默吃掉一次模型重试。
         self.record.emit("retry", dict(payload))
+
+    # loop 实际发出的事件名
+    _on_model_retry = _on_retry
 
     def _on_compression(self, payload, now) -> None:
         self.record.emit(
@@ -955,7 +968,10 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store")
-        self.send_header("Access-Control-Allow-Origin", "*")
+        # 刻意不发 Access-Control-Allow-Origin：前端由本服务同源托管，
+        # 不需要 CORS。发 `*` 会把「同源」这个前提抵消掉 —— 任意网页都能
+        # 跨源调这些接口（含把真实 API Key 送往攻击者 base_url 的
+        # /api/config/test），本机服务 + 零鉴权的组合下这是真实泄露链。
         self.end_headers()
         self.wfile.write(body)
 
@@ -964,7 +980,6 @@ class Handler(BaseHTTPRequestHandler):
         self.send_response(status)
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(body)))
-        self.send_header("Access-Control-Allow-Origin", "*")
         self.end_headers()
         self.wfile.write(body)
 
@@ -985,10 +1000,9 @@ class Handler(BaseHTTPRequestHandler):
     # ---- 路由 ---- #
 
     def do_OPTIONS(self) -> None:  # noqa: N802
+        # 同源部署不产生预检请求；保留 204 只是为了让手动探测的工具有个回应。
+        # 这里没有任何 CORS 头 —— 见 _send_json 里的说明。
         self.send_response(204)
-        self.send_header("Access-Control-Allow-Origin", "*")
-        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-        self.send_header("Access-Control-Allow-Headers", "Content-Type")
         self.send_header("Content-Length", "0")
         self.end_headers()
 
@@ -1402,7 +1416,6 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Cache-Control", "no-cache, no-transform")
         self.send_header("Connection", "keep-alive")
         self.send_header("X-Accel-Buffering", "no")
-        self.send_header("Access-Control-Allow-Origin", "*")
         self.send_header("Transfer-Encoding", "chunked")
         self.end_headers()
 
@@ -1422,8 +1435,11 @@ class Handler(BaseHTTPRequestHandler):
                     # 心跳：既保活连接，也让客户端能区分「还在跑」和「断了」
                     if not self._write_chunk(b": ping\n\n"):
                         return
-                    if record.status in ("finished", "error", "stopped"):
-                        continue
+                    # 终态后若 done 事件曾被队列满丢弃，心跳会永远继续下去 ——
+                    # 客户端等不到 close，连接挂着不关。排空即收尾。
+                    if record.status in ("finished", "error", "stopped") and q.empty():
+                        self._write_chunk(b"event: close\ndata: {}\n\n")
+                        return
                     continue
                 if not self._write_event(event):
                     return
@@ -1432,6 +1448,10 @@ class Handler(BaseHTTPRequestHandler):
                     return
         finally:
             record.unsubscribe(q)
+            # chunked 的终止序列。没有它，严格客户端（urllib/requests）读完所有帧
+            # 也等不到流结束 —— 实测表现为 read 一直阻塞到超时。
+            # 放在 finally 里：上面任何路径 return 都会走到这里，且只写一次。
+            self._write_chunk(b"")
 
     def _write_event(self, event: dict[str, Any]) -> bool:
         payload = json.dumps(event["data"], ensure_ascii=False, default=str)
@@ -1505,7 +1525,9 @@ def _render_report(record: RunRecord) -> str:
         goal=record.goal,
         agent=final.get("agent") or record.agent,
         artifacts=artifacts,
-        outcome=final.get("outcome") or "findings",
+        # 老归档没有 outcome 字段：按 agent 查 spec 推导，别默认成「findings」
+        # —— 架构运行的回放若默认成审查，报告会打印「没有发现」。
+        outcome=final.get("outcome") or get_agent(record.agent).outcome,
         summary=final.get("summary") or "",
         iterations=final.get("iterations") or 0,
         stop_reason=final.get("stop_reason") or "",

@@ -28,7 +28,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from .agents import UnknownAgent, default_id, get as get_agent
+from .agents import AgentSpec, UnknownAgent, default_id, get as get_agent
 from .budget import Budget
 from .config import Config
 from .context import (
@@ -51,7 +51,7 @@ from .guardrails import (
 )
 from .model import Model, ModelError
 from .sandbox import CommandRunner, Workspace
-from .tools import tool_report
+from .tools import Risk, tool_report
 from .types import Finding, Message, RunState, Usage
 
 EventHook = Callable[[str, dict[str, Any]], None]
@@ -87,10 +87,6 @@ class AgentResult:
     def findings(self) -> list[Finding]:
         # 只读，理由与 RunState.findings 相同：读一下不该凭空建桶
         return self.artifacts.get("finding", [])
-
-    @findings.setter
-    def findings(self, value: list[Finding]) -> None:
-        self.artifacts["finding"] = list(value)
 
     @property
     def artifact_counts(self) -> dict[str, int]:
@@ -144,6 +140,29 @@ def _emit(hook: EventHook | None, event: str, payload: dict[str, Any]) -> None:
 # =============================================================================
 
 
+def _enforce_read_only(spec: AgentSpec, registry: ToolRegistry) -> None:
+    """把 ``can_edit=False`` 从一句声明变成运行前的硬检查。
+
+    没有这一步时，声明的边界与真实能力是脱钩的：架构助手说着「只读」却拿着
+    ``run_command``（HIGH 风险，白名单命令能代写文件、git checkout、跑脚本），
+    而用户打开高风险开关后执行层并不拦它。平台化的意义就在于**加一个 agent
+    不改既有代码也不会削弱边界** —— 违规时直接失败，好过静默放行。
+    """
+    if spec.can_edit:
+        return
+    offenders = [
+        tool.name
+        for tool in registry.all()
+        if tool.risk >= Risk.MEDIUM
+    ]
+    if offenders:
+        raise RuntimeError(
+            f"agent `{spec.id}` 声明了 can_edit=False，但工具箱里有 "
+            f"{len(offenders)} 个中高风险工具：{', '.join(sorted(offenders))}。"
+            "请从 build_tools 中移除它们，或把声明改为 can_edit=True。"
+        )
+
+
 def run_agent(
     *,
     goal: str,
@@ -181,6 +200,7 @@ def run_agent(
         timeout=config.timeout,
     )
     registry = spec.build_tools(workspace, state, runner)
+    _enforce_read_only(spec, registry)
     core_tools = registry.core_schemas()
 
     builder = ContextBuilder(

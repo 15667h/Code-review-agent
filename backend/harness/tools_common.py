@@ -128,6 +128,15 @@ def _tool_read_file(workspace: Workspace) -> Tool:
         lines = text.splitlines()
         total = len(lines)
         start = max(1, offset)
+        if start > total:
+            # 早先这里会返回「第 9999-76 行 / 共 76 行」这种 start>end 的自相矛盾文本，
+            # 模型看不出自己读空了。显式说明，别让它把「没读到」当成「文件是空的」。
+            return ToolResult.failure(
+                "OffsetPastEnd",
+                f"offset={offset} 超出文件行数（共 {total} 行）。",
+                {"path": path, "offset": offset, "total": total},
+                suggestion=f"offset 取 1~{total}；只想看开头就省略 offset。",
+            )
         end = min(total, start + max(1, limit) - 1)
         chunk = lines[start - 1 : end] if start <= total else []
         numbered = "\n".join(f"{idx:>5} | {line}" for idx, line in enumerate(chunk, start=start))
@@ -193,6 +202,12 @@ def _tool_grep(workspace: Workspace) -> Tool:
             files, _ = workspace.iter_files(path, glob or "*", limit=4000)
         except PathEscape as exc:
             return ToolResult.failure("PathEscape", str(exc), {"path": path})
+        except FileNotFoundError as exc:
+            # 目录不存在不能说成「没有匹配」—— 那会把路径拼错演成「这里没问题」
+            return ToolResult.failure(
+                "DirectoryNotFound", str(exc), {"path": path},
+                suggestion="先 list_files('.') 确认目录结构，再缩小 path。",
+            )
 
         hits: list[str] = []
         scanned = 0
@@ -650,7 +665,17 @@ def _tool_read_skill(workspace: Workspace) -> Tool:
 
     def handler(name: str, section: str = "") -> ToolResult:
         safe = re.sub(r"[^A-Za-z0-9_/-]", "", name)
-        target = skills_root / safe
+        target = (skills_root / safe).resolve()
+        # safe 以 / 开头时 pathlib 会把它当绝对路径，直接顶掉 skills_root
+        # （POSIX 下 read_skill('/etc/passwd') 就能越出技能目录）。
+        # 字符过滤挡不住这个，必须在拼接后校验前缀。
+        try:
+            target.relative_to(skills_root.resolve())
+        except ValueError:
+            return ToolResult.failure(
+                "SkillNotFound", f"没有名为 `{name}` 的技能文档。", {"name": name},
+                suggestion="技能名只能是技能目录内的相对路径，不能以 / 开头。",
+            )
         if target.is_dir():
             target = target / "SKILL.md"
         if not target.suffix:
