@@ -1,0 +1,467 @@
+{
+  "goal": "给出这个仓库的分层、组件职责与依赖、关键设计决策及其代价，以及尚未确定的问题。",
+  "agent": "architect",
+  "outcome": "blueprint",
+  "artifacts": {
+    "layer": [
+      {
+        "id": "L_a5a11e596e60",
+        "name": "门面与再导出层",
+        "purpose": "对外只暴露一组稳定的公共名字（pluggy.X），并把历史模块路径（pluggy._hooks / pluggy._callers）保留为纯再导出别名",
+        "hint": "不负责任何逻辑、不持有状态、不做校验。已知取舍：`_manager.py:19-28` 仍经 `._hooks` 取名字，形成内层对门面的反向引用，严格单向依赖尚未做到（见开放问题）",
+        "order": 0
+      },
+      {
+        "id": "L_142798ab80fc",
+        "name": "插件编排层",
+        "purpose": "插件注册表、hookspec/hookimpl 发现与校验、受名阻断、入口点加载、调用监控挂载",
+        "hint": "不负责单次 hook 调用的顺序与 wrapper 语义（那是调用执行层），也不负责解释 impl 的调用结果。它只决定「谁在列表里、是否合法」",
+        "order": 1
+      },
+      {
+        "id": "L_8afc182a41f4",
+        "name": "调用执行层",
+        "purpose": "表达一次 hook 调用：HookCaller 负责取参数/默认值/子集视图，_multicall 负责 impl 顺序、wrapper 分组与 teardown 收尾",
+        "hint": "不负责发现、注册、校验；也不做注册表查询——它拿到的是一份已拷贝的 impl 列表（`_caller.py:198`）。这一层是唯一的性能热路径，任何抽象都要按调用次数计价",
+        "order": 2
+      },
+      {
+        "id": "L_82ad9dd31f88",
+        "name": "模型与契约层",
+        "purpose": "HookImpl/HookSpec 值对象、装饰器标记、参数名解析、opts TypedDict、Result 结果封装与 HookCallError",
+        "hint": "不负责编排也不执行调用循环。这里的对象一经构造即视为不可变（`Final`/`__slots__`），变异只发生在 HookCaller 的 impl 列表上",
+        "order": 3
+      },
+      {
+        "id": "L_82f3f9fc3a8b",
+        "name": "支撑设施层",
+        "purpose": "tracing、自定义 warning 类型、importlib.metadata 的 pkg_resources 兼容外壳",
+        "hint": "零内部依赖的叶子；不允许反过来依赖编排层或模型层。宁可重复一个小工具函数（例如 tracing 自己的 _safe_str），也不在这里引入对 _result/_impl 的依赖",
+        "order": 4
+      }
+    ],
+    "component": [
+      {
+        "id": "C_6735768dc674",
+        "name": "公共 API 门面",
+        "layer": "门面与再导出层",
+        "role": "对外唯一稳定入口",
+        "responsibility": "定义 `pluggy.__all__`（`__init__.py:1-16`），把编排层、模型层、支撑设施层的名字汇聚为一个公共命名空间；`__version__` 用模块级 `__getattr__` 懒加载（`__init__.py:32-38`），避免安装元数据缺失时 import 失败。",
+        "interfaces": [
+          "pluggy.PluginManager / PluginValidationError",
+          "pluggy.HookCaller / HookRelay / HookImpl",
+          "pluggy.HookspecMarker / HookimplMarker / HookspecOpts / HookimplOpts",
+          "pluggy.Result / HookCallError",
+          "pluggy.PluggyWarning / PluggyTeardownRaisedWarning",
+          "pluggy.__version__"
+        ],
+        "depends_on": [
+          "插件注册表",
+          "HookCaller 调用视图",
+          "HookImpl 模型",
+          "HookSpec 标记与规格",
+          "Result 结果封装",
+          "警告类型"
+        ],
+        "failure_modes": [
+          "改动任一内层模块名或签名而忘了同步 `__all__`，用户侧 `from pluggy import X` 直接 ImportError，且测试里只有 `testing/*` 覆盖得到",
+          "`importlib.metadata.version('pluggy')` 在未安装（仅 PYTHONPATH 引入 src）时装不上时，访问 `pluggy.__version__` 抛 PackageNotFoundError，但其余 API 不受影响"
+        ],
+        "rationale": "切分依据是「门面后面的一切都可改名、门面上的名字不能动」。pluggy 被 pytest/datasette/devpi 直接依赖，公共名字就是它的产品契约；把门面单独成一层，才能把「哪些名字有兼容义务」和「模块内部怎么拆」分开评审。"
+      },
+      {
+        "id": "C_684276e450e0",
+        "name": "历史路径再导出",
+        "layer": "门面与再导出层",
+        "role": "内部模块路径的向后兼容垫片",
+        "responsibility": "`_hooks.py` 与 `_callers.py` 不含任何实现，只把 `_caller/_config/_decorators/_impl` 与 `_execution` 的名字再导出，并保留 `_HookCaller`/`_HookRelay`/`_Result` 这类旧下划线别名。",
+        "interfaces": [
+          "from pluggy._hooks import HookCaller, HookImpl, varnames, _HookRelay",
+          "from pluggy._callers import _multicall, Teardown, run_old_style_hookwrapper"
+        ],
+        "depends_on": [
+          "HookCaller 调用视图",
+          "HookImpl 模型",
+          "HookSpec 标记与规格",
+          "opts 契约",
+          "multicall 执行引擎"
+        ],
+        "failure_modes": [
+          "再导出是 `from X import Y` 的静态绑定：`_hooks.HookCaller` 与 `_caller.HookCaller` 是同一对象，因此 monkeypatch `_hooks.HookCaller` 不会影响 `_manager` 已绑定的引用，测试里对内部路径打补丁会静默失效",
+          "若将来在 `_caller.py` 里把 HookCaller 改名，垫片不会报错而是给出旧对象，`_manager.py:19-28` 仍能工作，问题被推迟到用户侧"
+        ],
+        "rationale": "仓库已经做过「按职责拆模块」（`_hooks` 拆成 `_caller/_config/_decorators/_impl`、`_callers` 拆成 `_execution`，见两文件的 docstring），但 `testing/` 与下游仍按旧路径 import（`testing/test_hookcaller.py:12`、`testing/test_multicall.py:10`）。把垫片独立登记，是为了让「兼容义务」显式可见，而不是混在新模块里。"
+      },
+      {
+        "id": "C_1c755630ea9b",
+        "name": "插件注册表",
+        "layer": "插件编排层",
+        "role": "插件注册表与校验编排",
+        "responsibility": "维护 `_name2plugin`（含 `None` 作为「名字被阻断」哨兵）、发现并校验 hookimpl/hookspec（`_static_hook_attr` 静态查找、`_verify_hook` 参数与 wrapper 校验）、加载 entry point、把 `_inner_hookexec` 作为唯一执行入口注入每个 HookCaller，并提供 `subset_hook_caller` 与调用监控挂载。",
+        "interfaces": [
+          "register(plugin, name=None) -> str | None",
+          "unregister(plugin=None, name=None)",
+          "set_blocked(name) / unblock(name) / is_blocked(name)",
+          "add_hookspecs(module_or_class)",
+          "check_pending()",
+          "load_setuptools_entrypoints(group, name=None) -> int",
+          "subset_hook_caller(name, remove_plugins) -> HookCaller",
+          "add_hookcall_monitoring(before, after) -> undo",
+          "enable_tracing() -> undo",
+          "parse_hookimpl_opts / parse_hookspec_opts（子类扩展点）"
+        ],
+        "depends_on": [
+          "multicall 执行引擎",
+          "HookCaller 调用视图",
+          "HookImpl 模型",
+          "HookSpec 标记与规格",
+          "opts 契约",
+          "Result 结果封装",
+          "tracing",
+          "dist 兼容外壳",
+          "警告类型"
+        ],
+        "failure_modes": [
+          "插件名重复或同一对象改名注册时抛 ValueError，注册表保持不变（先全量校验再落状态，`_manager.py:220-243`）",
+          "`register(None)` 被静默忽略并返回 None（`_manager.py:198-202`，为兼容既有用户而保留）",
+          "hookimpl 与 hookspec 参数不匹配或 wrapper 声明非法时抛 PluginValidationError，插件完全未注册，但 `add_hookspecs` 之后补 spec 时的校验失败会留下「已注册但未校验」的部分状态（`_manager.py:249-253` 注释已承认）",
+          "`subset_hook_caller` 在待剔除插件都不实现该 hook 时直接返回原对象，调用方若据此修改返回对象会影响全局"
+        ],
+        "rationale": "注册表与调用是两个正交的关注点：注册关心「名字唯一、spec 匹配、状态一致」，调用关心「顺序、包装、异常」。现有代码把二者放在同一个类里（`PluginManager` 同时持有 `_inner_hookexec` 与 `_name2plugin`），所以按类切开——`PluginManager` 保留为注册表兼门面，调用细节下沉到 HookCaller/_multicall。这样做而不是拆成两个公共类，是因为 `PluginManager` 是 pytest 等下游直接构造并大量使用 `parse_*_opts` 覆写的类，把它拆开会立刻破坏子类扩展点。"
+      },
+      {
+        "id": "C_40254549c99a",
+        "name": "HookCaller 调用视图",
+        "layer": "调用执行层",
+        "role": "单个 hook 的调用门面与参数绑定",
+        "responsibility": "按 hook 名持有一组 `HookImpl` 与可选 `HookSpec`，维护 tryfirst/trylast/wrapper 的分组顺序（`_caller.py:127-149`），在调用时补 hookspec 默认值、校验参数是否齐全、拷贝 impl 列表后交给注入的 `_HookExec`；实现 historic 的记录与回放，并提供剔除若干插件的 `_SubsetHookCaller` 视图。",
+        "interfaces": [
+          "hook.name(**kwargs)",
+          "call_historic(result_callback=None, kwargs=None)",
+          "call_extra(methods, kwargs)",
+          "has_spec() / set_specification(namespace, opts) / is_historic()",
+          "get_hookimpls() -> list[HookImpl]",
+          "_add_hookimpl / _remove_plugin / _maybe_apply_history（编排层使用）",
+          "subset_hook_caller 返回的 _SubsetHookCaller 代理"
+        ],
+        "depends_on": [
+          "HookImpl 模型",
+          "HookSpec 标记与规格",
+          "opts 契约"
+        ],
+        "failure_modes": [
+          "直接调用 historic hook 时触发 assert（`_caller.py:190-192`），在 `python -O` 下 assert 被移除，historic hook 会被当作普通 hook 调用",
+          "hook 调用缺少 spec 声明的参数时只发 UserWarning 不报错（`_caller.py:159-179`），缺少 impl 所需参数才由 _multicall 抛 HookCallError",
+          "`_SubsetHookCaller._hookimpls` 是每次访问都重新过滤的 property（`_caller.py:305-311`），高频调用下产生额外列表分配",
+          "impl 在迭代中被注册时靠 `_hookimpls.copy()`（`_caller.py:198`）保证当前调用不受影响，但新 impl 不会进入本次调用"
+        ],
+        "rationale": "一次 hook 调用的「形状」和「执行」是两件事：形状包括参数绑定、hookspec 默认值补齐、historic 历史回放、子集视图；执行只有顺序与 yield 协议。拆开后 `_SubsetHookCaller` 可以只提供数据视图（`_caller.py:284-292` 注释说明这正是为修 #346/#347 才改成代理），而不必复制执行逻辑；也让 `_multicall` 能脱离任何类被 benchmark 直接压测（`testing/benchmark.py:120`）。"
+      },
+      {
+        "id": "C_02967538abf0",
+        "name": "multicall 执行引擎",
+        "layer": "调用执行层",
+        "role": "N 个 impl 的实际调用循环",
+        "responsibility": "按列表逆序执行 HookImpl：区分普通 impl、new-style wrapper、old-style hookwrapper；先执行各 wrapper 的 yield 前段，收集 teardown 后逆序回放，把结果或异常投递回 wrapper；参数按 impl 声明的 argnames 从调用 kwargs 取值，缺失时抛 HookCallError。",
+        "interfaces": [
+          "_multicall(hook_name, hook_impls, caller_kwargs, firstresult) -> object | list[object]",
+          "Teardown 类型别名 / run_old_style_hookwrapper(hook_impl, hook_name, args, kwargs)",
+          "_raise_wrapfail / _warn_teardown_exception"
+        ],
+        "depends_on": [
+          "HookImpl 模型",
+          "Result 结果封装",
+          "警告类型"
+        ],
+        "failure_modes": [
+          "impl 抛异常时不会立刻中断：异常被暂存，先逆序跑完所有已有 teardown，再在函数末尾抛出（`_execution.py:154-195`），所以 wrapper 的收尾代码总会执行",
+          "old-style hookwrapper 的 teardown 里抛异常只发 PluggyTeardownRaisedWarning（`_execution.py:77-86`），后续 teardown 可能被跳过或在不预期时刻执行",
+          "wrapper 内层异常为 StopIteration 时触发 RuntimeError 的特殊分支（`_execution.py:166-178`，针对 #544），行为难以从外部预期",
+          "firstresult=True 时遇到首个非 None 结果即 break（`_execution.py:150-153`），剩余非 wrapper impl 完全不执行，其副作用缺失"
+        ],
+        "rationale": "它是整个库唯一的性能与语义热路径，因此独立成组件并保持「纯函数 + 显式参数」形态（`hook_impls` 是已排好序的列表，不再做任何注册表查询），这样 testing/benchmark.py:120 能脱离 PluginManager 直接压测它。把它和 HookCaller 分开，也让「顺序」与「yield 协议」可以分别修改：前者在 `_add_hookimpl`，后者在这里。"
+      },
+      {
+        "id": "C_5e4b86e7a048",
+        "name": "HookImpl 模型",
+        "layer": "模型与契约层",
+        "role": "单个 hook 实现的不可变值对象",
+        "responsibility": "在构造时一次性解析出 argnames/kwargnames，并把 opts dict 里的 wrapper/hookwrapper/optionalhook/tryfirst/trylast 提升为只读属性（`_impl.py:52-78`）；`__slots__` 固定字段集合。",
+        "interfaces": [
+          "HookImpl(plugin, plugin_name, function, hook_impl_opts)",
+          "属性：function / argnames / kwargnames / plugin / plugin_name / opts / wrapper / hookwrapper / optionalhook / tryfirst / trylast"
+        ],
+        "depends_on": [
+          "参数名解析",
+          "opts 契约",
+          "Result 结果封装"
+        ],
+        "failure_modes": [
+          "构造失败只可能来自 `varnames` 解析异常；解析不出参数时返回 `((), ())` 而非报错，于是该 impl 在 `_multicall` 里被以零参数调用（`_execution.py:107-115`），表现为 TypeError 被推迟到调用期",
+          "`opts` 与装饰器写入的 dict 是同一对象（`_impl.py:62`），外部改写插件函数上的 marker dict 会穿透到已注册的 HookImpl（属性本身已经固化，但 opts 视图会变）"
+        ],
+        "rationale": "HookImpl 是「注册期产物、调用期只读」的载体，把它做成值对象（`Final` 字段 + `__slots__`）而不是每调用一次计算一次的轻量视图，是为了让热路径只做属性读取。单独成模块也是为了让 `_multicall` 可以不 import 任何编排代码就被测试与压测。"
+      },
+      {
+        "id": "C_8dccded064ed",
+        "name": "HookSpec 标记与规格",
+        "layer": "模型与契约层",
+        "role": "hookspec 标记与规格对象",
+        "responsibility": "提供 `HookspecMarker`/`HookimplMarker` 两个装饰器（把 opts 写成 `<project_name>_spec` / `<project_name>_impl` 属性，`_decorators.py:107`、`:224`），以及 `HookSpec` 值对象：解析参数名、抽取 kwargdefaults、保存 opts 与 warn_on_impl 配置。",
+        "interfaces": [
+          "HookspecMarker(project_name)(firstresult=False, historic=False, warn_on_impl=None, warn_on_impl_args=None)",
+          "HookimplMarker(project_name)(wrapper=..., hookwrapper=..., optionalhook=..., tryfirst=..., trylast=..., specname=...)",
+          "HookSpec(namespace, name, opts) 属性：argnames / kwargnames / kwargdefaults / opts / warn_on_impl / warn_on_impl_args"
+        ],
+        "depends_on": [
+          "opts 契约",
+          "参数名解析"
+        ],
+        "failure_modes": [
+          "`historic` 与 `firstresult` 同时为真时在装饰期即抛 ValueError（`_decorators.py:99-100`），错误发生在 import 类的模块时，表现为导入失败而非运行期错误",
+          "`warn_on_impl`/`warn_on_impl_args` 只在 impl 校验时通过 `_warn_for_function` 发出（`_manager.py:440-460`），所以从未被注册的插件得不到弃用提示",
+          "装饰器把 opts 直接挂在函数对象上，同一个函数被两个不同 project_name 的 marker 装饰会得到两套互不干扰的属性，但同名 marker 后写覆盖先写"
+        ],
+        "rationale": "标记（装饰器）和规格（HookSpec）共享同一份 opts 契约与参数解析，且都不依赖注册表或调用循环，因此合为一个组件；与 HookImpl 分开是因为它们的生命周期不同——spec 由宿主在一次 `add_hookspecs` 中建立，且允许在 impl 之后补上（`_manager.py:358-362`）。"
+      },
+      {
+        "id": "C_5c08c2aaceac",
+        "name": "参数名解析",
+        "layer": "模型与契约层",
+        "role": "可调用对象的参数名与默认值解析",
+        "responsibility": "`varnames()` 绕过 `inspect.signature`，直接读 `__code__` 得到位置参数与带默认值的关键字参数名；处理类（取 `__init__`）、可调用对象（取 `__call__`）、已绑定方法（不剥第一个参数）、未绑定方法（仅当首参是 self/cls 时剥离），并对缺 self 的 hookspec 方法发 DeprecationWarning。",
+        "interfaces": [
+          "varnames(func, *, legacy_noself=False) -> (tuple[str, ...], tuple[str, ...])"
+        ],
+        "depends_on": [],
+        "failure_modes": [
+          "遇到无 `__code__` 的对象（C 扩展可调用物）时返回 `((), ())`（`_decorators.py:287-292`），hook 会被以零参数调用，报错点离根因很远",
+          "缺 self 的判定依赖 `__qualname__` 中是否含点号（`_decorators.py:310-311`），嵌套类与通过 functools 包装的函数可能判错，表现为多/少剥一个参数",
+          "PyPy 下额外把 `obj` 视作隐式首参（`_decorators.py:233-234`），同一份插件代码在 CPython 与 PyPy 上参数解析结果可能不同"
+        ],
+        "rationale": "它被 HookImpl 与 HookSpec 同时使用，且是全库最容易出兼容缺陷的地方（自 1.7 起围绕 qualname/self 的判定改过，benchmark 里专门保留了 `_varnames_legacy` 对照实现，`testing/benchmark.py:19-77`）。单独成组件是为了让它的行为变更（例如缺 self 从警告转为错误）有明确、唯一的落点。"
+      },
+      {
+        "id": "C_4477f4615cba",
+        "name": "opts 契约",
+        "layer": "模型与契约层",
+        "role": "hookspec/hookimpl 选项的类型契约",
+        "responsibility": "用 TypedDict 固定两侧可选字段的键名与类型（`_config.py:11-45`），并用 `normalize_hookimpl_opts` 在注册前把缺失键补齐为 False/None（`_config.py:48-54`），使下游可以放心用 `opts[\"wrapper\"]` 而不做 get 兜底。",
+        "interfaces": [
+          "HookspecOpts / HookimplOpts（公共导出）",
+          "normalize_hookimpl_opts(opts) -> None（原地补默认值）"
+        ],
+        "depends_on": [],
+        "failure_modes": [
+          "`normalize_hookimpl_opts` 原地改写调用方传入的 dict（`_config.py:49-54`），同一 dict 若被多个 HookImpl 共享，补默认值会互相可见",
+          "子类若覆写 `parse_hookimpl_opts` 返回缺少键的 dict，注册会因 `KeyError` 在 `HookImpl.__init__` 里失败（`_impl.py:66-78` 直接下标取键）",
+          "新增字段时没有版本化机制，旧插件传入的 dict 不含新键只能靠默认值兜底，无法表达「未设置」与「显式设为 False」的区别"
+        ],
+        "rationale": "opts 是装饰器、注册表、HookImpl、HookSpec 四方共享的唯一契约，也是最常被下游直接读写的结构（`HookimplOpts` 已在公共 `__all__` 里）。把它单独放一个零依赖模块，避免契约被埋在 `_decorators` 或 `_impl` 里，导致改字段时必须改多个模块。"
+      },
+      {
+        "id": "C_45e23f0589e2",
+        "name": "Result 结果封装",
+        "layer": "模型与契约层",
+        "role": "hook 调用结果的异常/值二元封装",
+        "responsibility": "把「结果值」与「异常（含原始 traceback）」装进同一个对象，供 wrapper 读取与改写（force_result / force_exception）；`from_call` 把任意调用折叠成 Result，`get_result` 在需要时按原 traceback 重新抛出。",
+        "interfaces": [
+          "Result(result, exception)",
+          "Result.from_call(func)",
+          "result.excinfo / result.exception",
+          "result.force_result(value) / force_exception(exc)",
+          "result.get_result()",
+          "HookCallError"
+        ],
+        "depends_on": [],
+        "failure_modes": [
+          "traceback 在构造时快照保存（`_result.py:39-40`），后续若有人修改异常的 `__traceback__`，`get_result` 仍抛原始栈，调试时看到的位置可能与当前状态不一致",
+          "`get_result` 用 `raise exc.with_traceback(tb)` 重抛同一个异常实例（`_result.py:103`），多次 get_result 会累积并改写该异常的 traceback",
+          "`force_result` 会静默清掉已有异常（`_result.py:67-78`），wrapper 误用会把真正的失败吞掉"
+        ],
+        "rationale": "wrapper 协议需要一个可读可写的「结果信道」，而普通 impl 只需要返回值。把 Result 独立成模型而非 `_execution` 内部类，是因为它同时是公共 API（`pluggy.Result`，被 pytest 的 hookwrapper 生态直接使用）和 `add_hookcall_monitoring` 的 after 回调签名的一部分。"
+      },
+      {
+        "id": "C_9bf31e7beb24",
+        "name": "tracing",
+        "layer": "支撑设施层",
+        "role": "可插拔的 hook 调用追踪输出",
+        "responsibility": "TagTracer/TagTracerSub 提供按标签分发的消息路由与 writer 注入；`_safe_str`/`_safe_repr`/`_render_value` 保证被追踪对象的 `__str__`/`__repr__` 抛异常或含孤立代理字符时不会打断 hook 调用。",
+        "interfaces": [
+          "TagTracer().get(name) -> TagTracerSub",
+          "tracer.setwriter(writer) / tracer.setprocessor(tags, processor)",
+          "TagTracerSub(*args)（调用即发消息）",
+          "indent 属性（由插件注册表的 before/after 增减）"
+        ],
+        "depends_on": [],
+        "failure_modes": [
+          "writer 未设置时 `_processmessage` 静默丢弃消息（`_tracing.py:122`），enable_tracing 后看不到任何输出且没有提示",
+          "渲染失败被降级为 `<[...raised in str()] ...>` 占位（`_tracing.py:18-24`），追踪输出里出现占位符而非真实值，但调用本身不受影响",
+          "indent 是可变的全局状态（`_tracing.py:91`），并发或嵌套异常未配对增减时缩进会持续漂移"
+        ],
+        "rationale": "它刻意不 import `_result`/`_impl`：追踪是可选诊断能力，任何对核心模型的依赖都会让「关掉 tracing 也不省任何东西」。这解释了为什么这里有自己的一份 `_safe_str`，而不是复用 `Result`。"
+      },
+      {
+        "id": "C_40e16b94ecc7",
+        "name": "dist 兼容外壳",
+        "layer": "支撑设施层",
+        "role": "pkg_resources 风格分发包视图",
+        "responsibility": "`DistFacade` 包裹 `importlib.metadata.Distribution`，补出 pkg_resources 时代的 `project_name` 属性，其余属性全部代理给底层 Distribution；同时提供原始 Distribution 的直读接口以替代外壳。",
+        "interfaces": [
+          "DistFacade(dist).project_name",
+          "DistFacade(dist).<任意属性>（代理）",
+          "PluginManager.list_plugin_distinfo()（返回 facade）",
+          "PluginManager.list_plugin_distributions()（返回原始 Distribution）"
+        ],
+        "depends_on": [],
+        "failure_modes": [
+          "底层 `metadata[\"name\"]` 缺失时 `project_name` 抛 KeyError（`_compat.py:34-35`），而其他属性仍能代理成功，故障点集中在单一属性上",
+          "`__getattr__` 全量代理（`_compat.py:37-39`）使 facade 的可用行为随底层 Distribution 版本漂移，且 `__slots__` 只固定了 `_dist`"
+        ],
+        "rationale": "这是纯粹的兼容债隔离带：pkg_resources 已移除，但下游仍在用 `project_name`。把它压成零依赖的叶子组件，是为了让「为了兼容而保留」的代码集中在一处，将来删除时只需删一个模块和一个方法。"
+      },
+      {
+        "id": "C_a38e83629b73",
+        "name": "警告类型",
+        "layer": "支撑设施层",
+        "role": "pluggy 自有 warning 继承体系",
+        "responsibility": "定义 `PluggyWarning(UserWarning)` 基类与 `PluggyTeardownRaisedWarning`，并把 `__module__` 固定为 `\"pluggy\"`，使用户可以用 `pytest.warns(pluggy.PluggyWarning)` 一次性捕获所有 pluggy 警告。",
+        "interfaces": [
+          "PluggyWarning",
+          "PluggyTeardownRaisedWarning"
+        ],
+        "depends_on": [],
+        "failure_modes": [
+          "只被 `_execution` 用于 old-style teardown 异常；其余弃用提示（缺 self、warn_on_impl）用的是内建 DeprecationWarning/自定义 Warning 实例，不走这套继承，因此 `pytest.warns(PluggyWarning)` 捕不到它们"
+        ],
+        "rationale": "警告是公共契约的一部分（`docs/api_reference.rst:52-61` 单独成节），必须与产生它的执行代码分离，否则下游想做「把 pluggy 警告升级为错误」时只能依赖内部模块。零依赖使它成为最底层叶子。"
+      }
+    ],
+    "decision": [
+      {
+        "id": "D_14b5b9c7f540",
+        "title": "hook 发现改用 inspect.getattr_static 静态查找，放弃对描述符提供的 hook 的支持",
+        "decision": "`_static_hook_attr`（`_manager.py:64-112`）用 `inspect.getattr_static` + `__dict__`/slot 直读来定位 hookable 属性，只接受 function、classmethod、staticmethod、已绑定的 MethodType，`parse_hookimpl_opts`/`parse_hookspec_opts` 都走它。",
+        "rationale": "原实现用 `getattr()` 扫描 `dir(plugin)`，会真实执行 property/cached_property 的用户代码，在插件注册期产生副作用与异常（#701）。静态查找把「扫描」变成无副作用操作，并顺带让 `@hookimpl` 写在 `@classmethod`/`@staticmethod` 之上也能被发现。",
+        "alternatives": [
+          "继续用 getattr，只捕获异常：property 的副作用仍在发生，且 cached_property 会把值写进插件对象",
+          "用 getattr 但先过滤类型再取值：无法在不取值的前提下判断类型，等于绕回原点",
+          "显式要求插件实现 new-style 注册协议（列出自己的 hookimpl）：破坏所有现有插件，且 pytest 的 conftest 生态无法迁移"
+        ],
+        "consequences": "通过 property / `__getattr__` 动态提供 hook 的插件从此不再被发现，属于静默行为变更（CHANGELOG #701 已声明「不支持」）。代价是 `_static_hook_attr` 成为全库最复杂的函数之一（instance `__dict__`、slot、classmethod 双层 marker 位置都要分别处理），且它的正确性只能靠 testing/test_pluginmanager.py 的场景覆盖。"
+      },
+      {
+        "id": "D_3a89425dcec8",
+        "title": "按职责拆模块，但保留 _hooks/_callers 作为纯再导出垫片",
+        "decision": "实现拆到 `_caller`/`_config`/`_decorators`/`_impl`/`_execution`，旧模块 `_hooks.py`、`_callers.py` 只做 re-export 并保留 `_HookCaller`/`_Result` 等下划线别名。",
+        "rationale": "`_hooks.py` 原本同时装标记、模型、调用器、参数解析，改动一个语义要横跨四个关注点。拆分后每层可以单独评审与压测。保留垫片是因为 `testing/test_hookcaller.py:12`、`testing/test_multicall.py:10`、`testing/benchmark.py:14-16` 以及下游测试都按旧路径 import。",
+        "alternatives": [
+          "直接删除旧模块并要求所有引用改到新路径：内部路径虽非公共 API，但 testing/ 与下游 recipe（downstream/recipes/*.toml 跑的是真实项目的测试套件）里确有引用，会在无预告的情况下打断它们",
+          "在旧模块里写 `__getattr__` 做动态转发：能支持 monkeypatch，但每次属性访问多一层间接，而这些名字不在热路径上，收益不值这个复杂度"
+        ],
+        "consequences": "仓库里长期存在两套等价名字，且再导出是静态绑定：对 `pluggy._hooks.HookCaller` 打补丁不会影响 `_manager` 已绑定的引用，调试时会误以为补丁生效了。另外 `_manager.py:19-28` 仍从 `._hooks` 取名，形成内层依赖门面垫片的反向边（已登记为开放问题）。"
+      },
+      {
+        "id": "D_ee9af32cc80a",
+        "title": "执行引擎做成模块级函数 + 可替换的 _inner_hookexec，而不是 HookCaller 的方法",
+        "decision": "`_multicall` 是纯函数（`_execution.py:89`），PluginManager 持有 `_inner_hookexec` 并把它作为 `_HookExec` 注入每个 HookCaller（`_manager.py:172`、`_caller.py:77`）；tracing 与监控通过替换该字段实现（`_manager.py:585-605`）。",
+        "rationale": "让执行引擎只依赖「已排好序的 impl 列表 + kwargs」，就可以脱离 PluginManager 直接压测与单测（`testing/benchmark.py:120`、`testing/test_multicall.py:10`），也让「如何执行」成为唯一可替换点——pytest 生态的调用监控正是靠它。",
+        "alternatives": [
+          "把循环写进 HookCaller.__call__：无法单独压测，且 tracing 只能硬编码进调用路径",
+          "用显式的 middleware/handler 链对象：可读性更好，但每次 hook 调用多一层对象与间接，而 hook 调用是 pytest 每个测试都会走的热路径",
+          "把 tracing 直接实现在 _multicall 内部：会强制所有调用承担 tracing 的分支与字符串拼接成本"
+        ],
+        "consequences": "`_inner_hookexec` 是可变的单字段全局状态：`enable_tracing`/`add_hookcall_monitoring` 的 undo 只能恢复「上一个」实现（`_manager.py:602-605`），嵌套撤销顺序错误就会丢掉中间层；并发调用期间替换它没有同步保护。"
+      },
+      {
+        "id": "D_b076d2e635d8",
+        "title": "被阻断的插件名用 None 哨兵塞进 _name2plugin，而不是独立集合",
+        "decision": "`set_blocked` 把 `_name2plugin[name] = None`（`_manager.py:328`），`is_blocked` 据此判断（`:330-332`），`register` 在名字已存在且值为 None 时返回 None 而非抛错（`:206-208`）。",
+        "rationale": "阻断与已注册在语义上互斥（同一名字不可能既被阻断又被注册），合用一个 dict 让 register 只需一次查表就能同时判断「已占用 / 被阻断 / 可用」，而 register 是宿主启动期批量调用的路径。",
+        "alternatives": [
+          "用独立的 `_blocked: set[str]`：语义更清晰、类型也更干净，但 register 要让出一次额外查表，且两条路径的一致性要靠约定维持",
+          "用专门的 sentinel 对象代替 None：能保住 `dict[str, _Plugin]` 的类型，但 `register(None)` 的历史行为（#731/#749 明确要求忽略而非报错）仍需特判，收益被抵消"
+        ],
+        "consequences": "`_name2plugin` 的实际值域是 `_Plugin | None`，与该字段声明的类型不符，所有遍历它的方法都必须显式过滤（`_manager.py:398`、`:553`、`:320`）。`register(None)` 必须单独早返回，否则会与阻断哨兵相撞——这正是 #731 的成因。"
+      },
+      {
+        "id": "D_e4e7519d9a63",
+        "title": "注册采用「先全量校验、后落状态」，但接受 add_hookspecs 补 spec 路径上的例外",
+        "decision": "`register` 先在临时列表里完成所有 hookimpl 的 opts 归一化与 `_verify_hook`，全部通过后才写 `_name2plugin` 并逐个 `_add_hookimpl`（`_manager.py:220-255`）。",
+        "rationale": "插件注册失败必须可回滚，否则宿主会在「插件半在场」的状态下继续运行，pytest 这类场景下表现为难以定位的 hook 缺失。两阶段让校验失败零副作用，成本只是一次列表分配。",
+        "alternatives": [
+          "边校验边注册：实现更短，但中途失败会留下已加入的 HookImpl，且 unregister 无法完全复原（`_remove_plugin` 只按插件剔除，无法区分哪些是本次加的）",
+          "整体事务化（注册失败时回滚全部状态）：需要为 HookRelay 的属性集合也做快照，代价远大于收益"
+        ],
+        "consequences": "这个保证并不完整：`add_hookspecs` 在插件之后到达时，`_verify_hook` 在插件已写入注册表之后才执行（`_manager.py:249-253`），失败会留下「已注册但本次 impl 未生效」的部分状态，代码注释也承认只有用户代码在 historic 回放中重入才能触发。该缺口被登记为开放问题。"
+      },
+      {
+        "id": "D_14b3de291c2b",
+        "title": "参数解析直接读 __code__ 而非 inspect.signature",
+        "decision": "`varnames` 用 `func.__code__.co_varnames[:co_argcount]` 与 `__defaults__` 切分位置参数和带默认值的关键字参数，并用 `__qualname__` 是否含点号来判断是否为方法（`_decorators.py:287-325`）。",
+        "rationale": "`inspect.signature` 在 hookimpl 注册期被调用 N 次（每个插件每个 hook 一次），其开销是 benchmark 里专门保留 `_varnames_legacy` 对照实现来度量的项目（`testing/benchmark.py:19-77`、`:227-229`）。直读 code object 把这一步降到属性访问量级。",
+        "alternatives": [
+          "inspect.signature：能正确处理 C 扩展、__signature__ 覆写、functools.partial，但每 hook 一次的开销在 pytest 上千插件下可见",
+          "缓存 inspect.signature 结果：引入缓存失效问题（函数对象可变），而 code object 本身天然稳定"
+        ],
+        "consequences": "没有 `__code__` 的可调用物（C 扩展、部分文档字符串生成的包装器）会静默解析成零参数（`_decorators.py:287-292`），故障表现为调用期 TypeError 而非注册期错误。方法判定依赖 qualname 文本，嵌套类与包装函数是已知脆弱点，PyPy 还要额外把 `obj` 当作隐式首参（`:233-234`）。"
+      }
+    ],
+    "open_question": [
+      {
+        "id": "Q_39fdd9ec86a9",
+        "question": "pluggy 对并发调用（多线程、async）承诺什么语义？注册表、HookCaller._hookimpls、historic 的 _call_history 与 PluginManager._inner_hookexec 目前都无任何同步保护。",
+        "why_it_matters": "代码里完全没有锁（全库 grep 无 threading），而 `_inner_hookexec` 是可替换单字段（`_manager.py:585-605`）、`_call_history.append` 与 `_add_hookimpl.insert` 都是原地修改。若承诺「注册完成后可并发调用」，则执行路径不需要改，但 tracing 的 undo 语义要重新定义；若不承诺，实现不变但必须在文档里写死，并且 pytest 侧任何并发场景都不能依赖它。这个答案决定要不要在编排层引入锁、以及引入的是读多写少的快照还是互斥锁。",
+        "blocking": true
+      },
+      {
+        "id": "Q_89d04eee41e3",
+        "question": "hook 调用的性能预算是多少，benchmark 有回归阈值吗？",
+        "why_it_matters": "调用执行层是唯一的逐测试热路径，`_multicall` 刻意保持无抽象（`_execution.py:89-197`）、参数解析刻意绕开 inspect.signature。tox.ini 里 benchmark 是独立 env（`tox.ini:18-22`）、不在默认 envlist 中，说明当前没有 CI 门槛。若确定有阈值，执行层就不能引入 middleware/中间对象；若没有，则可以用可读性换掉一些手工优化（例如 `_SubsetHookCaller` 的 property 过滤、`_execution.py:166-178` 的 StopIteration 特判）。",
+        "blocking": true
+      },
+      {
+        "id": "Q_8b49b2de84a7",
+        "question": "`_manager.py:19-28` 从 `._hooks` 这个纯再导出垫片取名，是否要改成直连 `_caller`/`_config`/`_decorators`/`_impl`？",
+        "why_it_matters": "这条 import 让「插件编排层」反向依赖「门面与再导出层」，与声明的单向依赖相矛盾，评审时会被直接指出。改直连只是一次机械替换、无行为变化，但会让 `_hooks` 彻底变成仅对外的垫片，从而可以讨论它的退役；不改则分层图里必须长期保留一条反向边。",
+        "blocking": false
+      },
+      {
+        "id": "Q_5979f433307c",
+        "question": "`add_hookspecs` 在插件之后到达时，`_verify_hook` 失败会留下「已注册但本次 impl 未生效」的部分状态（`_manager.py:249-253`），这个缺口要不要修？",
+        "why_it_matters": "这是「先校验后落状态」决策（见决策记录）唯一未覆盖的路径。修它需要为 HookRelay 的属性集合做快照/回滚，或者把校验推迟到 `check_pending`。若不修，则应把现有注释提升为文档里的已知行为；若要修，则编排层的注册事务边界要重新设计，并可能影响 historic 回放的时序。",
+        "blocking": false
+      },
+      {
+        "id": "Q_fcbb54f66d85",
+        "question": "缺 self 的 hookspec 方法当前只发 DeprecationWarning（`_decorators.py:315-323` 明言「将来会成为错误」），何时转成硬错误？`_NOSELF_WARN_SUPPRESS`（`:239-245`）里的 pytest-timeout 抑制项何时可以移除？",
+        "why_it_matters": "这决定参数名解析组件的行为演进节奏，也决定 `varnames(legacy_noself=...)` 这个开关能否删除。抑制名单注释写着 pytest-timeout >=2.3.2 已修但未发布，说明这一项取决于外部项目的发布，而不是本仓库的排期——不确认就会在转换时同时打断仍在旧版本上的下游。",
+        "blocking": false
+      },
+      {
+        "id": "Q_f704d08a3879",
+        "question": "`_hooks`、`_callers` 这两个再导出垫片的退役条件是什么？是否有本仓库之外的项目 import 了 `pluggy._hooks` / `pluggy._callers`？",
+        "why_it_matters": "垫片存在的前提是「有人在用旧内部路径」。仓库内只有 testing/ 在用（`testing/test_hookcaller.py:12`、`testing/test_multicall.py:10`、`testing/benchmark.py:14-16`），这可以随时改；但 downstream/recipes 跑的是 datasette/devpi/tox 等真实项目的测试套件，它们是否触碰内部路径无法从本仓库判定。若确认无人使用，垫片可以删除，分层也能收敛为 4 层；若有人使用，则应把它明确写进兼容承诺而不是当作临时补丁。",
+        "blocking": false
+      }
+    ]
+  },
+  "repo": "C:\\Users\\34442\\Desktop\\porject\\代码审查agent\\backend\\arch-cases\\e1-pluggy\\repo",
+  "model": "deepseek-flash（DeepSeek）",
+  "iterations": 20,
+  "stop_reason": "finished",
+  "elapsed": 185.153,
+  "usage": {
+    "prompt_tokens": 752067,
+    "completion_tokens": 34669,
+    "cached_tokens": 685056
+  },
+  "findings": [],
+  "warnings": [],
+  "compression_events": [],
+  "prefix": {
+    "fingerprint": "04297376fcd39d2b",
+    "tokens": 6767,
+    "tool_count": 11
+  }
+}
