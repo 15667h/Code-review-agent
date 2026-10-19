@@ -383,6 +383,9 @@ def _run_agent(repo: Path, args: argparse.Namespace, config: Config) -> int:
             "compression_events": result.compression_events,
             "prefix": result.prefix_trace,
         }
+        # 架构助手的证据核验报告：评估脚本与前端都要读它做「可精确定位率」
+        if getattr(result, "evidence_report", None):
+            payload["evidence_report"] = result.evidence_report
         _write_output(args.json, json.dumps(payload, ensure_ascii=False, indent=2))
         print(f"JSON 结果已写入：{args.json}")
 
