@@ -1,0 +1,89 @@
+{
+  "case": "m2-report-hub",
+  "labels": [
+    {
+      "code": "PATH001-a",
+      "file": "app/export.py",
+      "line": 84,
+      "description": "导出文件名来自请求体 filename，直接 joinpath 到租户目录，未做 basename/白名单，可写出到任意绝对路径"
+    },
+    {
+      "code": "PATH002-a",
+      "file": "app/ops_api.py",
+      "line": 146,
+      "description": "日切文件名 name 取自查询参数并拼接路径后 open，可读 DATA_ROOT 之外的任意文件"
+    },
+    {
+      "code": "PATH003-a",
+      "file": "app/subscriptions.py",
+      "line": 96,
+      "description": "补发投递前只做了小写归一，没有走 validate_recipients/sanitize，收件名可含 ../ 直接决定落盘路径"
+    },
+    {
+      "code": "INJ001-a",
+      "file": "app/ops_api.py",
+      "line": 129,
+      "description": "临时排查查询把请求体里的 sql 原文交给副本执行，仅用 startswith('select') 作前置，可附注 DDL 或 UNION 读任意表"
+    },
+    {
+      "code": "AUTHZ001-a",
+      "file": "app/service.py",
+      "line": 96,
+      "description": "create_export 只判了 can_view，viewer 也能建导出任务，绕过了 can_export 的角色分级"
+    },
+    {
+      "code": "AUTHZ002-a",
+      "file": "app/admin_api.py",
+      "line": 71,
+      "description": "订阅备份下载接口直接按 tenant 参数读文件，既不校验归属也不做管理员判断，任意登录用户可拉走他人订阅名单"
+    },
+    {
+      "code": "AUTHZ003-a",
+      "file": "app/service.py",
+      "line": 139,
+      "description": "数据源清单接口只做了租户可见性判断，任何 viewer 都能枚举全平台数据源名称与接入方式"
+    },
+    {
+      "code": "BOUND001-a",
+      "file": "app/aggregate.py",
+      "line": 76,
+      "description": "区间总量用末日累计减前一日累计，但窗口结束日是今天时末日累计仍在上报，差值被低估且无「当日未结」标记"
+    },
+    {
+      "code": "CONSIST001-a",
+      "file": "app/jobs.py",
+      "line": 115,
+      "description": "基线清理按 horizon 比较 day，但窗口基线是「区间前一天」，horizon 等于窗口起始日时会计掉本区间正在用的基线，后续重算总量口径变化"
+    },
+    {
+      "code": "ERR001-a",
+      "file": "app/pipeline.py",
+      "line": 58,
+      "description": "源取数时 except Exception: pass，解析错误/网络错误被静默吞掉，报表显示 0 而不报错"
+    },
+    {
+      "code": "JOB001-a",
+      "file": "app/jobs.py",
+      "line": 127,
+      "description": "孤儿清理把导出文件路径当成 job_id 传给 exporter.remove，pop 不到记录就静默不删，清理永远返回 0 且文件残留"
+    },
+    {
+      "code": "SCAN001-a",
+      "file": "app/subscriptions.py",
+      "line": 49,
+      "description": "订阅文件路径用 sanitize_name，白名单允许 '-' 与 '.' 且不去 ''/'..'，tenant='..' 时读写根目录之外"
+    },
+    {
+      "code": "PY001-a",
+      "file": "app/admin_api.py",
+      "line": 33,
+      "description": "管理员判断只看租户表里的 role=='admin'，忽略平台运营的 X-Tenant-Admin 代管关系，被代管租户的管理动作全部 403"
+    },
+    {
+      "code": "ERR002-a",
+      "file": "app/delivery.py",
+      "line": 84,
+      "description": "投递失败只往 failed 列表里追加一条 key 就返回，没有重试队列也没有落盘补偿，邮件渠道抖动时日报静默丢失"
+    }
+  ]
+}

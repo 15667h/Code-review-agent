@@ -199,7 +199,7 @@ def _tool_grep(workspace: Workspace) -> Tool:
             )
 
         try:
-            files, _ = workspace.iter_files(path, glob or "*", limit=4000)
+            files, files_truncated = workspace.iter_files(path, glob or "*", limit=4000)
         except PathEscape as exc:
             return ToolResult.failure("PathEscape", str(exc), {"path": path})
         except FileNotFoundError as exc:
@@ -232,12 +232,27 @@ def _tool_grep(workspace: Workspace) -> Tool:
                 break
 
         if not hits:
-            return ToolResult.success(
+            message = (
                 f"在 {scanned} 个文件里没有匹配 `{pattern}` 的内容。\n"
                 "可以尝试：放宽正则、改 glob（例如 '*.py'）、或确认 path 是否正确。"
             )
+            if files_truncated:
+                # 这句必须说：否则「没有匹配」会被当成「全仓都没有」，
+                # 而实际上有大半文件压根没进搜索范围。
+                message += (
+                    f"\n[注意：候选文件超过 4000 个，本次只搜索了前 {len(files)} 个文件，"
+                    "**其余文件未被搜索**；缩小 path 或 glob 后再确认。]"
+                )
+            return ToolResult.success(message)
 
         header = f"匹配 {len(hits)} 处，分布在 {len(hit_files)} 个文件（已扫描 {scanned} 个文件）"
+        if files_truncated:
+            # 文件列表触顶与命中数触顶是两件事：前者意味着**有些文件根本没被搜过**。
+            # 不告知的话，「没匹配」会被误读成「全仓都没有」，而实际是只搜了一部分。
+            header += (
+                f"\n[注意：候选文件超过 4000 个，本次只搜索了前 {len(files)} 个文件，"
+                "**其余文件未被搜索**；请缩小 path 或 glob 后重试]"
+            )
         if capped:
             header += f"\n[已达 {max_results} 条上限，结果不完整；请缩小 path/glob 或提高 max_results]"
         return ToolResult.success(f"{header}\n" + "\n".join(hits))

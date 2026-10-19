@@ -48,7 +48,9 @@ from .guardrails import (
     Verifier,
     check_completion_claims,
     verify_citations,
+    verify_finding_locations,
 )
+from .judge import judge_findings
 from .model import Model, ModelError
 from .sandbox import CommandRunner, Workspace
 from .tools import Risk, tool_report
@@ -176,6 +178,7 @@ def run_agent(
     allow_high_risk: bool = False,
     max_model_retries: int = 2,
     should_stop: Callable[[], bool] | None = None,
+    judge: bool = True,
 ) -> AgentResult:
     """跑完一次完整运行。
 
@@ -187,6 +190,9 @@ def run_agent(
     返回 True 就停在这一轮并将 ``stop_reason`` 置为 ``stopped``。
     刻意做成轮询式而不是抛异常 —— 中断要停在一个干净的边界上，
     让已经产出的内容与轨迹保持完整，而不是把上下文撕成一半。
+
+    ``judge`` 控制是否在收尾前跑一遍独立复核（见 ``judge.py``）。
+    关掉它只用于 A/B 对比「有/无过滤层的差距」，默认开启。
     """
     started = time.time()
 
@@ -405,6 +411,35 @@ def run_agent(
     if result.summary:
         result.warnings.extend(check_completion_claims(state, result.summary))
         result.warnings.extend(verify_citations(result.summary, state))
+
+    # ---- 收尾复核：位置真实性 + 独立判官 ----
+    # 顺序是有讲究的：先做零成本的确定性核验（引用的行号与描述对不对得上），
+    # 再让判官只处理「位置站得住」的那些。反过来先花钱判一遍、再发现位置就是错的，
+    # 那一轮 token 就白花了。
+    #
+    # 为什么不让模型自己核查：业界实测最强 LLM 判断「看似专业但其实是错的评论」
+    # 召回只有约 20%。能确定性判定的地方不该交给模型。
+    finding_dicts = [
+        item.to_dict() if hasattr(item, "to_dict") else dict(item)
+        for item in (result.artifacts.get("finding") or [])
+    ]
+    if finding_dicts and judge:
+        kept, report = judge_findings(finding_dicts, workspace.root, model)
+        if report.ungrounded:
+            result.warnings.append(
+                f"{report.ungrounded} 条发现的位置与描述对不上，未进入复核。"
+            )
+        result.warnings.extend(report.warnings())
+        if len(kept) != len(finding_dicts):
+            # 写回产出桶：前端与其他消费方读的是 artifacts，不是 warnings
+            dropped_ids = {d.id for d in report.dropped}
+            result.artifacts["finding"] = [
+                item
+                for item in result.artifacts["finding"]
+                if (item.id if hasattr(item, "id") else str(item.get("id"))) not in dropped_ids
+            ]
+    elif finding_dicts:
+        result.warnings.extend(verify_finding_locations(finding_dicts, workspace.root))
 
     if corrector.total_failures:
         result.warnings.append(

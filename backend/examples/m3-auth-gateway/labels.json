@@ -1,0 +1,77 @@
+{
+  "case": "m3-auth-gateway",
+  "labels": [
+    {
+      "code": "CRYPTO001-a",
+      "file": "app/hashing.py",
+      "line": 83,
+      "description": "会话主键由 HMAC(写死的 _SESSION_KEY, 访问令牌) 派生：密钥随代码分发，且会话标识因此可由令牌离线推导，审计与存储两边都能被对齐推测"
+    },
+    {
+      "code": "CRYPTO002-a",
+      "file": "app/tokens.py",
+      "line": 59,
+      "description": "令牌结构里没有 header/算法字段，验签只比 HMAC，且 SIGNING_SECRET 缺省为空串：未注入环境变量时任何人都能签出被接受的令牌"
+    },
+    {
+      "code": "CRYPTO003-a",
+      "file": "app/gateway.py",
+      "line": 271,
+      "description": "compare_digest_text 是逐字符累积异或，Python 层面每次迭代都是可观测的时间差，不是常量时间比较"
+    },
+    {
+      "code": "CRYPTO004-a",
+      "file": "app/clients.py",
+      "line": 27,
+      "description": "未传 secret 时回落到写死的默认值，所有内部应用共用同一个 client_secret，且随仓库分发"
+    },
+    {
+      "code": "CRYPTO005-a",
+      "file": "app/seed.py",
+      "line": 59,
+      "description": "账号快照把 password_hash 原样写进 TSV，等于把全量口令哈希外带出系统"
+    },
+    {
+      "code": "AUTHZ001-a",
+      "file": "app/admin.py",
+      "line": 72,
+      "description": "租户管理员按 username 查设备列表时只校验「调用者是管理员」，没有校验目标是否属于自己租户，可跨租户枚举他人 IP 与设备"
+    },
+    {
+      "code": "AUTHZ002-a",
+      "file": "app/devices.py",
+      "line": 62,
+      "description": "主管查看成员设备的判断写成「用户名不同且是主管才拒绝」，逻辑取反，主管反而看不到成员，普通成员倒被放行"
+    },
+    {
+      "code": "AUTHZ003-a",
+      "file": "app/gateway.py",
+      "line": 233,
+      "description": "管理员重置口令只覆盖 password_hash 并解锁，没有 revoke_all 目标用户会话，被重置者手里的旧令牌继续有效"
+    },
+    {
+      "code": "AUDIT001-a",
+      "file": "app/gateway.py",
+      "line": 264,
+      "description": "审计写入失败时转 best-effort 静默丢弃，敏感动作（登录、改密）在审计不可用时仍然成功，审计缺口"
+    },
+    {
+      "code": "AUDIT002-a",
+      "file": "app/gateway.py",
+      "line": 112,
+      "description": "login_via_digest 在口令校验失败分支既不写审计也不走 blocked_for 预检，只有 record_failure 计数，爆破尝试在审计里无痕"
+    },
+    {
+      "code": "SESS001-a",
+      "file": "app/sessions.py",
+      "line": 106,
+      "description": "轮换只把旧 refresh_hash 记进 used_refresh，refresh() 却从不查 was_used，重放已用过的刷新串仍能换令牌"
+    },
+    {
+      "code": "SESS002-a",
+      "file": "app/gateway.py",
+      "line": 190,
+      "description": "introspect 只要会话在活跃就返回 active，不比对令牌 jti 是否属于当前会话，吊销前签发的旧令牌被判为有效"
+    }
+  ]
+}

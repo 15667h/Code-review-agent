@@ -307,3 +307,171 @@ def verify_citations(text: str, state: RunState) -> list[str]:
     if unknown:
         return [f"以下引用位置在本次运行中没有被读取过，需人工复核：{', '.join(sorted(unknown)[:8])}"]
     return []
+
+# --------------------------------------------------------------------------- #
+# 引用内容核验：不只看「文件读没读」，还看「那一行到底写了什么」
+# --------------------------------------------------------------------------- #
+
+# 判定用的关键词族。每条发现描述的是一条缺陷，描述里的技术词应当能在
+# 所指的代码行（或它紧邻的上下文）里找到落点，找不到就有编造风险的嫌疑。
+# 刻意用「族」而不是精确词：模型写 `shell` / `subprocess` / `注入` 都算同族。
+_CUE_FAMILIES: dict[str, tuple[str, ...]] = {
+    "shell": ("shell", "subprocess", "os.system", "popen", "命令注入", "注入", "eval", "exec"),
+    "hardcoded": ("password", "secret", "token", "key", "credential", "hardcode", "硬编码", "口令", "密钥"),
+    # 刻意不含裸 "query"/"拼接"：它们也出现在「查询」「字符串拼接」这类无关描述里，
+    # 实测会把「auth.py:6 说 SQL 注入」这种错位判定放过。只保留 SQL 独有的强线索。
+    "sql": ("sql", "execute(", "cursor", "%.format", "f\"select", "select *", "insert into", "where "),
+    "assert": ("assert", "校验", "校验被剥离", "-o", "参数校验"),
+    "resource": ("close", "release", "finally", "with ", "泄漏", "acquire", "open(", "__enter__"),
+    "concurrency": ("lock", "thread", "async", "await", "race", "竞态", "锁", "共享", "global"),
+    "boundary": ("len(", "range(", "index", "[0]", "[-1]", "边界", "越界", "空", "none"),
+    "crypto": ("md5", "sha1", "hash", "salt", "aes", "random", "加密", "盐", "摘要", "tls", "verify"),
+    "authz": ("user_id", "owner", "tenant", "permission", "role", "权限", "越权", "归属", "鉴权"),
+    "error": ("except", "raise", "try", "error", "异常", "吞", "pass", "吞掉"),
+    "default_arg": ("def ", "=[]", "={}", "默认参数", "mutable", "可变"),
+    "path": ("path", "join", "open(", "..", "路径", "穿越"),
+}
+
+# 归一化时要剥掉的字符：模型描述里的标点不该影响匹配
+_STRIP = "，。、：；！？（）()[]【】「」“”'\"`~,.;:!?"
+
+
+def _normalized_tokens(text: str) -> str:
+    """把描述与代码行都压成「只留字母数字与下划线的中文混排小写串」。
+
+    两侧都归一化之后再判包含关系 —— 否则 `shell=True` 与 `shell = True`
+    会被当成两个不同的东西。
+    """
+    import re
+
+    return re.sub(r"[^0-9a-zA-Z_\u4e00-\u9fff]+", "", (text or "").lower())
+
+
+def _cue_families(text: str) -> set[str]:
+    """描述命中了哪些关键词族。"""
+    low = (text or "").lower()
+    hit: set[str] = set()
+    for family, cues in _CUE_FAMILIES.items():
+        if any(cue.lower() in low for cue in cues):
+            hit.add(family)
+    return hit
+
+
+def cross_check_line_content(
+    finding: dict[str, Any],
+    workspace_root: Path,
+) -> tuple[bool, str]:
+    """核对一条发现引用的行号，那一行是否真的在支撑这条描述。
+
+    返回 ``(是否可信, 说明)``。这是**确定性检查**，不调用模型 ——
+    业界（CRJudgeBench）实测最强 LLM 判断「看起来专业但其实是错的评论」
+    召回只有 20%，所以在能确定性判定的地方就不该交给模型。
+
+    判据（任一成立即视为可信）：
+    1. 引用行里出现了描述中的关键词族线索；
+    2. 引用行 ±2 行的上下文里有该线索（缺陷常写在多行表达式上）；
+    3. 引用行本身是空行/注释/括号收尾 —— 这类「指向结构而非语句」的引用
+       常见且无害，不做否定判定。
+
+    行号超出文件长度（文件被改写或纯编造）直接判不可信。
+    """
+    import unicodedata
+
+    rel = str(finding.get("file") or "").replace("\\", "/").lstrip("./")
+    line_no = finding.get("line")
+    description = " ".join(
+        str(finding.get(k) or "") for k in ("title", "detail", "evidence", "suggestion")
+    )
+    if not rel or not isinstance(line_no, int) or line_no <= 0:
+        return True, "未提供可核验的位置，跳过"
+
+    try:
+        target = (Path(workspace_root) / rel).resolve()
+        # 不允许逃出工作区
+        target.relative_to(Path(workspace_root).resolve())
+    except (ValueError, OSError):
+        return True, "路径无法解析，跳过"
+
+    if not target.is_file():
+        return False, f"文件不存在：{rel}"
+
+    try:
+        lines = target.read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError as exc:
+        return True, f"读取失败，跳过（{exc}）"
+
+    if line_no > len(lines):
+        return False, f"行号越界：{rel}:{line_no}（该文件只有 {len(lines)} 行）"
+
+    actual = lines[line_no - 1]
+    stripped = actual.strip()
+
+    # 结构行（空行/注释/括号）不直接放行 —— 实测发现「乱指到空行」的假发现会因此漏过。
+    # 改成继续走下面的线索核对：邻域里能对上才算可信，对不上就是错位引用。
+    is_structural = not stripped or stripped.startswith("#") or stripped in ("}", ")", "]", "pass")
+
+    window = "\n".join(lines[max(0, line_no - 3): line_no + 2])
+    families = _cue_families(description)
+    if not families:
+        return True, "描述里没有可核对的技术线索，跳过"
+
+    norm_desc = _normalized_tokens(description)
+    norm_window = _normalized_tokens(window)
+
+    # 判据 1/2：关键词族里的线索是否在引用行（或邻域）出现
+    cue_hit = False
+    low_window = window.lower()
+    for family in families:
+        for cue in _CUE_FAMILIES[family]:
+            norm_cue = _normalized_tokens(cue)
+            if norm_cue and norm_cue in norm_window:
+                cue_hit = True
+                break
+        if cue_hit:
+            break
+
+    # 命中线索还要求「引用行本身有东西」：指向空行/注释时，靠邻域凑线索
+    # 属于凑巧（实测 utils.py:20 这个空行就因为邻近的函数签名里有 path 而被放过）。
+    if cue_hit and not is_structural:
+        return True, "引用行与描述吻合"
+
+    # 判据 3：引用行里是否有描述中出现的标识符（函数名/变量名）
+    import re
+
+    identifiers = set(re.findall(r"[A-Za-z_][A-Za-z0-9_]{2,}", description))
+    tokens_here = set(re.findall(r"[A-Za-z_][A-Za-z0-9_]{2,}", actual))
+    shared = {i.lower() for i in identifiers} & {t.lower() for t in tokens_here}
+    shared -= {"the", "and", "for", "with", "this", "that", "from", "not", "none", "true", "false"}
+    if shared:
+        return True, f"引用行含描述提到的标识符：{sorted(shared)[:3]}"
+
+    if is_structural:
+        return False, f"引用位置指向空行/注释等结构行，与描述无关（{rel}:{line_no}）"
+
+    snippet = stripped[:60]
+    return False, f"引用行内容与描述无关（{rel}:{line_no} 实际是 `{snippet}`）"
+
+
+def verify_finding_locations(
+    findings: Sequence[dict[str, Any]],
+    workspace_root: Path,
+) -> list[str]:
+    """批量核验发现的位置真实性，返回需要人工复核的提示。
+
+    单独成函数（而不是塞进 verify_citations）的用意：它可以直接被判官层
+    复用，也可以在 eval 里对**历史结果**离线复核，不依赖一次运行的状态。
+    """
+    warnings: list[str] = []
+    ungrounded: list[str] = []
+    for finding in findings:
+        ok, why = cross_check_line_content(finding, workspace_root)
+        if not ok:
+            label = f"{finding.get('file')}:{finding.get('line')} {(finding.get('title') or '')[:40]}"
+            ungrounded.append(f"{label} —— {why}")
+    if ungrounded:
+        warnings.append(
+            f"{len(ungrounded)} 条发现的位置与描述对不上（行号可能编造或已过期），需人工复核："
+            + "；".join(ungrounded[:5])
+        )
+    return warnings
+

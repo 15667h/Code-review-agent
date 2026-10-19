@@ -1,0 +1,167 @@
+{
+  "case": "m1-order-desk",
+  "labels": [
+    {
+      "code": "AUTHZ001-a",
+      "file": "app/api.py",
+      "line": 71,
+      "description": "详情接口只按 order_id 取单，从未与 request.user_id 比对归属，登录用户可读他人订单明细"
+    },
+    {
+      "code": "AUTHZ002-a",
+      "file": "app/service.py",
+      "line": 269,
+      "description": "座席权限函数走到最后直接 return True，非 supervisor 也没有查 _STAFF_ZONES，任何座席可看任意客户订单"
+    },
+    {
+      "code": "SEC001-a",
+      "file": "app/config.py",
+      "line": 28,
+      "description": "通知网关的口令以明文常量写在源码里，随仓库分发即失效"
+    },
+    {
+      "code": "SEC002-a",
+      "file": "app/config.py",
+      "line": 67,
+      "description": "模板配置的原文来自运营后台保存动作，这里对它做 literal_eval，把不可信输入当代码解析"
+    },
+    {
+      "code": "RES001-a",
+      "file": "app/hooks.py",
+      "line": 93,
+      "description": "审计日志只手动 close，write 抛异常（磁盘满、编码错误）时句柄不会归还，每请求一次泄漏一个 fd"
+    },
+    {
+      "code": "CONC001-a",
+      "file": "app/service.py",
+      "line": 149,
+      "description": "ship 未持 lock_for(order_id) 就取单并打单，与 cancel/refund 交错会把订单写成 SHIPPED 却已退款"
+    },
+    {
+      "code": "CONC002-a",
+      "file": "app/repository.py",
+      "line": 70,
+      "description": "已退金额先读当前值再写回，store 的锁只覆盖单步，两笔并发退款互相覆盖导致少记退款"
+    },
+    {
+      "code": "CONC003-a",
+      "file": "app/service.py",
+      "line": 191,
+      "description": "退款先释放库存、后累加已退金额，两步之间抛异常（版本冲突、写失败）会让库存与账目各自失衡"
+    },
+    {
+      "code": "BOUND001-a",
+      "file": "app/service.py",
+      "line": 112,
+      "description": "置为已支付前只校验状态，paid_amount 与 order.payable 从未比较，1 分钱也能把大额订单标记为已付"
+    },
+    {
+      "code": "BOUND002-a",
+      "file": "app/service.py",
+      "line": 190,
+      "description": "拆分结果 part 只当作「是否释放」的开关，释放数量仍用整行 quantity，部分退款会把整行库存倒退"
+    },
+    {
+      "code": "PY001-a",
+      "file": "app/service.py",
+      "line": 274,
+      "description": "座席入口的前置校验用的是 assert，python -O 下被整体移除，缺少标识也能继续走查询"
+    },
+    {
+      "code": "SEC003-a",
+      "file": "app/admin_api.py",
+      "line": 106,
+      "description": "owner 直接取自查询参数并拼进导出文件名，未做字符集白名单，下游按该名落盘时形成路径穿越"
+    },
+    {
+      "code": "ERR003-a",
+      "file": "app/repository.py",
+      "line": 30,
+      "description": "调用了不存在的 Store.to_order，所有订单读取路径都会抛 AttributeError"
+    },
+    {
+      "code": "AUTHZ003-a",
+      "file": "app/service.py",
+      "line": 269,
+      "description": "has_permission_to_view 末尾无条件 return True，客服可看任意客户订单"
+    },
+    {
+      "code": "AUTHZ004-a",
+      "file": "app/admin_api.py",
+      "line": 49,
+      "description": "批量发货接口无任何角色校验（同文件 purge 有），任意请求方可触发不可逆外部动作"
+    },
+    {
+      "code": "AUTHZ005-a",
+      "file": "app/admin_api.py",
+      "line": 100,
+      "description": "导出/统计接口无权限校验，且返回行数不受导出上限约束"
+    },
+    {
+      "code": "BOUND003-a",
+      "file": "app/service.py",
+      "line": 55,
+      "description": "下单单价完全取自请求体，可传负数或极小值把订单做成 0 元"
+    },
+    {
+      "code": "BOUND004-a",
+      "file": "app/api.py",
+      "line": 56,
+      "description": "分页 limit 未做下界校验，负数会返回除末尾 N 条外的全部订单"
+    },
+    {
+      "code": "CONC004-a",
+      "file": "app/workbench.py",
+      "line": 31,
+      "description": "订单锁表是实例属性、而每请求新建 workbench，锁按请求隔离导致互斥完全失效"
+    },
+    {
+      "code": "CONC005-a",
+      "file": "app/service.py",
+      "line": 107,
+      "description": "pay 不加订单锁，并发支付重复记账、与取消竞争产生坏账"
+    },
+    {
+      "code": "CONC006-a",
+      "file": "app/reclaimer.py",
+      "line": 52,
+      "description": "回收线程绕过存储锁直接读私有字典，与支付/取消竞争会重复释放库存"
+    },
+    {
+      "code": "RES002-a",
+      "file": "app/service.py",
+      "line": 232,
+      "description": "attach_items 预占库存后不校验明细写入结果，写失败即泄漏预占"
+    },
+    {
+      "code": "ERR004-a",
+      "file": "app/service.py",
+      "line": 132,
+      "description": "取消订单按原始应付金额登记退款，未扣除已退部分导致超额退款"
+    },
+    {
+      "code": "ERR005-a",
+      "file": "app/api.py",
+      "line": 116,
+      "description": "支付接口未捕获 int() 的 ValueError，畸形 amount 直接 500"
+    },
+    {
+      "code": "CONSIST001-a",
+      "file": "app/service.py",
+      "line": 191,
+      "description": "退款不流转订单状态，全额退款后订单仍为 PAID 且仍可发货"
+    },
+    {
+      "code": "ERR006-a",
+      "file": "app/service.py",
+      "line": 156,
+      "description": "ship 调用钩子未捕获异常，钩子超时会让已成功的发货返回 500"
+    },
+    {
+      "code": "AUTHZ006-a",
+      "file": "app/admin_api.py",
+      "line": 75,
+      "description": "补单接口缺少角色校验，与同文件 purge 的权限要求不一致"
+    }
+  ]
+}

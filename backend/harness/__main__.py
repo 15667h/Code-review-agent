@@ -159,12 +159,52 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--quiet", action="store_true", help="只输出最终报告")
     parser.add_argument("--list-tools", action="store_true", help="列出工具集后退出")
     parser.add_argument("--no-cross-check", action="store_true", help="关闭规则交叉验证")
+    parser.add_argument(
+        "--diff",
+        metavar="BASE",
+        default="",
+        help=(
+            "增量审查：只审 BASE 到工作树的改动及其调用点（例如 --diff HEAD、"
+            "--diff HEAD~1、--diff main）。不给就审全仓。"
+        ),
+    )
+    parser.add_argument("--no-judge", action="store_true", help="关闭收尾复核（仅用于 A/B 对比）")
     return parser
 
 
 # =============================================================================
 # 主流程
 # =============================================================================
+
+
+def _compose_context(repo: Path, args: argparse.Namespace) -> str:
+    """把 --context 与 --diff 生成的审查简报合成一段给模型的背景说明。
+
+    diff 简报放在前面：它是**任务范围**，比用户补充的背景更靠前更有约束力。
+    增量模式下若拿不到 diff（不是 git 仓库、base 不存在），直接报错退出 ——
+    静默退化成全仓审查会让「只审改动」的承诺落空，用户还以为自己审的是增量。
+    """
+    parts: list[str] = []
+
+    base = getattr(args, "diff", "") or ""
+    if base:
+        from .diffmode import collect_diff
+
+        report = collect_diff(repo, base)
+        if not report.ok:
+            print(f"错误：{report.error}", file=sys.stderr)
+            return ""
+        brief = report.brief()
+        if not brief:
+            print("提示：基准与工作树之间没有差异，本次没有可审的改动。", file=sys.stderr)
+            return ""
+        parts.append(brief)
+
+    extra = (getattr(args, "context", "") or "").strip()
+    if extra:
+        parts.append("## 补充背景\n\n" + extra)
+
+    return "\n\n".join(parts)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -288,7 +328,8 @@ def _run_agent(repo: Path, args: argparse.Namespace, config: Config) -> int:
             workspace=workspace,
             model=model,
             config=config,
-            context_note=args.context,
+            context_note=_compose_context(repo, args),
+            judge=not getattr(args, "no_judge", False),
             on_event=make_event_printer(verbose),
             allow_high_risk=args.allow_high_risk,
         )

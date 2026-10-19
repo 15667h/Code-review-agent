@@ -1,0 +1,490 @@
+{
+  "goal": "审查这个仓库中的缺陷：资源泄漏、并发问题、权限校验缺失、边界条件与错误处理。逐文件检查，确认后记录发现。",
+  "agent": "review",
+  "outcome": "findings",
+  "artifacts": {
+    "finding": [
+      {
+        "id": "F_01e549d62bbc",
+        "severity": "blocker",
+        "file": "app/repository.py",
+        "line": 30,
+        "title": "Store.to_order 根本不存在，所有订单读取路径都会抛 AttributeError",
+        "detail": "OrderRepository 的 get/find/find_for_owner/list_by_owner 四个方法都调用 Store.to_order(row)，但 orm.py 的 Store 只定义了 _to_row（Order→dict 单向序列化），没有 to_order（dict→Order）。一旦命中已有订单行，就会抛 AttributeError: type object 'Store' has no attribute 'to_order'，而不是返回订单。这不是分支里的边界问题，而是仓库层的主路径：.get() 在 service 的 pay/cancel/ship/refund/purge/attach_items 里全被调用，所以这些接口在订单存在时全部 500。属于「服务不可用」级别。",
+        "evidence": "repository.py:30 `return Store.to_order(row)`；:34、:41、:44 同样调用。对全仓 grep `to_order` 只返回这 4 处调用点，无任何定义。orm.py 的方法清单为：__init__/insert_order/get_order/list_orders/update_order/update_items/delete_order/seed_stock/get_stock/release_stock/reserve_stock/_to_row，缺失 to_order。",
+        "suggestion": "在 Store 内实现 to_order(row) 反序列化为 Order/OrderItem（注意 status 需转回 OrderStatus 枚举，否则 order.status.value 会炸）。"
+      },
+      {
+        "id": "F_2a5847f25b5a",
+        "severity": "blocker",
+        "file": "app/service.py",
+        "line": 269,
+        "title": "has_permission_to_view 恒返回 True，客服可查看任意客户订单",
+        "detail": "函数 docstring 声明「主管可查看全部；座席只能查看所辖客户」，但实现里 role == \"supervisor\" 分支之后直接 `return True`，完全没有查 _STAFF_ZONES，也没用到 owner_id 参数。结果：任何 role（包括默认的 \"agent\"）都能通过 order_detail_for_staff 读取任意订单，包括任意 owner 的订单归属、应付金额、状态。_STAFF_ZONES 与 register_zone 因此成为完全无效的死代码。属于越权访问（IDOR）。",
+        "evidence": "service.py:265-269：`def has_permission_to_view(staff_id: str, role: str, owner_id: str) -> bool:` ... `if role == \"supervisor\": return True` / `return True` —— 两分支都返回 True，owner_id 在函数体内未被引用。调用点为 service.py:238。",
+        "suggestion": "改为 `return owner_id in _STAFF_ZONES.get(staff_id, set())`，并让 role 白名单显式（未识别角色一律拒绝）。"
+      },
+      {
+        "id": "F_d309c096081a",
+        "severity": "blocker",
+        "file": "app/api.py",
+        "line": 71,
+        "title": "订单详情接口不做归属校验，任意用户可越权读取他人订单",
+        "detail": "handle_get_order 用 service.get_order(order_id) 读取订单，而 repository/service 里已经提供了正确的按归属查询入口 get_my_order/find_for_owner（docstring 明确写「其他人拿到的结果与不存在相同」），但这里没有用。任何登录用户改 order_id 就能拿到别人的订单明细（order_id、状态、应付/可退金额、全部明细行与单价）。get_my_order 在全仓无调用点，说明这是漏用而非有意为之。与 service.py:269 的越权是两条独立路径，修一条不影响另一条。",
+        "evidence": "api.py:71 `order = service.get_order(order_id)`；Request.user_id 在函数内未被使用。对比 service.py:91-95 的 get_my_order 走 find_for_owner，全仓 grep `get_my_order` 仅命中定义处（service.py:91），无调用点。",
+        "suggestion": "改为 `service.get_my_order(order_id, request.user_id)`，让非归属者得到 404。"
+      },
+      {
+        "id": "F_dfb5455a4714",
+        "severity": "blocker",
+        "file": "app/service.py",
+        "line": 190,
+        "title": "部分退款按「是否有退款额」全量释放库存，与退款金额无关",
+        "detail": "refund() 先用 split_refund 把退款金额按各明细小计占比拆成 parts，随后回收库存时却写成 `self.wb.inventory.release(item.sku, item.quantity)` —— 释放的是该明细的**全量数量**，与 parts 是否匹配完全不相关。part 只被当作「非零则全量释放」的开关。后果：(1) 一笔 100 件、单价 1 分的明细退款 1 分，就释放 100 件库存；(2) 同一订单多次部分退款时，每次都会再全量释放一遍，而 release_stock 用 max(reserved-quantity, 0) 兜底，不会报错，超量释放被静默吞掉，导致 reserved 被压到 0，后续下单继续超卖；(3) 库存与退款金额彻底脱钩，账实不符。正确的量应是按 part/unit_price 折算的件数，且需累计已退数量。",
+        "evidence": "service.py:184-190：`weights = [item.subtotal for item in order.items]` / `parts = pricing.split_refund(amount, weights)` / `for item, part in zip(order.items, parts): if part: self.wb.inventory.release(item.sku, item.quantity)` —— 第二参数是 item.quantity 而非由 part 折算。orm.py:91 `row.reserved = max(row.reserved - quantity, 0)` 说明超额释放不会报错。",
+        "suggestion": "按 parts[i] 折算应退件数（如 part // unit_price，并维护每行已退件数上限），或干脆不对已支付订单做库存回收，改为仅在取消时按整单释放。"
+      },
+      {
+        "id": "F_dd764251ec4b",
+        "severity": "blocker",
+        "file": "app/repository.py",
+        "line": 70,
+        "title": "退款金额累加是快照读+整体覆盖，并发下丢失更新导致重复退款",
+        "detail": "refund() 全程没有加 wb.lock_for(order_id)，也没有任何并发控制：order.refundable 的校验读的是各自进程内的快照，随后 add_refunded 才是最后写入。repository.add_refunded 虽然注释说「读-改-写必须在存储层一次完成」，但实现是 store.get_order() 拿快照、再 store.update_order(refunded_amount=current+amount)，两步各自持锁、整体不原子（典型 lost update）。两个并发的部分退款都通过 refundable 校验后，后写的结果覆盖先写，累计已退金额偏小，可退余额被重复使用 —— 即重复退款/超额退款。这与 cancel_order 加锁而 refund 不加锁的不一致，说明是遗漏。",
+        "evidence": "service.py:173-192 无 `with self.wb.lock_for(...)`（对比 cancel_order 在 service.py:125 有）；累加走 repository.py:67-71 的 `current = int(row.get(\"refunded_amount\", 0))` + `self.store.update_order(order_id, refunded_amount=current + amount)`，两次独立加锁。",
+        "suggestion": "在 Store 内提供单次持锁的 increment_refunded(order_id, amount) 并做余额校验；refund() 同时用 wb.lock_for 串行化同一订单。"
+      },
+      {
+        "id": "F_d74cd7e2e864",
+        "severity": "warn",
+        "file": "app/service.py",
+        "line": 232,
+        "title": "attach_items 预占库存后不校验明细写入结果，写失败即泄漏预占",
+        "detail": "InventoryService.reserve 逐行预占，失败时只释放**已经加入 reserved 列表**的行。当前失败行的部分预占不会被回收：_reserve_one 内部重试 3 次，若某次 try_reserve 返回 False 后重试，语义上是「版本冲突或库存不足」，本身不产生副作用；但真正的泄漏在多行场景 —— 第 2 行失败时只回滚第 1 行，而 reserve 的调用方 place_order 的 except 分支只覆盖 orders.create 抛错，不覆盖 reserve 自身抛 OutOfStock，因此第 1 行已在 reserve 内部回滚，这点是正确的。真正的缺陷在 attach_items：它在 status 校验之后调用 reserve，若 reserve 抛 OutOfStock，函数直接退出，没有对 order.items 做任何改动（OK）；但若 reserve 成功、而随后的 orders.replace_items 静默失败（update_order 对不存在的行返回 0，不抛错），则库存被占用而订单明细没有追加，形成永久性预占泄漏。而 replace_items 的返回值被丢弃，调用方无法感知失败。",
+        "evidence": "service.py:229-232：`self.wb.inventory.reserve(lines)` / `order.items = order.items + lines` / `self.wb.orders.replace_items(order_id, order.items)` / `return order` —— replace_items 无返回值、无 try/except，而 orm.py:59-66 的 update_items 在行不存在时 `return 0` 且不抛异常。对比 place_order 在 service.py:76-80 对 create 做了 try/except 回滚。",
+        "suggestion": "检查 replace_items 的写入结果，失败时回滚已预占库存（try/except + release_items）。"
+      },
+      {
+        "id": "F_e7081d036b4c",
+        "severity": "warn",
+        "file": "app/hooks.py",
+        "line": 93,
+        "title": "审计日志写入未用 with/finally，写入异常时文件句柄泄漏",
+        "detail": "audit_line 用 open(...) 手工打开再 close，没有用 with，也没有 try/finally。写在 :94 的 stream.write 一旦抛异常（磁盘满、编码错误、流被关闭），:95 的 close 不会执行，文件句柄泄漏。该模块 docstring 明确要求「失败不影响主流程」，但此处异常会向上冒泡到 config.profile_audit，把审计失败变成接口失败。另外 /var/log/order-desk/ 目录不存在时会直接 FileNotFoundError，不会自动创建（对比 ledger.py:26 有 os.makedirs）。",
+        "evidence": "hooks.py:93-95：`stream = open(f\"/var/log/order-desk/{'audit'}.log\", \"a\", encoding=\"utf-8\")` / `stream.write(message + \"\\n\")` / `stream.close()` —— 无 with、无 try/finally，且未先 makedirs。",
+        "suggestion": "改用 `with open(...) as stream:`，并先 os.makedirs(parent, exist_ok=True)；整体包 try/except 保证审计失败不影响主流程。"
+      },
+      {
+        "id": "F_439da7fc39c5",
+        "severity": "warn",
+        "file": "app/reclaimer.py",
+        "line": 52,
+        "title": "回收线程绕过存储锁读私有字典，与支付/取消竞争会重复释放库存",
+        "detail": "Reclaimer 在后台线程遍历 self.orders.store._orders 并逐单释放库存，但 :46 直接读 Store 的私有字典、绕过 _lock，与主线程的 insert_order/delete_order 并发时，遍历过程中 dict 尺寸变化会抛 RuntimeError: dictionary changed size during iteration；更严重的是它对超时订单的释放是「读状态→释放库存」两步，没有走 wb.lock_for 或任何订单级串行化，与用户此刻的 pay()/cancel_order() 竞争：用户支付成功后 reclaimer 仍按 PENDING 快照释放库存，订单已 PAID 却库存被回收；或 cancel_order 已释放一次、reclaimer 再释放一次，重复释放（release_stock 用 max(...,0) 静默兜底，不会报错）。且释放后没有把订单状态改成 CANCELLED，下一轮扫描仍匹配 PENDING，只要 release 回调不自己改状态就会反复释放。",
+        "evidence": "reclaimer.py:46 `for order_id in list(self.orders.store._orders):  # noqa: SLF001 - 只读枚举` —— list() 快照虽避免遍历时崩溃，但取快照不加 store._lock，且 :50-52 的 `if order.created_at.timestamp() > deadline: continue` / `self.release(order)` 前后无锁、无状态复检。",
+        "suggestion": "通过 repository 的公开查询接口取候选集（并持 store 锁），对每单先 `with wb.lock_for(order_id)`，锁内重新读取状态确认仍是 PENDING 再释放，同时把状态置为 CANCELLED。"
+      },
+      {
+        "id": "F_c0ef8843eb21",
+        "severity": "warn",
+        "file": "app/service.py",
+        "line": 156,
+        "title": "ship 调用钩子未捕获异常，钩子超时会让已成功的发货返回 500",
+        "detail": "hooks.py 模块注释声明「钩子在业务事务提交之后调用，抛出异常不影响主流程（由调用方捕获）」，但 ship() 调用 dispatch 时没有任何 try/except。dispatch→notify 用 subprocess.run(timeout=5)，超时会抛 TimeoutExpired，脚本不存在会抛 FileNotFoundError，两者都会冒泡出 ship()。而 dispatch 位于状态写入与账本追加之后（:152-155 已完成），因此结果是：订单已置为 SHIPPED、库存/账本已落，接口却向调用方返回 500。调用方重试又会命中 bad_state（已发货不能重复发货），形成「已成功但报错且不可重试」的不一致状态。",
+        "evidence": "service.py:156 `dispatch(\"ship\", {\"order_id\": order_id, ...})` 无 try/except，前一行 :154 已完成 set_status(SHIPPED)。hooks.py:50-54 `subprocess.run([...], check=False, timeout=5)` —— timeout 到期抛 TimeoutExpired，未被捕获。",
+        "suggestion": "把 dispatch 包进 try/except Exception 并记录日志（钩子失败不应影响主流程），或改用异步队列投递。"
+      },
+      {
+        "id": "F_adf80601a9eb",
+        "severity": "warn",
+        "file": "app/admin_api.py",
+        "line": 75,
+        "title": "补单接口缺少角色校验，与同文件 purge 的权限要求不一致",
+        "detail": "同一文件里 handle_purge 显式校验 X-Role == \"admin\"，而 handle_attach_items 没有任何角色判断（也不在 _restricted 黑名单检查范围内）。补单会直接改动他人待支付订单的明细并预占库存、改变应付金额，属于写操作，权限要求反而比 purge 更松。_restricted 只拦 \"blocked\"/\"visitor\"，因此默认角色（不带头或任意 X-Role 值）都能调用。同时 attach_items 不校验订单归属。",
+        "evidence": "admin_api.py:75-86 handle_attach_items 函数体内无任何 request.headers / X-Role 检查；对比 admin_api.py:62 `if request.headers.get(\"X-Role\") != \"admin\": return {\"code\": 403, ...}`。",
+        "suggestion": "为 attach_items 补上与 purge 同级的角色校验（至少要求运营角色），并校验操作者对该订单的归属权限。"
+      },
+      {
+        "id": "F_c51b780384f4",
+        "severity": "warn",
+        "file": "app/admin_api.py",
+        "line": 100,
+        "title": "导出/统计接口无权限校验且 rows 不受 export.max_rows 限制",
+        "detail": "导出与统计两个运营接口完全没有角色校验，owner 直接取自查询串，任何请求方都能指定任意用户导出其全部订单或拿到汇总金额。同时 handle_export 的 rows 参数直接透传给 my_orders 的 limit，没有任何上限：配置里明明定义了 export.max_rows = 5000 用于兜底，但全仓除 config.py 的定义与白名单外无任何引用（grep 确认），docstring 里「运营侧最多一次几千行」的约束因此没有落到代码上。传 rows=1000000000 就会把该用户全部订单在内存里拼成一个 CSV 字符串返回，配合 StringIO + DictWriter 放大内存占用。",
+        "evidence": "admin_api.py:94-100：`owner = request.params.get(\"owner\", \"\")` ... `rows = int(request.params.get(\"rows\", \"1000\"))` ... `orders = service.my_orders(owner, limit=rows)` —— 无 X-Role 校验、rows 无 cap；admin_api.py:134-136 handle_digest 同样直接用 request.params 的 owner。对比 config.py:23 `\"export.max_rows\": 5000` 在全仓无读取点。",
+        "suggestion": "加角色校验；把 rows 用 min(rows, DEFAULT_CONFIG[\"export.max_rows\"]) 裁剪并拒绝负数；owner 改为从鉴权身份推导而非查询串。"
+      },
+      {
+        "id": "F_55beaba5ca26",
+        "severity": "note",
+        "file": "app/api.py",
+        "line": 56,
+        "title": "分页 limit 未做下界校验，负数会返回「除末尾 N 条外」的订单",
+        "detail": "limit 只做了 min(limit, max_limit) 的上界收敛，没有下界校验。传入 limit=-5 时 min(-5, 20) = -5，随后 store.list_orders 执行 rows[:-5]，返回结果变成「除了最后 5 条的全部订单」；传入极大的负数或 -1 效果类似。这既不是错误也不是空结果，而是返回了非预期的数据子集，调用方按分页语义使用时会拿到错误的页。同理 limit=0 返回空，属于边界未定义行为。",
+        "evidence": "api.py:56 `limit = min(limit, max_limit)`（无 max(0, ...)）；orm.py:48 `return rows[:limit]` —— Python 切片对负索引按「去掉末尾 N 项」处理。",
+        "suggestion": "改为 `limit = max(1, min(limit, max_limit))`，或对非正数直接返回 400。"
+      },
+      {
+        "id": "F_60edd79497ca",
+        "severity": "blocker",
+        "file": "app/service.py",
+        "line": 55,
+        "title": "下单单价完全取自请求体，可传入负数/1 分把订单做成 0 元",
+        "detail": "下单时明细的 unit_price 完全取自请求体（api.py:98 只处理 coupon），服务端不与任何权威价目表比对，也不做下界校验。任何前台用户可以把 unit_price 传成 1（1 分）甚至负数：负数会让 goods_total 变小、clamp_discount 之后 payable 归零，配合 coupon 可把订单做成 0 元；而库存仍按 quantity 正常预占。pay() 又不校验实付金额与应付金额是否一致（docstring 称「基金渠道允许分笔，因此不校验金额是否等于应付」），所以 0 元/1 分的订单可以直接置为 PAID 并发货。金额相关校验只有 quantity<=0 与 discount 上限，价格维度完全裸奔。",
+        "evidence": "service.py:54-57：`OrderItem(sku=row[\"sku\"], quantity=int(row[\"quantity\"]), unit_price=int(row[\"unit_price\"]))` —— unit_price 直接来自 row，循环体内 :58-61 只校验了 SKU 存在与 quantity>0，未校验 unit_price。api.py:95-100 传参时只对 coupon 做 int()，items 原样透传。",
+        "suggestion": "unit_price 改为服务端按 sku 从价目表查询，忽略请求体里的价格（或仅作参考并对不上时拒绝）；同时校验 quantity 上界。"
+      },
+      {
+        "id": "F_4aba8d1504f1",
+        "severity": "warn",
+        "file": "app/service.py",
+        "line": 107,
+        "title": "pay 不加订单锁，并发支付重复记账、与取消竞争产生坏账",
+        "detail": "pay() 是唯一一个改订单状态却不加 wb.lock_for 的写入口（cancel_order 在 :125 加了，ship/refund/purge/attach_items 也都没加）。它读 order.status 判断是否 PENDING，再写 PAID，读与写之间没有互斥。两个并发支付请求都能看到 PENDING，于是都通过校验、都置为 PAID、都追加一条 pay 流水，对账时出现两条 paid 记录。更严重的是与 cancel_order 竞争：cancel 已释放库存并把状态置为 CANCELLED 后，pay 仍拿着旧快照把状态写回 PAID，订单变成「已支付但库存已归还」的坏账，且库存不会再次预占。",
+        "evidence": "service.py:105-114：`order = self.wb.orders.get(order_id)` / `if order.status != OrderStatus.PENDING:` / `order.status = OrderStatus.PAID` / `self.wb.orders.set_status(order_id, OrderStatus.PAID)` / `self.wb.ledger.append(order_id, \"pay\", paid_amount, channel)` —— 全段无 `with self.wb.lock_for(order_id)`，对比 service.py:125 cancel_order 有。",
+        "suggestion": "pay() 内用 `with self.wb.lock_for(order_id):` 包住状态检查与写入，锁内重新读取 status 再判断。"
+      },
+      {
+        "id": "F_eb79bd17c2e5",
+        "severity": "note",
+        "file": "app/hooks.py",
+        "line": 82,
+        "title": "action_expression 对未知动作抛 KeyError，与 docstring 承诺的回落行为不符",
+        "detail": "action_expression 的 docstring 承诺「未知动作回落为 Unknown」，但实现是 ACTION_LABELS[action] 直接下标取值，未知 action 会抛 KeyError 而不是返回 \"Unknown\"。该函数是插件扩展点，未知动作恰恰是最需要兜底的输入。属于文档与实现不一致导致的错误处理缺口。",
+        "evidence": "hooks.py:77-82：docstring「未知动作回落为 ``Unknown``」；实现 `return ACTION_LABELS[action]` —— 无 .get(action, \"Unknown\") 兜底。",
+        "suggestion": "改为 `return ACTION_LABELS.get(action, \"Unknown\")`，与 docstring 一致。"
+      },
+      {
+        "id": "F_d70b2da06eb8",
+        "severity": "warn",
+        "file": "app/service.py",
+        "line": 149,
+        "title": "ship 先打面单再校验状态，被拒绝的发货也会真实生成面单",
+        "detail": "ship() 在状态机校验之前就调用了 create_waybill（真实实现是与承运商同步打单），校验不通过才抛异常。这意味着对已发货、已取消、已完成的订单发起发货，都会先真的打出一张面单/调用一次承运商接口，然后才报 bad_state 拒绝。docstring 里「打单与状态写入都很慢，先取单再判断」把顺序当成了优点，实际后果是失败请求依然消耗外部资源并产生重复面单，属于外部资源的无效占用。批量发货（bulk_ship）会对每个非法订单重复触发一次。",
+        "evidence": "service.py:148-151：`order = self.wb.orders.get(order_id)` / `label = create_waybill(order, carrier, tracking_no)` / `if not order.can_transition(OrderStatus.SHIPPED): raise DomainError(...)` —— 打单在 :149，校验在 :150-151。",
+        "suggestion": "把 can_transition 校验提到 create_waybill 之前；打单失败时不要留下已置 SHIPPED 的状态。"
+      },
+      {
+        "id": "F_939476b65d9b",
+        "severity": "warn",
+        "file": "app/service.py",
+        "line": 148,
+        "title": "ship 与 attach_items 未按模块约定加订单锁，并发下重复发货、重复打单",
+        "detail": "ship() 与 attach_items() 都没有用 wb.lock_for(order_id) 包住「读状态→校验→写状态」这段。两个并发的发货请求（或 bulk_ship 重复传入同一 order_id）都能读到 PAID 并通过 can_transition(SHIPPED)，于是各打一张面单、各写一次状态、各发一次 dispatch 通知，产生重复面单与重复通知。service.py 模块 docstring 第 5 行明确要求「修改同一张订单前先 with wb.lock_for(order_id)」，因此这是约定未被遵守，而非设计取舍。<br/>ship:148-154 是典型 check-then-act，attach_items:225-232 同理。",
+        "evidence": "service.py:5 `- 修改同一张订单前先 ``with wb.lock_for(order_id):``；`；而 service.py:148-155（ship）与 service.py:225-232（attach_items）整段无 lock_for，全仓 lock_for 只在 service.py:125 cancel_order 中使用（grep `lock_for` 命中 workbench.py:34/37/40 定义与 service.py:5/125）。",
+        "suggestion": "在 ship/attach_items/purge_order 内统一用 with self.wb.lock_for(order_id)，锁内重新读取订单再校验状态。"
+      },
+      {
+        "id": "F_1594de093030",
+        "severity": "blocker",
+        "file": "app/workbench.py",
+        "line": 34,
+        "title": "订单锁按请求新建（每请求一份空锁表），cancel_order 的互斥完全失效",
+        "detail": "所有 handler 都是按请求新建 OrderService()（api.py 5 处、admin_api.py 7 处），而 OrderService.__init__ 在未传入 workbench 时新建 MemoryWorkbench()，因此每次请求都得到一份**全新的** _order_locks 空字典。于是 lock_for() 每次都造一把新锁返回：两个并发请求拿到的绝不是同一把锁，cancel_order 里唯一那处 `with self.wb.lock_for(order_id):` 提供不了任何互斥。底层数据却恰恰是共享的 —— MemoryWorkbench 的 store 来自 default_store() 进程级单例。结果是「锁的作用域是请求，数据的作用域是进程」，所有订单级串行化在当前接线方式下都是空转，前面几条并发问题（pay 重复记账、ship 重复打单、refund 丢失更新、reclaimer 竞争）因此全部真实可达，而不是理论风险。",
+        "evidence": "workbench.py:31 `self._order_locks: dict[str, threading.Lock] = {}` 是实例属性；workbench.py:34-41 lock_for 只在这个实例字典里查/建。service.py:35 `self.wb = workbench or MemoryWorkbench()`。api.py:58/69/93/114/127 与 admin_api.py:31/55/65/79/99/115/135 全部为每请求 `OrderService()`。同时 workbench.py:25 `self.store = store or default_store()` 使 store 跨请求共享。",
+        "suggestion": "把订单锁表提升为进程级（模块级 dict 或挂在 Store 上），或让 WSGI 层复用同一个 Workbench 单例；并清理锁表避免随订单号无界增长。"
+      },
+      {
+        "id": "F_e2f8707e2752",
+        "severity": "warn",
+        "file": "app/service.py",
+        "line": 191,
+        "title": "退款不流转订单状态，全额退款后订单仍显示 PAID 且仍可发货",
+        "detail": "refund() 只累加 refunded_amount 与写账本，从不去做状态流转，也没有任何「退满则置 REFUNDED/部分退款置 REFUNDING」的判断。后果：(1) 一笔订单被全额退款后状态仍是 PAID，可退余额为 0，但状态机里 PAID→REFUNDING/REFUNDED 的迁移永远走不到；(2) 全额退款后的订单仍可被 ship() 发货（can_transition(SHIPPED) 对 PAID 返回 True），出现「钱全退了还照常发货」；(3) 状态机中 REFUNDING、REFUNDED 两个状态在本仓库没有任何写入点，属死状态，依赖 status 做报表/风控的下游逻辑会永久看不到退款。OrderStatus 的 docstring 画出的状态图与实现不符。",
+        "evidence": "service.py:191-193 仅有 `self.wb.orders.add_refunded(order_id, amount)` 与 ledger.append，无 set_status、无 can_transition；对比 ship 在 :154 有 set_status。models.py:103-110 定义了 REFUNDING→REFUNDED 与 PAID→REFUNDING 的迁移，但全仓无任何地方把状态写成 REFUNDING 或 REFUNDED。",
+        "suggestion": "退款成功后按 refundable 是否为 0 分别置 REFUNDED / REFUNDING；并在 ship() 的状态校验与退款状态联动。"
+      },
+      {
+        "id": "F_cb5cb0890de7",
+        "severity": "blocker",
+        "file": "app/service.py",
+        "line": 132,
+        "title": "取消订单按原始应付金额登记退款，未扣除已退部分导致超额退款",
+        "detail": "cancel_order 计算退款额时用 order.payable（原始应付金额），没有扣掉已退部分（order.refunded_amount）。若一笔 100 元的 PAID 订单先前已部分退款 60 元（refunded_amount=60，refundable=40），此时取消会把 refund_intent 记为 -100 再退一次，累计退款 160 元，超出订单实收金额。正确值应为 order.refundable（models.py:96-98 已提供该属性，且 refund() 正是用它做上限校验），两条退款路径用了不一致的口径。",
+        "evidence": "service.py:132 `refund = order.payable if order.status == OrderStatus.PAID else 0` —— 用的是 payable；而 service.py:181-182 的退款校验用 `amount > order.refundable`。models.py:96-98 refundable = max(payable - refunded_amount, 0)。",
+        "suggestion": "改为 `refund = order.refundable if order.status == OrderStatus.PAID else 0`，与 refund() 的校验口径保持一致。"
+      },
+      {
+        "id": "F_b1b431c5a5d7",
+        "severity": "warn",
+        "file": "app/admin_api.py",
+        "line": 49,
+        "title": "批量发货接口无任何角色校验，任意请求方可触发不可逆的外部发货动作",
+        "detail": "handle_bulk_ship 没有任何角色判断，与 handle_purge 的 admin 校验、handle_refund 的 _restricted 黑名单都不同。批量发货会对列表里每个订单真实调用 ship()（真实实现会调承运商打单接口），是不可逆的外部动作，却允许任意请求方传入任意 order_ids 触发，包括他人订单。同时不校验这些订单的归属。这是与 attach_items 并列的另一处缺失校验，两者独立。",
+        "evidence": "admin_api.py:49-57：`def handle_bulk_ship(request: Request) -> dict:` 函数体内 `order_ids = [str(item) for item in body.get(\"order_ids\") or []]` 后直接 `result = service.bulk_ship(order_ids, ...)`，全程无 request.headers 读取；对比 :62 的 purge 有 `if request.headers.get(\"X-Role\") != \"admin\"`。",
+        "suggestion": "补角色校验（运营及以上），并限制可操作的订单归属范围。"
+      },
+      {
+        "id": "F_fd8d1e4a84e9",
+        "severity": "note",
+        "file": "app/api.py",
+        "line": 44,
+        "title": "fail 映射表缺 forbidden，越权被当成 400 而不是 403",
+        "detail": "service.order_detail_for_staff 在无权查看时抛 DomainError(code=\"forbidden\")，但 api.fail 的映射表里没有 \"forbidden\" 这个键，于是 fallthrough 到默认的 400。权限拒绝与「请求格式错误」返回同一个状态码，调用方/网关无法据此区分，前端也无法弹出正确的提示；若网关按 403 做审计告警，越权尝试会被记为普通坏请求而漏报。该映射表同时缺少 \"bad_amount\"、\"empty_order\"、\"too_many_items\"、\"bad_quantity\"、\"bad_request\" 等 service 层实际在用的 code，全部落到 400，属映射未与业务错误码同步。",
+        "evidence": "api.py:37-44：`mapping = {\"not_found\": 404, \"out_of_stock\": 409, \"bad_state\": 409, \"over_refund\": 409, \"domain_error\": 400}` / `return {\"code\": mapping.get(exc.code, 400), \"message\": str(exc)}` —— 无 \"forbidden\" 键。service.py:239 `raise DomainError(\"无权查看该订单\", code=\"forbidden\")`；service.py:47/49/61/169/275 使用的 code 也均不在映射表内。",
+        "suggestion": "在 mapping 中补上 \"forbidden\": 403（以及其余业务码），或让 DomainError 直接携带 HTTP 状态码。"
+      },
+      {
+        "id": "F_727efdd0b906",
+        "severity": "warn",
+        "file": "app/api.py",
+        "line": 116,
+        "title": "支付接口未捕获 int() 的 ValueError，畸形 amount 直接 500",
+        "detail": "handle_pay 在 try 块里对请求体做 int(body.get(\"amount\") or 0)，但 except 只捕获 NotFound 与 DomainError，ValueError 未被捕获。传入 {\"amount\": \"abc\"} 或 {\"amount\": \"1.5\"} 时 int() 抛 ValueError，直接冒泡出 handler，变成未处理的 500，而不是与 handle_create_order（:105 捕获 (ValueError, KeyError) 返回 400）一致的参数错误。同一文件内两个接口对同类畸形输入的处理方式不一致。",
+        "evidence": "api.py:115-120：`try: service.pay(order_id, int(body.get(\"amount\") or 0), str(body.get(\"channel\") or \"wallet\"))` / `except NotFound` / `except DomainError` —— 无 except ValueError；对比 api.py:105 `except (ValueError, KeyError) as exc: return {\"code\": 400, ...}`。",
+        "suggestion": "在 try 中补 except ValueError 返回 400，或先把 amount 解析到 try 之外并显式校验。"
+      }
+    ]
+  },
+  "repo": "C:\\Users\\34442\\Desktop\\porject\\代码审查agent\\backend\\examples\\m1-order-desk\\repo",
+  "model": "deepseek-flash（DeepSeek）",
+  "iterations": 30,
+  "stop_reason": "finished",
+  "elapsed": 257.757,
+  "usage": {
+    "prompt_tokens": 970433,
+    "completion_tokens": 50572,
+    "cached_tokens": 917120
+  },
+  "findings": [
+    {
+      "id": "F_01e549d62bbc",
+      "severity": "blocker",
+      "file": "app/repository.py",
+      "line": 30,
+      "title": "Store.to_order 根本不存在，所有订单读取路径都会抛 AttributeError",
+      "detail": "OrderRepository 的 get/find/find_for_owner/list_by_owner 四个方法都调用 Store.to_order(row)，但 orm.py 的 Store 只定义了 _to_row（Order→dict 单向序列化），没有 to_order（dict→Order）。一旦命中已有订单行，就会抛 AttributeError: type object 'Store' has no attribute 'to_order'，而不是返回订单。这不是分支里的边界问题，而是仓库层的主路径：.get() 在 service 的 pay/cancel/ship/refund/purge/attach_items 里全被调用，所以这些接口在订单存在时全部 500。属于「服务不可用」级别。",
+      "evidence": "repository.py:30 `return Store.to_order(row)`；:34、:41、:44 同样调用。对全仓 grep `to_order` 只返回这 4 处调用点，无任何定义。orm.py 的方法清单为：__init__/insert_order/get_order/list_orders/update_order/update_items/delete_order/seed_stock/get_stock/release_stock/reserve_stock/_to_row，缺失 to_order。",
+      "suggestion": "在 Store 内实现 to_order(row) 反序列化为 Order/OrderItem（注意 status 需转回 OrderStatus 枚举，否则 order.status.value 会炸）。"
+    },
+    {
+      "id": "F_2a5847f25b5a",
+      "severity": "blocker",
+      "file": "app/service.py",
+      "line": 269,
+      "title": "has_permission_to_view 恒返回 True，客服可查看任意客户订单",
+      "detail": "函数 docstring 声明「主管可查看全部；座席只能查看所辖客户」，但实现里 role == \"supervisor\" 分支之后直接 `return True`，完全没有查 _STAFF_ZONES，也没用到 owner_id 参数。结果：任何 role（包括默认的 \"agent\"）都能通过 order_detail_for_staff 读取任意订单，包括任意 owner 的订单归属、应付金额、状态。_STAFF_ZONES 与 register_zone 因此成为完全无效的死代码。属于越权访问（IDOR）。",
+      "evidence": "service.py:265-269：`def has_permission_to_view(staff_id: str, role: str, owner_id: str) -> bool:` ... `if role == \"supervisor\": return True` / `return True` —— 两分支都返回 True，owner_id 在函数体内未被引用。调用点为 service.py:238。",
+      "suggestion": "改为 `return owner_id in _STAFF_ZONES.get(staff_id, set())`，并让 role 白名单显式（未识别角色一律拒绝）。"
+    },
+    {
+      "id": "F_d309c096081a",
+      "severity": "blocker",
+      "file": "app/api.py",
+      "line": 71,
+      "title": "订单详情接口不做归属校验，任意用户可越权读取他人订单",
+      "detail": "handle_get_order 用 service.get_order(order_id) 读取订单，而 repository/service 里已经提供了正确的按归属查询入口 get_my_order/find_for_owner（docstring 明确写「其他人拿到的结果与不存在相同」），但这里没有用。任何登录用户改 order_id 就能拿到别人的订单明细（order_id、状态、应付/可退金额、全部明细行与单价）。get_my_order 在全仓无调用点，说明这是漏用而非有意为之。与 service.py:269 的越权是两条独立路径，修一条不影响另一条。",
+      "evidence": "api.py:71 `order = service.get_order(order_id)`；Request.user_id 在函数内未被使用。对比 service.py:91-95 的 get_my_order 走 find_for_owner，全仓 grep `get_my_order` 仅命中定义处（service.py:91），无调用点。",
+      "suggestion": "改为 `service.get_my_order(order_id, request.user_id)`，让非归属者得到 404。"
+    },
+    {
+      "id": "F_dfb5455a4714",
+      "severity": "blocker",
+      "file": "app/service.py",
+      "line": 190,
+      "title": "部分退款按「是否有退款额」全量释放库存，与退款金额无关",
+      "detail": "refund() 先用 split_refund 把退款金额按各明细小计占比拆成 parts，随后回收库存时却写成 `self.wb.inventory.release(item.sku, item.quantity)` —— 释放的是该明细的**全量数量**，与 parts 是否匹配完全不相关。part 只被当作「非零则全量释放」的开关。后果：(1) 一笔 100 件、单价 1 分的明细退款 1 分，就释放 100 件库存；(2) 同一订单多次部分退款时，每次都会再全量释放一遍，而 release_stock 用 max(reserved-quantity, 0) 兜底，不会报错，超量释放被静默吞掉，导致 reserved 被压到 0，后续下单继续超卖；(3) 库存与退款金额彻底脱钩，账实不符。正确的量应是按 part/unit_price 折算的件数，且需累计已退数量。",
+      "evidence": "service.py:184-190：`weights = [item.subtotal for item in order.items]` / `parts = pricing.split_refund(amount, weights)` / `for item, part in zip(order.items, parts): if part: self.wb.inventory.release(item.sku, item.quantity)` —— 第二参数是 item.quantity 而非由 part 折算。orm.py:91 `row.reserved = max(row.reserved - quantity, 0)` 说明超额释放不会报错。",
+      "suggestion": "按 parts[i] 折算应退件数（如 part // unit_price，并维护每行已退件数上限），或干脆不对已支付订单做库存回收，改为仅在取消时按整单释放。"
+    },
+    {
+      "id": "F_dd764251ec4b",
+      "severity": "blocker",
+      "file": "app/repository.py",
+      "line": 70,
+      "title": "退款金额累加是快照读+整体覆盖，并发下丢失更新导致重复退款",
+      "detail": "refund() 全程没有加 wb.lock_for(order_id)，也没有任何并发控制：order.refundable 的校验读的是各自进程内的快照，随后 add_refunded 才是最后写入。repository.add_refunded 虽然注释说「读-改-写必须在存储层一次完成」，但实现是 store.get_order() 拿快照、再 store.update_order(refunded_amount=current+amount)，两步各自持锁、整体不原子（典型 lost update）。两个并发的部分退款都通过 refundable 校验后，后写的结果覆盖先写，累计已退金额偏小，可退余额被重复使用 —— 即重复退款/超额退款。这与 cancel_order 加锁而 refund 不加锁的不一致，说明是遗漏。",
+      "evidence": "service.py:173-192 无 `with self.wb.lock_for(...)`（对比 cancel_order 在 service.py:125 有）；累加走 repository.py:67-71 的 `current = int(row.get(\"refunded_amount\", 0))` + `self.store.update_order(order_id, refunded_amount=current + amount)`，两次独立加锁。",
+      "suggestion": "在 Store 内提供单次持锁的 increment_refunded(order_id, amount) 并做余额校验；refund() 同时用 wb.lock_for 串行化同一订单。"
+    },
+    {
+      "id": "F_d74cd7e2e864",
+      "severity": "warn",
+      "file": "app/service.py",
+      "line": 232,
+      "title": "attach_items 预占库存后不校验明细写入结果，写失败即泄漏预占",
+      "detail": "InventoryService.reserve 逐行预占，失败时只释放**已经加入 reserved 列表**的行。当前失败行的部分预占不会被回收：_reserve_one 内部重试 3 次，若某次 try_reserve 返回 False 后重试，语义上是「版本冲突或库存不足」，本身不产生副作用；但真正的泄漏在多行场景 —— 第 2 行失败时只回滚第 1 行，而 reserve 的调用方 place_order 的 except 分支只覆盖 orders.create 抛错，不覆盖 reserve 自身抛 OutOfStock，因此第 1 行已在 reserve 内部回滚，这点是正确的。真正的缺陷在 attach_items：它在 status 校验之后调用 reserve，若 reserve 抛 OutOfStock，函数直接退出，没有对 order.items 做任何改动（OK）；但若 reserve 成功、而随后的 orders.replace_items 静默失败（update_order 对不存在的行返回 0，不抛错），则库存被占用而订单明细没有追加，形成永久性预占泄漏。而 replace_items 的返回值被丢弃，调用方无法感知失败。",
+      "evidence": "service.py:229-232：`self.wb.inventory.reserve(lines)` / `order.items = order.items + lines` / `self.wb.orders.replace_items(order_id, order.items)` / `return order` —— replace_items 无返回值、无 try/except，而 orm.py:59-66 的 update_items 在行不存在时 `return 0` 且不抛异常。对比 place_order 在 service.py:76-80 对 create 做了 try/except 回滚。",
+      "suggestion": "检查 replace_items 的写入结果，失败时回滚已预占库存（try/except + release_items）。"
+    },
+    {
+      "id": "F_e7081d036b4c",
+      "severity": "warn",
+      "file": "app/hooks.py",
+      "line": 93,
+      "title": "审计日志写入未用 with/finally，写入异常时文件句柄泄漏",
+      "detail": "audit_line 用 open(...) 手工打开再 close，没有用 with，也没有 try/finally。写在 :94 的 stream.write 一旦抛异常（磁盘满、编码错误、流被关闭），:95 的 close 不会执行，文件句柄泄漏。该模块 docstring 明确要求「失败不影响主流程」，但此处异常会向上冒泡到 config.profile_audit，把审计失败变成接口失败。另外 /var/log/order-desk/ 目录不存在时会直接 FileNotFoundError，不会自动创建（对比 ledger.py:26 有 os.makedirs）。",
+      "evidence": "hooks.py:93-95：`stream = open(f\"/var/log/order-desk/{'audit'}.log\", \"a\", encoding=\"utf-8\")` / `stream.write(message + \"\\n\")` / `stream.close()` —— 无 with、无 try/finally，且未先 makedirs。",
+      "suggestion": "改用 `with open(...) as stream:`，并先 os.makedirs(parent, exist_ok=True)；整体包 try/except 保证审计失败不影响主流程。"
+    },
+    {
+      "id": "F_439da7fc39c5",
+      "severity": "warn",
+      "file": "app/reclaimer.py",
+      "line": 52,
+      "title": "回收线程绕过存储锁读私有字典，与支付/取消竞争会重复释放库存",
+      "detail": "Reclaimer 在后台线程遍历 self.orders.store._orders 并逐单释放库存，但 :46 直接读 Store 的私有字典、绕过 _lock，与主线程的 insert_order/delete_order 并发时，遍历过程中 dict 尺寸变化会抛 RuntimeError: dictionary changed size during iteration；更严重的是它对超时订单的释放是「读状态→释放库存」两步，没有走 wb.lock_for 或任何订单级串行化，与用户此刻的 pay()/cancel_order() 竞争：用户支付成功后 reclaimer 仍按 PENDING 快照释放库存，订单已 PAID 却库存被回收；或 cancel_order 已释放一次、reclaimer 再释放一次，重复释放（release_stock 用 max(...,0) 静默兜底，不会报错）。且释放后没有把订单状态改成 CANCELLED，下一轮扫描仍匹配 PENDING，只要 release 回调不自己改状态就会反复释放。",
+      "evidence": "reclaimer.py:46 `for order_id in list(self.orders.store._orders):  # noqa: SLF001 - 只读枚举` —— list() 快照虽避免遍历时崩溃，但取快照不加 store._lock，且 :50-52 的 `if order.created_at.timestamp() > deadline: continue` / `self.release(order)` 前后无锁、无状态复检。",
+      "suggestion": "通过 repository 的公开查询接口取候选集（并持 store 锁），对每单先 `with wb.lock_for(order_id)`，锁内重新读取状态确认仍是 PENDING 再释放，同时把状态置为 CANCELLED。"
+    },
+    {
+      "id": "F_c0ef8843eb21",
+      "severity": "warn",
+      "file": "app/service.py",
+      "line": 156,
+      "title": "ship 调用钩子未捕获异常，钩子超时会让已成功的发货返回 500",
+      "detail": "hooks.py 模块注释声明「钩子在业务事务提交之后调用，抛出异常不影响主流程（由调用方捕获）」，但 ship() 调用 dispatch 时没有任何 try/except。dispatch→notify 用 subprocess.run(timeout=5)，超时会抛 TimeoutExpired，脚本不存在会抛 FileNotFoundError，两者都会冒泡出 ship()。而 dispatch 位于状态写入与账本追加之后（:152-155 已完成），因此结果是：订单已置为 SHIPPED、库存/账本已落，接口却向调用方返回 500。调用方重试又会命中 bad_state（已发货不能重复发货），形成「已成功但报错且不可重试」的不一致状态。",
+      "evidence": "service.py:156 `dispatch(\"ship\", {\"order_id\": order_id, ...})` 无 try/except，前一行 :154 已完成 set_status(SHIPPED)。hooks.py:50-54 `subprocess.run([...], check=False, timeout=5)` —— timeout 到期抛 TimeoutExpired，未被捕获。",
+      "suggestion": "把 dispatch 包进 try/except Exception 并记录日志（钩子失败不应影响主流程），或改用异步队列投递。"
+    },
+    {
+      "id": "F_adf80601a9eb",
+      "severity": "warn",
+      "file": "app/admin_api.py",
+      "line": 75,
+      "title": "补单接口缺少角色校验，与同文件 purge 的权限要求不一致",
+      "detail": "同一文件里 handle_purge 显式校验 X-Role == \"admin\"，而 handle_attach_items 没有任何角色判断（也不在 _restricted 黑名单检查范围内）。补单会直接改动他人待支付订单的明细并预占库存、改变应付金额，属于写操作，权限要求反而比 purge 更松。_restricted 只拦 \"blocked\"/\"visitor\"，因此默认角色（不带头或任意 X-Role 值）都能调用。同时 attach_items 不校验订单归属。",
+      "evidence": "admin_api.py:75-86 handle_attach_items 函数体内无任何 request.headers / X-Role 检查；对比 admin_api.py:62 `if request.headers.get(\"X-Role\") != \"admin\": return {\"code\": 403, ...}`。",
+      "suggestion": "为 attach_items 补上与 purge 同级的角色校验（至少要求运营角色），并校验操作者对该订单的归属权限。"
+    },
+    {
+      "id": "F_c51b780384f4",
+      "severity": "warn",
+      "file": "app/admin_api.py",
+      "line": 100,
+      "title": "导出/统计接口无权限校验且 rows 不受 export.max_rows 限制",
+      "detail": "导出与统计两个运营接口完全没有角色校验，owner 直接取自查询串，任何请求方都能指定任意用户导出其全部订单或拿到汇总金额。同时 handle_export 的 rows 参数直接透传给 my_orders 的 limit，没有任何上限：配置里明明定义了 export.max_rows = 5000 用于兜底，但全仓除 config.py 的定义与白名单外无任何引用（grep 确认），docstring 里「运营侧最多一次几千行」的约束因此没有落到代码上。传 rows=1000000000 就会把该用户全部订单在内存里拼成一个 CSV 字符串返回，配合 StringIO + DictWriter 放大内存占用。",
+      "evidence": "admin_api.py:94-100：`owner = request.params.get(\"owner\", \"\")` ... `rows = int(request.params.get(\"rows\", \"1000\"))` ... `orders = service.my_orders(owner, limit=rows)` —— 无 X-Role 校验、rows 无 cap；admin_api.py:134-136 handle_digest 同样直接用 request.params 的 owner。对比 config.py:23 `\"export.max_rows\": 5000` 在全仓无读取点。",
+      "suggestion": "加角色校验；把 rows 用 min(rows, DEFAULT_CONFIG[\"export.max_rows\"]) 裁剪并拒绝负数；owner 改为从鉴权身份推导而非查询串。"
+    },
+    {
+      "id": "F_55beaba5ca26",
+      "severity": "note",
+      "file": "app/api.py",
+      "line": 56,
+      "title": "分页 limit 未做下界校验，负数会返回「除末尾 N 条外」的订单",
+      "detail": "limit 只做了 min(limit, max_limit) 的上界收敛，没有下界校验。传入 limit=-5 时 min(-5, 20) = -5，随后 store.list_orders 执行 rows[:-5]，返回结果变成「除了最后 5 条的全部订单」；传入极大的负数或 -1 效果类似。这既不是错误也不是空结果，而是返回了非预期的数据子集，调用方按分页语义使用时会拿到错误的页。同理 limit=0 返回空，属于边界未定义行为。",
+      "evidence": "api.py:56 `limit = min(limit, max_limit)`（无 max(0, ...)）；orm.py:48 `return rows[:limit]` —— Python 切片对负索引按「去掉末尾 N 项」处理。",
+      "suggestion": "改为 `limit = max(1, min(limit, max_limit))`，或对非正数直接返回 400。"
+    },
+    {
+      "id": "F_60edd79497ca",
+      "severity": "blocker",
+      "file": "app/service.py",
+      "line": 55,
+      "title": "下单单价完全取自请求体，可传入负数/1 分把订单做成 0 元",
+      "detail": "下单时明细的 unit_price 完全取自请求体（api.py:98 只处理 coupon），服务端不与任何权威价目表比对，也不做下界校验。任何前台用户可以把 unit_price 传成 1（1 分）甚至负数：负数会让 goods_total 变小、clamp_discount 之后 payable 归零，配合 coupon 可把订单做成 0 元；而库存仍按 quantity 正常预占。pay() 又不校验实付金额与应付金额是否一致（docstring 称「基金渠道允许分笔，因此不校验金额是否等于应付」），所以 0 元/1 分的订单可以直接置为 PAID 并发货。金额相关校验只有 quantity<=0 与 discount 上限，价格维度完全裸奔。",
+      "evidence": "service.py:54-57：`OrderItem(sku=row[\"sku\"], quantity=int(row[\"quantity\"]), unit_price=int(row[\"unit_price\"]))` —— unit_price 直接来自 row，循环体内 :58-61 只校验了 SKU 存在与 quantity>0，未校验 unit_price。api.py:95-100 传参时只对 coupon 做 int()，items 原样透传。",
+      "suggestion": "unit_price 改为服务端按 sku 从价目表查询，忽略请求体里的价格（或仅作参考并对不上时拒绝）；同时校验 quantity 上界。"
+    },
+    {
+      "id": "F_4aba8d1504f1",
+      "severity": "warn",
+      "file": "app/service.py",
+      "line": 107,
+      "title": "pay 不加订单锁，并发支付重复记账、与取消竞争产生坏账",
+      "detail": "pay() 是唯一一个改订单状态却不加 wb.lock_for 的写入口（cancel_order 在 :125 加了，ship/refund/purge/attach_items 也都没加）。它读 order.status 判断是否 PENDING，再写 PAID，读与写之间没有互斥。两个并发支付请求都能看到 PENDING，于是都通过校验、都置为 PAID、都追加一条 pay 流水，对账时出现两条 paid 记录。更严重的是与 cancel_order 竞争：cancel 已释放库存并把状态置为 CANCELLED 后，pay 仍拿着旧快照把状态写回 PAID，订单变成「已支付但库存已归还」的坏账，且库存不会再次预占。",
+      "evidence": "service.py:105-114：`order = self.wb.orders.get(order_id)` / `if order.status != OrderStatus.PENDING:` / `order.status = OrderStatus.PAID` / `self.wb.orders.set_status(order_id, OrderStatus.PAID)` / `self.wb.ledger.append(order_id, \"pay\", paid_amount, channel)` —— 全段无 `with self.wb.lock_for(order_id)`，对比 service.py:125 cancel_order 有。",
+      "suggestion": "pay() 内用 `with self.wb.lock_for(order_id):` 包住状态检查与写入，锁内重新读取 status 再判断。"
+    },
+    {
+      "id": "F_eb79bd17c2e5",
+      "severity": "note",
+      "file": "app/hooks.py",
+      "line": 82,
+      "title": "action_expression 对未知动作抛 KeyError，与 docstring 承诺的回落行为不符",
+      "detail": "action_expression 的 docstring 承诺「未知动作回落为 Unknown」，但实现是 ACTION_LABELS[action] 直接下标取值，未知 action 会抛 KeyError 而不是返回 \"Unknown\"。该函数是插件扩展点，未知动作恰恰是最需要兜底的输入。属于文档与实现不一致导致的错误处理缺口。",
+      "evidence": "hooks.py:77-82：docstring「未知动作回落为 ``Unknown``」；实现 `return ACTION_LABELS[action]` —— 无 .get(action, \"Unknown\") 兜底。",
+      "suggestion": "改为 `return ACTION_LABELS.get(action, \"Unknown\")`，与 docstring 一致。"
+    },
+    {
+      "id": "F_d70b2da06eb8",
+      "severity": "warn",
+      "file": "app/service.py",
+      "line": 149,
+      "title": "ship 先打面单再校验状态，被拒绝的发货也会真实生成面单",
+      "detail": "ship() 在状态机校验之前就调用了 create_waybill（真实实现是与承运商同步打单），校验不通过才抛异常。这意味着对已发货、已取消、已完成的订单发起发货，都会先真的打出一张面单/调用一次承运商接口，然后才报 bad_state 拒绝。docstring 里「打单与状态写入都很慢，先取单再判断」把顺序当成了优点，实际后果是失败请求依然消耗外部资源并产生重复面单，属于外部资源的无效占用。批量发货（bulk_ship）会对每个非法订单重复触发一次。",
+      "evidence": "service.py:148-151：`order = self.wb.orders.get(order_id)` / `label = create_waybill(order, carrier, tracking_no)` / `if not order.can_transition(OrderStatus.SHIPPED): raise DomainError(...)` —— 打单在 :149，校验在 :150-151。",
+      "suggestion": "把 can_transition 校验提到 create_waybill 之前；打单失败时不要留下已置 SHIPPED 的状态。"
+    },
+    {
+      "id": "F_939476b65d9b",
+      "severity": "warn",
+      "file": "app/service.py",
+      "line": 148,
+      "title": "ship 与 attach_items 未按模块约定加订单锁，并发下重复发货、重复打单",
+      "detail": "ship() 与 attach_items() 都没有用 wb.lock_for(order_id) 包住「读状态→校验→写状态」这段。两个并发的发货请求（或 bulk_ship 重复传入同一 order_id）都能读到 PAID 并通过 can_transition(SHIPPED)，于是各打一张面单、各写一次状态、各发一次 dispatch 通知，产生重复面单与重复通知。service.py 模块 docstring 第 5 行明确要求「修改同一张订单前先 with wb.lock_for(order_id)」，因此这是约定未被遵守，而非设计取舍。<br/>ship:148-154 是典型 check-then-act，attach_items:225-232 同理。",
+      "evidence": "service.py:5 `- 修改同一张订单前先 ``with wb.lock_for(order_id):``；`；而 service.py:148-155（ship）与 service.py:225-232（attach_items）整段无 lock_for，全仓 lock_for 只在 service.py:125 cancel_order 中使用（grep `lock_for` 命中 workbench.py:34/37/40 定义与 service.py:5/125）。",
+      "suggestion": "在 ship/attach_items/purge_order 内统一用 with self.wb.lock_for(order_id)，锁内重新读取订单再校验状态。"
+    },
+    {
+      "id": "F_1594de093030",
+      "severity": "blocker",
+      "file": "app/workbench.py",
+      "line": 34,
+      "title": "订单锁按请求新建（每请求一份空锁表），cancel_order 的互斥完全失效",
+      "detail": "所有 handler 都是按请求新建 OrderService()（api.py 5 处、admin_api.py 7 处），而 OrderService.__init__ 在未传入 workbench 时新建 MemoryWorkbench()，因此每次请求都得到一份**全新的** _order_locks 空字典。于是 lock_for() 每次都造一把新锁返回：两个并发请求拿到的绝不是同一把锁，cancel_order 里唯一那处 `with self.wb.lock_for(order_id):` 提供不了任何互斥。底层数据却恰恰是共享的 —— MemoryWorkbench 的 store 来自 default_store() 进程级单例。结果是「锁的作用域是请求，数据的作用域是进程」，所有订单级串行化在当前接线方式下都是空转，前面几条并发问题（pay 重复记账、ship 重复打单、refund 丢失更新、reclaimer 竞争）因此全部真实可达，而不是理论风险。",
+      "evidence": "workbench.py:31 `self._order_locks: dict[str, threading.Lock] = {}` 是实例属性；workbench.py:34-41 lock_for 只在这个实例字典里查/建。service.py:35 `self.wb = workbench or MemoryWorkbench()`。api.py:58/69/93/114/127 与 admin_api.py:31/55/65/79/99/115/135 全部为每请求 `OrderService()`。同时 workbench.py:25 `self.store = store or default_store()` 使 store 跨请求共享。",
+      "suggestion": "把订单锁表提升为进程级（模块级 dict 或挂在 Store 上），或让 WSGI 层复用同一个 Workbench 单例；并清理锁表避免随订单号无界增长。"
+    },
+    {
+      "id": "F_e2f8707e2752",
+      "severity": "warn",
+      "file": "app/service.py",
+      "line": 191,
+      "title": "退款不流转订单状态，全额退款后订单仍显示 PAID 且仍可发货",
+      "detail": "refund() 只累加 refunded_amount 与写账本，从不去做状态流转，也没有任何「退满则置 REFUNDED/部分退款置 REFUNDING」的判断。后果：(1) 一笔订单被全额退款后状态仍是 PAID，可退余额为 0，但状态机里 PAID→REFUNDING/REFUNDED 的迁移永远走不到；(2) 全额退款后的订单仍可被 ship() 发货（can_transition(SHIPPED) 对 PAID 返回 True），出现「钱全退了还照常发货」；(3) 状态机中 REFUNDING、REFUNDED 两个状态在本仓库没有任何写入点，属死状态，依赖 status 做报表/风控的下游逻辑会永久看不到退款。OrderStatus 的 docstring 画出的状态图与实现不符。",
+      "evidence": "service.py:191-193 仅有 `self.wb.orders.add_refunded(order_id, amount)` 与 ledger.append，无 set_status、无 can_transition；对比 ship 在 :154 有 set_status。models.py:103-110 定义了 REFUNDING→REFUNDED 与 PAID→REFUNDING 的迁移，但全仓无任何地方把状态写成 REFUNDING 或 REFUNDED。",
+      "suggestion": "退款成功后按 refundable 是否为 0 分别置 REFUNDED / REFUNDING；并在 ship() 的状态校验与退款状态联动。"
+    },
+    {
+      "id": "F_cb5cb0890de7",
+      "severity": "blocker",
+      "file": "app/service.py",
+      "line": 132,
+      "title": "取消订单按原始应付金额登记退款，未扣除已退部分导致超额退款",
+      "detail": "cancel_order 计算退款额时用 order.payable（原始应付金额），没有扣掉已退部分（order.refunded_amount）。若一笔 100 元的 PAID 订单先前已部分退款 60 元（refunded_amount=60，refundable=40），此时取消会把 refund_intent 记为 -100 再退一次，累计退款 160 元，超出订单实收金额。正确值应为 order.refundable（models.py:96-98 已提供该属性，且 refund() 正是用它做上限校验），两条退款路径用了不一致的口径。",
+      "evidence": "service.py:132 `refund = order.payable if order.status == OrderStatus.PAID else 0` —— 用的是 payable；而 service.py:181-182 的退款校验用 `amount > order.refundable`。models.py:96-98 refundable = max(payable - refunded_amount, 0)。",
+      "suggestion": "改为 `refund = order.refundable if order.status == OrderStatus.PAID else 0`，与 refund() 的校验口径保持一致。"
+    },
+    {
+      "id": "F_b1b431c5a5d7",
+      "severity": "warn",
+      "file": "app/admin_api.py",
+      "line": 49,
+      "title": "批量发货接口无任何角色校验，任意请求方可触发不可逆的外部发货动作",
+      "detail": "handle_bulk_ship 没有任何角色判断，与 handle_purge 的 admin 校验、handle_refund 的 _restricted 黑名单都不同。批量发货会对列表里每个订单真实调用 ship()（真实实现会调承运商打单接口），是不可逆的外部动作，却允许任意请求方传入任意 order_ids 触发，包括他人订单。同时不校验这些订单的归属。这是与 attach_items 并列的另一处缺失校验，两者独立。",
+      "evidence": "admin_api.py:49-57：`def handle_bulk_ship(request: Request) -> dict:` 函数体内 `order_ids = [str(item) for item in body.get(\"order_ids\") or []]` 后直接 `result = service.bulk_ship(order_ids, ...)`，全程无 request.headers 读取；对比 :62 的 purge 有 `if request.headers.get(\"X-Role\") != \"admin\"`。",
+      "suggestion": "补角色校验（运营及以上），并限制可操作的订单归属范围。"
+    },
+    {
+      "id": "F_fd8d1e4a84e9",
+      "severity": "note",
+      "file": "app/api.py",
+      "line": 44,
+      "title": "fail 映射表缺 forbidden，越权被当成 400 而不是 403",
+      "detail": "service.order_detail_for_staff 在无权查看时抛 DomainError(code=\"forbidden\")，但 api.fail 的映射表里没有 \"forbidden\" 这个键，于是 fallthrough 到默认的 400。权限拒绝与「请求格式错误」返回同一个状态码，调用方/网关无法据此区分，前端也无法弹出正确的提示；若网关按 403 做审计告警，越权尝试会被记为普通坏请求而漏报。该映射表同时缺少 \"bad_amount\"、\"empty_order\"、\"too_many_items\"、\"bad_quantity\"、\"bad_request\" 等 service 层实际在用的 code，全部落到 400，属映射未与业务错误码同步。",
+      "evidence": "api.py:37-44：`mapping = {\"not_found\": 404, \"out_of_stock\": 409, \"bad_state\": 409, \"over_refund\": 409, \"domain_error\": 400}` / `return {\"code\": mapping.get(exc.code, 400), \"message\": str(exc)}` —— 无 \"forbidden\" 键。service.py:239 `raise DomainError(\"无权查看该订单\", code=\"forbidden\")`；service.py:47/49/61/169/275 使用的 code 也均不在映射表内。",
+      "suggestion": "在 mapping 中补上 \"forbidden\": 403（以及其余业务码），或让 DomainError 直接携带 HTTP 状态码。"
+    },
+    {
+      "id": "F_727efdd0b906",
+      "severity": "warn",
+      "file": "app/api.py",
+      "line": 116,
+      "title": "支付接口未捕获 int() 的 ValueError，畸形 amount 直接 500",
+      "detail": "handle_pay 在 try 块里对请求体做 int(body.get(\"amount\") or 0)，但 except 只捕获 NotFound 与 DomainError，ValueError 未被捕获。传入 {\"amount\": \"abc\"} 或 {\"amount\": \"1.5\"} 时 int() 抛 ValueError，直接冒泡出 handler，变成未处理的 500，而不是与 handle_create_order（:105 捕获 (ValueError, KeyError) 返回 400）一致的参数错误。同一文件内两个接口对同类畸形输入的处理方式不一致。",
+      "evidence": "api.py:115-120：`try: service.pay(order_id, int(body.get(\"amount\") or 0), str(body.get(\"channel\") or \"wallet\"))` / `except NotFound` / `except DomainError` —— 无 except ValueError；对比 api.py:105 `except (ValueError, KeyError) as exc: return {\"code\": 400, ...}`。",
+      "suggestion": "在 try 中补 except ValueError 返回 400，或先把 amount 解析到 try 之外并显式校验。"
+    }
+  ],
+  "warnings": [
+    "确定性规则命中但本次未报告的位置（疑似漏报，需人工复核）：\napp/config.py:28 SEC001 硬编码密钥"
+  ],
+  "compression_events": [],
+  "prefix": {
+    "fingerprint": "6c1f3837fbf777e0",
+    "tokens": 4448,
+    "tool_count": 8
+  }
+}

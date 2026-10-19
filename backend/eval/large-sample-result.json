@@ -1,0 +1,433 @@
+{
+  "goal": "审查这个仓库中的缺陷，重点是会导致错误行为、资源泄漏或安全问题的实现。逐文件检查，确认后记录发现。",
+  "agent": "review",
+  "outcome": "findings",
+  "artifacts": {
+    "finding": [
+      {
+        "id": "F_ea13526b7dc3",
+        "severity": "blocker",
+        "file": "app/auth.py",
+        "line": 6,
+        "title": "真实形态的生产凭据（API Key / 数据库口令）硬编码在源码中并入库",
+        "detail": "模块顶层直接写死了两个看起来是真实生产凭据的常量：API Key（`sk-live-` 前缀是 Stripe/Live 风格的线上密钥前缀，不是 `sk-test-`）和 PostgreSQL 生产库口令（`prod_pg_` 前缀）。它们属于模块级常量，任何 `import app.auth` 的代码都能读到，也会随 git 历史永久留存。仓库的 .gitignore 只排除了 `.env`，对源码里的字面量没有任何保护作用。凭据一旦进入 git 历史，仅删除代码行并不算修复，必须轮换密钥。",
+        "evidence": "app/auth.py:6  API_KEY = \"sk-live-9f3a7c2b8e1d4056a7b8\"\napp/auth.py:7  DB_PASSWORD = \"prod_pg_2026_x7Qm\"\n两个常量均为模块级、无环境变量回退，import 即可读取。",
+        "suggestion": "立即轮换这两套凭据；改为从 `os.environ`/密钥管理服务读取，缺失时启动即失败（不要给默认值）。同时用 gitleaks 之类工具扫描并清理 git 历史。"
+      },
+      {
+        "id": "F_19c8fa85f1c7",
+        "severity": "blocker",
+        "file": "app/auth.py",
+        "line": 21,
+        "title": "verify_user 用裸 except 兜底并返回 True，任何异常都会变成认证通过",
+        "detail": "函数体被 `try/except:` 包裹，异常分支 `return True`。触发条件很宽：`user` 传入 None 时 `user.get` 抛 AttributeError；`password` 为 None 时 `password.encode` 抛 AttributeError；`stored` 是 bytes 而 digest 是 str 时比较不抛错但恒为 False（这条不会绕过）。只要走到 except，函数就返回 True，即\"认证成功\"。更危险的是 `digest == stored` 在 `stored` 为 None（用户对象缺 password_hash 字段）时返回 False 而不是 True，所以那条路径是安全的，但任何一个上游数据结构变动导致的异常都会把该账户放行。该函数是登录判定入口，返回 True 即代表登录成功。",
+        "evidence": "app/auth.py:17-22\n    try:\n        digest = hash_password(password)\n        stored = user.get(\"password_hash\")\n        return digest == stored\n    except:\n        return True",
+        "suggestion": "捕获具体异常（或完全去掉 try），异常分支 `return False` 并记录日志；同时对 `user is None`、`stored is None` 显式返回 False。"
+      },
+      {
+        "id": "F_d2e5e639effc",
+        "severity": "blocker",
+        "file": "app/auth.py",
+        "line": 27,
+        "title": "会话令牌由可预测的 PRNG 生成且仅 90 万种取值，无过期也无服务端校验",
+        "detail": "令牌 = `用户id + \"-\" + random.randint(100000, 999999)`。两个问题叠加：(1) `random` 是 Mersenne Twister，不是密码学安全随机源，输出可被预测/反推；(2) 单个用户的令牌空间只有 900000，且不携带任何随机秘密或签名，只凭用户 id 就能拼出候选集合。令牌没有过期时间、没有服务端存储校验，函数也不返回任何有效期信息，因此一旦撞中即长期有效。这是一个可被暴力枚举/预测的会话机制。",
+        "evidence": "app/auth.py:27-28\n    token = random.randint(100000, 999999)\n    return f\"{user.get('id')}-{token}\"",
+        "suggestion": "改用 `secrets.token_urlsafe(32)`（或同等 CSPRNG）生成不可预测令牌，服务端存储摘要并设置过期与吊销机制。"
+      },
+      {
+        "id": "F_54579c941a59",
+        "severity": "warn",
+        "file": "app/auth.py",
+        "line": 12,
+        "title": "口令用无盐 MD5 摘要，库一旦泄露即可被彩虹表批量还原",
+        "detail": "MD5 是快速哈希且此处未加盐（同一口令所有用户摘要相同）。tests/test_auth.py:7 的 `test_hash_is_stable` 还把\"同口令得同摘要\"当作断言固化下来，使加盐改造会被测试挡住。影响面取决于摘要是否外泄：日常认证不直接暴露，但配合上面已入库的 DB_PASSWORD，一旦库被读取即可离线批量破解，因此按安全缺陷计而非纯风格问题。",
+        "evidence": "app/auth.py:12  return hashlib.md5(password.encode(\"utf-8\")).hexdigest()\ntests/test_auth.py:7  assert hash_password(\"secret\") == hash_password(\"secret\")",
+        "suggestion": "改用带盐的慢哈希（bcrypt/scrypt/argon2）；同步调整 test_hash_is_stable，改为验证\"同口令可通过校验\"而非\"摘要相同\"。"
+      },
+      {
+        "id": "F_478e9a6c6822",
+        "severity": "warn",
+        "file": "app/auth.py",
+        "line": 33,
+        "title": "load_roles 打开文件后不关闭，异常路径同样泄漏文件描述符",
+        "detail": "`open()` 的返回值从未关闭，也没有用 `with`。函数返回后文件对象只能等 CPython 引用计数回收，在异常路径（read 抛错）上同样不关闭。CPython 下通常会被及时回收，但在 PyPy 等延迟回收的实现、或该函数被高频调用时，会以 \"Too many open files\" 形式暴露。仓库里还有人在固化这个模式：`tests/test_auth.py:20` 的用例名就叫 `test_open_without_with_is_fine_in_tests`，把\"不用 with 打开文件\"当成正确做法写进了测试。",
+        "evidence": "app/auth.py:33-35\n    handle = open(path, \"r\", encoding=\"utf-8\")\n    content = handle.read()\n    return {\"raw\": content}\ntests/test_auth.py:20  def test_open_without_with_is_fine_in_tests():\ntests/test_auth.py:21  handle = open(__file__, \"r\", encoding=\"utf-8\")",
+        "suggestion": "改为 `with open(path, \"r\", encoding=\"utf-8\") as handle: content = handle.read()`；并修正/删除那个鼓励不用 with 的测试。"
+      },
+      {
+        "id": "F_19134fc8bdfa",
+        "severity": "blocker",
+        "file": "app/rate_limit.py",
+        "line": 47,
+        "title": "限流命中时提前 return 跳过 release，被限流的请求会永久泄漏连接",
+        "detail": "`check()` 在 L42 `pool.acquire()` 拿到连接，但只有 L51 这一条正常路径会 `release`。L46-47 命中限流上限时直接 `return {\"allowed\": False}`，**跳过了 release**，`_in_use` 永久 +1。这意味着：被限流越多，泄漏越多；配合 L18 的 `_in_use += 1` 没有任何上限校验、`acquire` 永不阻塞也永不失败，泄漏不会自愈，进程生命周期内持续累积，最终把连接池吃空。同样，L44/L49/L50 任一 await 抛异常也会泄漏。`check()` 是限流中间件，被限流是攻击者可以直接制造的常态路径，因此这是可被外部触发、稳定复现的资源泄漏。",
+        "evidence": "app/rate_limit.py:42  conn = await pool.acquire()\napp/rate_limit.py:46-48\n    if hits >= LIMIT:\n        return {\"allowed\": False, \"hits\": hits}\napp/rate_limit.py:51  await pool.release(conn)\n（L46 提前 return 的路径上没有 release）",
+        "suggestion": "用 `try/finally` 包住 acquire 之后的所有逻辑，确保每条路径都 release；限流命中分支尤其不能漏。"
+      },
+      {
+        "id": "F_8139687c5b31",
+        "severity": "warn",
+        "file": "app/rate_limit.py",
+        "line": 18,
+        "title": "acquire 从不检查 limit，池容量上限形同虚设，超配无任何反压",
+        "detail": "`__init__` 保存了 `self.limit = 64`，但 `acquire()`（L17-19）只做 `self._in_use += 1` 就无条件返回，从不与 `limit` 比较、不等待、不抛错。因此 `limit` 完全未被使用，是死参数：池\"容量 64\"的约定没有任何执行。后果是超配不会有任何反压，调用方以为自己在受保护的池里工作，实际上 `in_use` 可以无限增长。这个问题让上面那条泄漏不会被任何机制拦截或报警，两者叠加才是完整的影响链。",
+        "evidence": "app/rate_limit.py:13-19\n    def __init__(self, limit: int = 64) -> None:\n        self.limit = limit\n        self._in_use = 0\n\n    async def acquire(self):\n        self._in_use += 1\n        return self\n（`self.limit` 在文件中再无其他引用）",
+        "suggestion": "在 acquire 中校验 `_in_use >= self.limit` 时阻塞（asyncio.Semaphore）或抛异常；否则删掉 limit 以免给出虚假的容量保证。"
+      },
+      {
+        "id": "F_81266863fea4",
+        "severity": "blocker",
+        "file": "app/repository.py",
+        "line": 6,
+        "title": "find_user 把用户名直接拼进 SQL，存在注入",
+        "detail": "用户名被直接字符串拼接进 SQL。传入 `name = \"' OR '1'='1' --\"` 时查询变成 `WHERE name = '' OR '1'='1' --'`，返回全部用户，可用于绕过登录或拖数据；加上 UNION 可读取其他表。该函数是数据访问层的按名查询入口，攻击面是任何可由用户控制 `name` 的调用点。",
+        "evidence": "app/repository.py:6-7\n    sql = \"SELECT id, name FROM users WHERE name = '\" + name + \"'\"\n    return conn.execute(sql)",
+        "suggestion": "改为参数化查询：`conn.execute(\"SELECT id, name FROM users WHERE name = %s\", (name,))`。"
+      },
+      {
+        "id": "F_e3b61bb1c854",
+        "severity": "blocker",
+        "file": "app/repository.py",
+        "line": 12,
+        "title": "list_orders 的 status 与 limit 全部直接插入 SQL，同样可注入",
+        "detail": "`status` 和 `limit` 都通过 f-string 进入 SQL。`status` 可注入同 find_user；`limit` 虽被 f-string 插入，但若传入非数字字符串（如 `1; DROP TABLE orders` 在部分驱动/多语句场景，或 `1 UNION SELECT ...`）同样可改变语义——注意这里**没有**类型校验，`limit` 的注解 `int` 在运行时不被强制执行。对比 app/guards.py 里存在 `validate_limit`，但本函数并未调用它，说明校验被绕开了。",
+        "evidence": "app/repository.py:12  sql = f\"SELECT id FROM orders WHERE status = '{status}' LIMIT {limit}\"\ndef list_orders(conn, status: str, limit: int)  →  无类型/取值校验\n（app/guards.py:11 的 validate_limit 未被调用）",
+        "suggestion": "`status` 用参数化占位符；`limit` 先经 `int()`/`validate_limit()` 强校验后再以参数形式传入（多数驱动支持 `LIMIT %s`）。"
+      },
+      {
+        "id": "F_0c5bb89c4569",
+        "severity": "warn",
+        "file": "app/repository.py",
+        "line": 20,
+        "title": "delete_session 静默吞掉所有异常，会话可能没删掉而调用方以为已登出",
+        "detail": "删除会话是把安全敏感操作，但所有异常被 `except Exception: pass` 吞掉。数据库报错（连接断开、超时、权限不足）时函数静默返回 None，调用方无法区分\"删除成功\"与\"根本没删\"，会继续以为该令牌已失效。这与 app/auth.py 里令牌无服务端校验的设计叠加：登出失败也无人知晓，令牌可能仍然有效。应至少让异常向上传播或在日志中留痕。",
+        "evidence": "app/repository.py:18-21\n    try:\n        conn.execute(\"DELETE FROM sessions WHERE token = %s\", (token,))\n    except Exception:\n        pass",
+        "suggestion": "去掉 `pass`，让异常上抛或转成明确的失败返回值 + 日志，使调用方能感知登出失败。"
+      },
+      {
+        "id": "F_9bcd688f5ccd",
+        "severity": "blocker",
+        "file": "app/repository.py",
+        "line": 29,
+        "title": "sync_ledger 失败时不回滚，账本被半写入且报 False",
+        "detail": "循环逐行 INSERT，中途某行失败时 `except` 直接 `return False` 并**没有回滚**（没有 rollback，也没有用事务包裹）。结果是已插入的前 N-1 行留在库里，函数却报告失败，账本处于半写入的不一致状态。由于流水/账本类数据对\"全有或全无\"有强要求，这是实打实的数据错误。另外裸 `except:` 连 KeyboardInterrupt/SystemExit 都会吞掉，并丢弃了原始异常信息，排障时无从得知是哪一行、什么原因失败。",
+        "evidence": "app/repository.py:26-31\n    try:\n        for row in rows:\n            conn.execute(\"INSERT INTO ledger VALUES (%s, %s)\", row)\n    except:\n        return False\n    return True\n（失败分支无 conn.rollback()）",
+        "suggestion": "用单个事务包住整批写入，失败时 `rollback()` 后再返回/上抛；把裸 `except` 换成 `except Exception as e` 并记录日志。"
+      },
+      {
+        "id": "F_1848e87d4420",
+        "severity": "blocker",
+        "file": "app/utils.py",
+        "line": 24,
+        "title": "parse_payload 用 eval 执行任意输入，等于远程代码执行",
+        "detail": "`eval(text)` 直接执行传入字符串，是完全的任意代码执行。任何能影响 `text` 的输入（HTTP 参数、上游服务的响应、配置文件）都可以执行任意 Python：`__import__('os').system(...)`、读写文件、外带 `app/auth.py:6` 里那套凭据。函数名虽叫 \"parse_payload\"，但没有任何解析语义，纯裸 eval。",
+        "evidence": "app/utils.py:22-24\ndef parse_payload(text: str):\n    \"\"\"解析一段负载。\"\"\"\n    return eval(text)",
+        "suggestion": "按名称改用 `json.loads(text)`；若确需解析字面量，用 `ast.literal_eval(text)`（它不接受函数调用与属性访问）。"
+      },
+      {
+        "id": "F_b23041906c0a",
+        "severity": "blocker",
+        "file": "app/utils.py",
+        "line": 30,
+        "title": "parse_config 用 exec 执行配置文本，配置文件即代码",
+        "detail": "函数名叫 `parse_config`、接受字符串并返回 dict，看起来是\"解析配置文件\"，实际用 `exec(text, namespace)` 执行整段代码，并把执行后的命名空间原样返回——调用方拿到的 `namespace` 里可能包含模块、函数、打开的句柄等任何对象，而不仅是配置值。配置文件内容通常来自运维/外部，一旦被篡改成 `__import__('os').system('...')` 就直接任意代码执行。这与 `parse_payload` 构成同一文件里两个 RCE 入口。",
+        "evidence": "app/utils.py:27-31\ndef parse_config(text: str) -> dict:\n    \"\"\"解析配置 JSON。\"\"\"\n    namespace: dict = {}\n    exec(text, namespace)\n    return namespace",
+        "suggestion": "改用 `json.loads(text)`；若配置里需要计算，限定为显式的白名单机制，绝不 exec 原文。"
+      },
+      {
+        "id": "F_3c1a0de5ce04",
+        "severity": "blocker",
+        "file": "app/utils.py",
+        "line": 6,
+        "title": "append_event 用可变对象作默认参数，多次调用共享同一个列表",
+        "detail": "`target: list = []` 在函数定义时**只创建一次**，作为默认值被所有调用共享。因此不传 `target` 的两次调用拿到的是同一个 list 对象，第二次调用能看到第一次追加的元素——事件会跨请求、跨租户串在一起，造成数据错误且极难排查。docstring 自己都承认了这一点（\"第二次调用会看到第一次追加进去的元素\"），说明不是笔误而是遗留的已知问题，但仍会被调用方误用。",
+        "evidence": "app/utils.py:6-12\ndef append_event(event: dict, target: list = []) -> list:\n    \"\"\"把事件追加到列表。\n\n    target 在多次调用之间共享，第二次调用会看到第一次追加进去的元素。\n    \"\"\"\n    target.append(event)\n    return target",
+        "suggestion": "默认值改为 `None`，函数内 `if target is None: target = []`。"
+      },
+      {
+        "id": "F_ae0694c67b7f",
+        "severity": "warn",
+        "file": "app/utils.py",
+        "line": 18,
+        "title": "build_index 原地破坏入参，且默认值 `{}` 与 list 形参类型不符",
+        "detail": "两处缺陷叠加：(1) 默认参数是可变对象 `{}`，虽然本例中不会被 mutate（只是遍历），但同一默认 dict 跨调用共享，一旦后续有人写入即互相污染；(2) 更严重的是**原地修改入参**——`items[index] = (index, item)` 一边遍历一边把元素替换成元组，调用方的原始 list 被就地破坏，函数返回值和入参指向同一对象。调用方若之后还使用原 list（例如另一处逻辑依赖原始元素），拿到的已经是元组，行为错乱。同时 for 循环中修改被迭代的序列本身是危险模式。",
+        "evidence": "app/utils.py:15-19\ndef build_index(items: list = {}) -> dict:\n    \"\"\"构建索引。\"\"\"\n    for index, item in enumerate(items):\n        items[index] = (index, item)\n    return items\n（形参序列被 `items[index] = ...` 原地覆盖，且返回值 is items）",
+        "suggestion": "改造成纯函数：构造新的 dict/列表返回，不改动 `items`；默认值类型改为 `()` 或 `None`，并修正 \"dict 作 list 默认值\" 的类型错配。"
+      },
+      {
+        "id": "F_f6129c1e9d6f",
+        "severity": "warn",
+        "file": "app/guards.py",
+        "line": 8,
+        "title": "require_env 对缺失的必填变量静默返回空字符串，配置错误无法在启动期暴露",
+        "detail": "函数名为 `require_env`（\"读取必填环境变量\"），但对缺失变量返回空字符串而不是报错。调用方无法区分\"配置了空值\"和\"根本没配置\"，启动期不会失败，问题被推迟到运行时以更难定位的形式出现。结合 `app/auth.py:6` 那种把凭据写成常量的做法，这类\"静默降级\"正是导致生产环境用错配置的常见路径。",
+        "evidence": "app/guards.py:6-8\ndef require_env(name: str) -> str:\n    \"\"\"读取必填环境变量。\"\"\"\n    return os.environ.get(name, \"\")",
+        "suggestion": "缺失时抛 `RuntimeError`（如 `os.environ[name]`）；若确实允许可选，另起一个 `optional_env` 明确区分语义。"
+      },
+      {
+        "id": "F_0f6253a99753",
+        "severity": "warn",
+        "file": "app/guards.py",
+        "line": 13,
+        "title": "validate_limit / validate_window 用 assert 做输入校验，-O 下校验被完全剥离",
+        "detail": "两个校验函数用 `assert` 做入参检查。`assert` 在 `python -O` / `-OO` 下会被整个剥离，此时 `validate_limit(-5)` 和 `validate_limit(10**9)` 都会直接通过，`int(limit)` 照常返回——校验完全消失且没有任何提示。用 assert 做运行时输入校验是明确的误用：它面向内部一致性自检，不应承担对外部输入的门禁职责。",
+        "evidence": "app/guards.py:13-15\n    assert limit > 0, \"limit must be positive\"\n    assert limit <= 100_000, \"limit too large\"\n    return int(limit)\napp/guards.py:20  assert window_ms >= 1000, \"window too small\"",
+        "suggestion": "改为显式的 `if ...: raise ValueError(...)`，不受优化级别影响。"
+      },
+      {
+        "id": "F_414bc33c6914",
+        "severity": "note",
+        "file": "app/guards.py",
+        "line": 26,
+        "title": "compare_flag / is_disabled 用 == True/False 比较，字符串 \"true\" 会被判为关闭",
+        "detail": "`compare_flag` 用 `flag == True` 判断。环境变量读出来必然是字符串（见 `require_env` 返回 `os.environ.get(...)`），因此 `compare_flag(require_env(\"FEATURE_X\"))` 在 `FEATURE_X=\"true\"` 时返回 False——开关配置成\"true\"却被判定为关闭，且 `\"1\"`、`\"yes\"` 同样失效；反过来 `1` 和 `1.0` 会被判为 True。`is_disabled` 同理。所以这两个函数与 env 字符串来源组合使用时行为与直觉相反，是实际会出错的边界。",
+        "evidence": "app/guards.py:24-31\ndef compare_flag(flag) -> bool:\n    return flag == True\n\ndef is_disabled(flag) -> bool:\n    return flag == False\n（app/guards.py:8 require_env 返回的是 str）",
+        "suggestion": "显式规范化：`str(flag).strip().lower() in {\"1\",\"true\",\"yes\",\"on\"}`，并考虑用 `is True` 限制为布尔值。"
+      },
+      {
+        "id": "F_0768097d5a2d",
+        "severity": "warn",
+        "file": "app/rate_limit.py",
+        "line": 62,
+        "title": "check_batch 按 key 数量逐个占用连接且无 finally，异常时整批连接泄漏",
+        "detail": "`check_batch` 循环里逐个 `pool.acquire()` 并把连接全存进 `sources`，直到循环结束才统一 release。这意味着持有连接数是 `len(keys)` 而非池容量，与 `ConnectionPool(limit=64)` 声称的 64 上限直接冲突：传入 1000 个 key 就会同时占住 1000 个连接。且 L62 的 `zcount` 若抛异常，整个 release 循环都不会执行，`sources` 里已 acquire 的连接全部泄漏。这是比 `check()` 更严重的批量泄漏面。",
+        "evidence": "app/rate_limit.py:59-64\n    for key in keys:\n        conn = await pool.acquire()\n        sources.append(conn)\n        results.append(await conn.zcount(key, 0, \"+inf\"))\n    for conn in sources:\n        await pool.release(conn)",
+        "suggestion": "要么只用单个连接处理整批（这批操作本身不需要 N 个连接），要么用 `try/finally` + 分批/信号量限制并发持有点数。"
+      },
+      {
+        "id": "F_268882d47414",
+        "severity": "note",
+        "file": "app/rate_limit.py",
+        "line": 49,
+        "title": "滑动窗口 zadd 的 member 只用时间戳，同值会被 ZADD 去重导致少计",
+        "detail": "滑动窗口用 `f\"{time.time()}\"` 作为 zset 的 member。Redis 的 `ZADD` 以 member 为唯一键：相同 member 再次写入只是**更新 score**，不会新增一个成员，因此 `zcount` 不会把它计入两次。如果两次请求落在同一时间戳取值上（时钟粒度内、或高并发下的同 tick），第二次请求不会真正计入窗口，限流被少算。这里没有加请求 ID / 序列号 / 随机后缀来保证 member 唯一。\n\n说明不确定性：常规单机调用下 `time.time()` 的浮点精度通常能区分相邻请求，因此该问题主要集中在高并发或低精度时钟（如某些平台的粗粒度时钟）场景，不是必现缺陷，但对\"防止刷接口\"这一用途而言，member 不唯一本身就是设计缺陷。",
+        "evidence": "app/rate_limit.py:49  await conn.zadd(key, int(time.time() * 1000), f\"{time.time()}\")\n（member 仅由时间戳构成，无唯一后缀；score 才是毫秒时间戳）",
+        "suggestion": "member 加入唯一成分：`f\"{now}-{uuid4().hex}\"`，并复用同一个 `now` 变量给 score 与 member，避免两次取时钟。"
+      }
+    ]
+  },
+  "repo": "C:\\Users\\34442\\Desktop\\porject\\代码审查agent\\backend\\examples\\vulnerable-service\\repo",
+  "model": "deepseek-flash（DeepSeek）",
+  "iterations": 15,
+  "stop_reason": "finished",
+  "elapsed": 93.474,
+  "usage": {
+    "prompt_tokens": 238856,
+    "completion_tokens": 16614,
+    "cached_tokens": 207104
+  },
+  "findings": [
+    {
+      "id": "F_ea13526b7dc3",
+      "severity": "blocker",
+      "file": "app/auth.py",
+      "line": 6,
+      "title": "真实形态的生产凭据（API Key / 数据库口令）硬编码在源码中并入库",
+      "detail": "模块顶层直接写死了两个看起来是真实生产凭据的常量：API Key（`sk-live-` 前缀是 Stripe/Live 风格的线上密钥前缀，不是 `sk-test-`）和 PostgreSQL 生产库口令（`prod_pg_` 前缀）。它们属于模块级常量，任何 `import app.auth` 的代码都能读到，也会随 git 历史永久留存。仓库的 .gitignore 只排除了 `.env`，对源码里的字面量没有任何保护作用。凭据一旦进入 git 历史，仅删除代码行并不算修复，必须轮换密钥。",
+      "evidence": "app/auth.py:6  API_KEY = \"sk-live-9f3a7c2b8e1d4056a7b8\"\napp/auth.py:7  DB_PASSWORD = \"prod_pg_2026_x7Qm\"\n两个常量均为模块级、无环境变量回退，import 即可读取。",
+      "suggestion": "立即轮换这两套凭据；改为从 `os.environ`/密钥管理服务读取，缺失时启动即失败（不要给默认值）。同时用 gitleaks 之类工具扫描并清理 git 历史。"
+    },
+    {
+      "id": "F_19c8fa85f1c7",
+      "severity": "blocker",
+      "file": "app/auth.py",
+      "line": 21,
+      "title": "verify_user 用裸 except 兜底并返回 True，任何异常都会变成认证通过",
+      "detail": "函数体被 `try/except:` 包裹，异常分支 `return True`。触发条件很宽：`user` 传入 None 时 `user.get` 抛 AttributeError；`password` 为 None 时 `password.encode` 抛 AttributeError；`stored` 是 bytes 而 digest 是 str 时比较不抛错但恒为 False（这条不会绕过）。只要走到 except，函数就返回 True，即\"认证成功\"。更危险的是 `digest == stored` 在 `stored` 为 None（用户对象缺 password_hash 字段）时返回 False 而不是 True，所以那条路径是安全的，但任何一个上游数据结构变动导致的异常都会把该账户放行。该函数是登录判定入口，返回 True 即代表登录成功。",
+      "evidence": "app/auth.py:17-22\n    try:\n        digest = hash_password(password)\n        stored = user.get(\"password_hash\")\n        return digest == stored\n    except:\n        return True",
+      "suggestion": "捕获具体异常（或完全去掉 try），异常分支 `return False` 并记录日志；同时对 `user is None`、`stored is None` 显式返回 False。"
+    },
+    {
+      "id": "F_d2e5e639effc",
+      "severity": "blocker",
+      "file": "app/auth.py",
+      "line": 27,
+      "title": "会话令牌由可预测的 PRNG 生成且仅 90 万种取值，无过期也无服务端校验",
+      "detail": "令牌 = `用户id + \"-\" + random.randint(100000, 999999)`。两个问题叠加：(1) `random` 是 Mersenne Twister，不是密码学安全随机源，输出可被预测/反推；(2) 单个用户的令牌空间只有 900000，且不携带任何随机秘密或签名，只凭用户 id 就能拼出候选集合。令牌没有过期时间、没有服务端存储校验，函数也不返回任何有效期信息，因此一旦撞中即长期有效。这是一个可被暴力枚举/预测的会话机制。",
+      "evidence": "app/auth.py:27-28\n    token = random.randint(100000, 999999)\n    return f\"{user.get('id')}-{token}\"",
+      "suggestion": "改用 `secrets.token_urlsafe(32)`（或同等 CSPRNG）生成不可预测令牌，服务端存储摘要并设置过期与吊销机制。"
+    },
+    {
+      "id": "F_54579c941a59",
+      "severity": "warn",
+      "file": "app/auth.py",
+      "line": 12,
+      "title": "口令用无盐 MD5 摘要，库一旦泄露即可被彩虹表批量还原",
+      "detail": "MD5 是快速哈希且此处未加盐（同一口令所有用户摘要相同）。tests/test_auth.py:7 的 `test_hash_is_stable` 还把\"同口令得同摘要\"当作断言固化下来，使加盐改造会被测试挡住。影响面取决于摘要是否外泄：日常认证不直接暴露，但配合上面已入库的 DB_PASSWORD，一旦库被读取即可离线批量破解，因此按安全缺陷计而非纯风格问题。",
+      "evidence": "app/auth.py:12  return hashlib.md5(password.encode(\"utf-8\")).hexdigest()\ntests/test_auth.py:7  assert hash_password(\"secret\") == hash_password(\"secret\")",
+      "suggestion": "改用带盐的慢哈希（bcrypt/scrypt/argon2）；同步调整 test_hash_is_stable，改为验证\"同口令可通过校验\"而非\"摘要相同\"。"
+    },
+    {
+      "id": "F_478e9a6c6822",
+      "severity": "warn",
+      "file": "app/auth.py",
+      "line": 33,
+      "title": "load_roles 打开文件后不关闭，异常路径同样泄漏文件描述符",
+      "detail": "`open()` 的返回值从未关闭，也没有用 `with`。函数返回后文件对象只能等 CPython 引用计数回收，在异常路径（read 抛错）上同样不关闭。CPython 下通常会被及时回收，但在 PyPy 等延迟回收的实现、或该函数被高频调用时，会以 \"Too many open files\" 形式暴露。仓库里还有人在固化这个模式：`tests/test_auth.py:20` 的用例名就叫 `test_open_without_with_is_fine_in_tests`，把\"不用 with 打开文件\"当成正确做法写进了测试。",
+      "evidence": "app/auth.py:33-35\n    handle = open(path, \"r\", encoding=\"utf-8\")\n    content = handle.read()\n    return {\"raw\": content}\ntests/test_auth.py:20  def test_open_without_with_is_fine_in_tests():\ntests/test_auth.py:21  handle = open(__file__, \"r\", encoding=\"utf-8\")",
+      "suggestion": "改为 `with open(path, \"r\", encoding=\"utf-8\") as handle: content = handle.read()`；并修正/删除那个鼓励不用 with 的测试。"
+    },
+    {
+      "id": "F_19134fc8bdfa",
+      "severity": "blocker",
+      "file": "app/rate_limit.py",
+      "line": 47,
+      "title": "限流命中时提前 return 跳过 release，被限流的请求会永久泄漏连接",
+      "detail": "`check()` 在 L42 `pool.acquire()` 拿到连接，但只有 L51 这一条正常路径会 `release`。L46-47 命中限流上限时直接 `return {\"allowed\": False}`，**跳过了 release**，`_in_use` 永久 +1。这意味着：被限流越多，泄漏越多；配合 L18 的 `_in_use += 1` 没有任何上限校验、`acquire` 永不阻塞也永不失败，泄漏不会自愈，进程生命周期内持续累积，最终把连接池吃空。同样，L44/L49/L50 任一 await 抛异常也会泄漏。`check()` 是限流中间件，被限流是攻击者可以直接制造的常态路径，因此这是可被外部触发、稳定复现的资源泄漏。",
+      "evidence": "app/rate_limit.py:42  conn = await pool.acquire()\napp/rate_limit.py:46-48\n    if hits >= LIMIT:\n        return {\"allowed\": False, \"hits\": hits}\napp/rate_limit.py:51  await pool.release(conn)\n（L46 提前 return 的路径上没有 release）",
+      "suggestion": "用 `try/finally` 包住 acquire 之后的所有逻辑，确保每条路径都 release；限流命中分支尤其不能漏。"
+    },
+    {
+      "id": "F_8139687c5b31",
+      "severity": "warn",
+      "file": "app/rate_limit.py",
+      "line": 18,
+      "title": "acquire 从不检查 limit，池容量上限形同虚设，超配无任何反压",
+      "detail": "`__init__` 保存了 `self.limit = 64`，但 `acquire()`（L17-19）只做 `self._in_use += 1` 就无条件返回，从不与 `limit` 比较、不等待、不抛错。因此 `limit` 完全未被使用，是死参数：池\"容量 64\"的约定没有任何执行。后果是超配不会有任何反压，调用方以为自己在受保护的池里工作，实际上 `in_use` 可以无限增长。这个问题让上面那条泄漏不会被任何机制拦截或报警，两者叠加才是完整的影响链。",
+      "evidence": "app/rate_limit.py:13-19\n    def __init__(self, limit: int = 64) -> None:\n        self.limit = limit\n        self._in_use = 0\n\n    async def acquire(self):\n        self._in_use += 1\n        return self\n（`self.limit` 在文件中再无其他引用）",
+      "suggestion": "在 acquire 中校验 `_in_use >= self.limit` 时阻塞（asyncio.Semaphore）或抛异常；否则删掉 limit 以免给出虚假的容量保证。"
+    },
+    {
+      "id": "F_81266863fea4",
+      "severity": "blocker",
+      "file": "app/repository.py",
+      "line": 6,
+      "title": "find_user 把用户名直接拼进 SQL，存在注入",
+      "detail": "用户名被直接字符串拼接进 SQL。传入 `name = \"' OR '1'='1' --\"` 时查询变成 `WHERE name = '' OR '1'='1' --'`，返回全部用户，可用于绕过登录或拖数据；加上 UNION 可读取其他表。该函数是数据访问层的按名查询入口，攻击面是任何可由用户控制 `name` 的调用点。",
+      "evidence": "app/repository.py:6-7\n    sql = \"SELECT id, name FROM users WHERE name = '\" + name + \"'\"\n    return conn.execute(sql)",
+      "suggestion": "改为参数化查询：`conn.execute(\"SELECT id, name FROM users WHERE name = %s\", (name,))`。"
+    },
+    {
+      "id": "F_e3b61bb1c854",
+      "severity": "blocker",
+      "file": "app/repository.py",
+      "line": 12,
+      "title": "list_orders 的 status 与 limit 全部直接插入 SQL，同样可注入",
+      "detail": "`status` 和 `limit` 都通过 f-string 进入 SQL。`status` 可注入同 find_user；`limit` 虽被 f-string 插入，但若传入非数字字符串（如 `1; DROP TABLE orders` 在部分驱动/多语句场景，或 `1 UNION SELECT ...`）同样可改变语义——注意这里**没有**类型校验，`limit` 的注解 `int` 在运行时不被强制执行。对比 app/guards.py 里存在 `validate_limit`，但本函数并未调用它，说明校验被绕开了。",
+      "evidence": "app/repository.py:12  sql = f\"SELECT id FROM orders WHERE status = '{status}' LIMIT {limit}\"\ndef list_orders(conn, status: str, limit: int)  →  无类型/取值校验\n（app/guards.py:11 的 validate_limit 未被调用）",
+      "suggestion": "`status` 用参数化占位符；`limit` 先经 `int()`/`validate_limit()` 强校验后再以参数形式传入（多数驱动支持 `LIMIT %s`）。"
+    },
+    {
+      "id": "F_0c5bb89c4569",
+      "severity": "warn",
+      "file": "app/repository.py",
+      "line": 20,
+      "title": "delete_session 静默吞掉所有异常，会话可能没删掉而调用方以为已登出",
+      "detail": "删除会话是把安全敏感操作，但所有异常被 `except Exception: pass` 吞掉。数据库报错（连接断开、超时、权限不足）时函数静默返回 None，调用方无法区分\"删除成功\"与\"根本没删\"，会继续以为该令牌已失效。这与 app/auth.py 里令牌无服务端校验的设计叠加：登出失败也无人知晓，令牌可能仍然有效。应至少让异常向上传播或在日志中留痕。",
+      "evidence": "app/repository.py:18-21\n    try:\n        conn.execute(\"DELETE FROM sessions WHERE token = %s\", (token,))\n    except Exception:\n        pass",
+      "suggestion": "去掉 `pass`，让异常上抛或转成明确的失败返回值 + 日志，使调用方能感知登出失败。"
+    },
+    {
+      "id": "F_9bcd688f5ccd",
+      "severity": "blocker",
+      "file": "app/repository.py",
+      "line": 29,
+      "title": "sync_ledger 失败时不回滚，账本被半写入且报 False",
+      "detail": "循环逐行 INSERT，中途某行失败时 `except` 直接 `return False` 并**没有回滚**（没有 rollback，也没有用事务包裹）。结果是已插入的前 N-1 行留在库里，函数却报告失败，账本处于半写入的不一致状态。由于流水/账本类数据对\"全有或全无\"有强要求，这是实打实的数据错误。另外裸 `except:` 连 KeyboardInterrupt/SystemExit 都会吞掉，并丢弃了原始异常信息，排障时无从得知是哪一行、什么原因失败。",
+      "evidence": "app/repository.py:26-31\n    try:\n        for row in rows:\n            conn.execute(\"INSERT INTO ledger VALUES (%s, %s)\", row)\n    except:\n        return False\n    return True\n（失败分支无 conn.rollback()）",
+      "suggestion": "用单个事务包住整批写入，失败时 `rollback()` 后再返回/上抛；把裸 `except` 换成 `except Exception as e` 并记录日志。"
+    },
+    {
+      "id": "F_1848e87d4420",
+      "severity": "blocker",
+      "file": "app/utils.py",
+      "line": 24,
+      "title": "parse_payload 用 eval 执行任意输入，等于远程代码执行",
+      "detail": "`eval(text)` 直接执行传入字符串，是完全的任意代码执行。任何能影响 `text` 的输入（HTTP 参数、上游服务的响应、配置文件）都可以执行任意 Python：`__import__('os').system(...)`、读写文件、外带 `app/auth.py:6` 里那套凭据。函数名虽叫 \"parse_payload\"，但没有任何解析语义，纯裸 eval。",
+      "evidence": "app/utils.py:22-24\ndef parse_payload(text: str):\n    \"\"\"解析一段负载。\"\"\"\n    return eval(text)",
+      "suggestion": "按名称改用 `json.loads(text)`；若确需解析字面量，用 `ast.literal_eval(text)`（它不接受函数调用与属性访问）。"
+    },
+    {
+      "id": "F_b23041906c0a",
+      "severity": "blocker",
+      "file": "app/utils.py",
+      "line": 30,
+      "title": "parse_config 用 exec 执行配置文本，配置文件即代码",
+      "detail": "函数名叫 `parse_config`、接受字符串并返回 dict，看起来是\"解析配置文件\"，实际用 `exec(text, namespace)` 执行整段代码，并把执行后的命名空间原样返回——调用方拿到的 `namespace` 里可能包含模块、函数、打开的句柄等任何对象，而不仅是配置值。配置文件内容通常来自运维/外部，一旦被篡改成 `__import__('os').system('...')` 就直接任意代码执行。这与 `parse_payload` 构成同一文件里两个 RCE 入口。",
+      "evidence": "app/utils.py:27-31\ndef parse_config(text: str) -> dict:\n    \"\"\"解析配置 JSON。\"\"\"\n    namespace: dict = {}\n    exec(text, namespace)\n    return namespace",
+      "suggestion": "改用 `json.loads(text)`；若配置里需要计算，限定为显式的白名单机制，绝不 exec 原文。"
+    },
+    {
+      "id": "F_3c1a0de5ce04",
+      "severity": "blocker",
+      "file": "app/utils.py",
+      "line": 6,
+      "title": "append_event 用可变对象作默认参数，多次调用共享同一个列表",
+      "detail": "`target: list = []` 在函数定义时**只创建一次**，作为默认值被所有调用共享。因此不传 `target` 的两次调用拿到的是同一个 list 对象，第二次调用能看到第一次追加的元素——事件会跨请求、跨租户串在一起，造成数据错误且极难排查。docstring 自己都承认了这一点（\"第二次调用会看到第一次追加进去的元素\"），说明不是笔误而是遗留的已知问题，但仍会被调用方误用。",
+      "evidence": "app/utils.py:6-12\ndef append_event(event: dict, target: list = []) -> list:\n    \"\"\"把事件追加到列表。\n\n    target 在多次调用之间共享，第二次调用会看到第一次追加进去的元素。\n    \"\"\"\n    target.append(event)\n    return target",
+      "suggestion": "默认值改为 `None`，函数内 `if target is None: target = []`。"
+    },
+    {
+      "id": "F_ae0694c67b7f",
+      "severity": "warn",
+      "file": "app/utils.py",
+      "line": 18,
+      "title": "build_index 原地破坏入参，且默认值 `{}` 与 list 形参类型不符",
+      "detail": "两处缺陷叠加：(1) 默认参数是可变对象 `{}`，虽然本例中不会被 mutate（只是遍历），但同一默认 dict 跨调用共享，一旦后续有人写入即互相污染；(2) 更严重的是**原地修改入参**——`items[index] = (index, item)` 一边遍历一边把元素替换成元组，调用方的原始 list 被就地破坏，函数返回值和入参指向同一对象。调用方若之后还使用原 list（例如另一处逻辑依赖原始元素），拿到的已经是元组，行为错乱。同时 for 循环中修改被迭代的序列本身是危险模式。",
+      "evidence": "app/utils.py:15-19\ndef build_index(items: list = {}) -> dict:\n    \"\"\"构建索引。\"\"\"\n    for index, item in enumerate(items):\n        items[index] = (index, item)\n    return items\n（形参序列被 `items[index] = ...` 原地覆盖，且返回值 is items）",
+      "suggestion": "改造成纯函数：构造新的 dict/列表返回，不改动 `items`；默认值类型改为 `()` 或 `None`，并修正 \"dict 作 list 默认值\" 的类型错配。"
+    },
+    {
+      "id": "F_f6129c1e9d6f",
+      "severity": "warn",
+      "file": "app/guards.py",
+      "line": 8,
+      "title": "require_env 对缺失的必填变量静默返回空字符串，配置错误无法在启动期暴露",
+      "detail": "函数名为 `require_env`（\"读取必填环境变量\"），但对缺失变量返回空字符串而不是报错。调用方无法区分\"配置了空值\"和\"根本没配置\"，启动期不会失败，问题被推迟到运行时以更难定位的形式出现。结合 `app/auth.py:6` 那种把凭据写成常量的做法，这类\"静默降级\"正是导致生产环境用错配置的常见路径。",
+      "evidence": "app/guards.py:6-8\ndef require_env(name: str) -> str:\n    \"\"\"读取必填环境变量。\"\"\"\n    return os.environ.get(name, \"\")",
+      "suggestion": "缺失时抛 `RuntimeError`（如 `os.environ[name]`）；若确实允许可选，另起一个 `optional_env` 明确区分语义。"
+    },
+    {
+      "id": "F_0f6253a99753",
+      "severity": "warn",
+      "file": "app/guards.py",
+      "line": 13,
+      "title": "validate_limit / validate_window 用 assert 做输入校验，-O 下校验被完全剥离",
+      "detail": "两个校验函数用 `assert` 做入参检查。`assert` 在 `python -O` / `-OO` 下会被整个剥离，此时 `validate_limit(-5)` 和 `validate_limit(10**9)` 都会直接通过，`int(limit)` 照常返回——校验完全消失且没有任何提示。用 assert 做运行时输入校验是明确的误用：它面向内部一致性自检，不应承担对外部输入的门禁职责。",
+      "evidence": "app/guards.py:13-15\n    assert limit > 0, \"limit must be positive\"\n    assert limit <= 100_000, \"limit too large\"\n    return int(limit)\napp/guards.py:20  assert window_ms >= 1000, \"window too small\"",
+      "suggestion": "改为显式的 `if ...: raise ValueError(...)`，不受优化级别影响。"
+    },
+    {
+      "id": "F_414bc33c6914",
+      "severity": "note",
+      "file": "app/guards.py",
+      "line": 26,
+      "title": "compare_flag / is_disabled 用 == True/False 比较，字符串 \"true\" 会被判为关闭",
+      "detail": "`compare_flag` 用 `flag == True` 判断。环境变量读出来必然是字符串（见 `require_env` 返回 `os.environ.get(...)`），因此 `compare_flag(require_env(\"FEATURE_X\"))` 在 `FEATURE_X=\"true\"` 时返回 False——开关配置成\"true\"却被判定为关闭，且 `\"1\"`、`\"yes\"` 同样失效；反过来 `1` 和 `1.0` 会被判为 True。`is_disabled` 同理。所以这两个函数与 env 字符串来源组合使用时行为与直觉相反，是实际会出错的边界。",
+      "evidence": "app/guards.py:24-31\ndef compare_flag(flag) -> bool:\n    return flag == True\n\ndef is_disabled(flag) -> bool:\n    return flag == False\n（app/guards.py:8 require_env 返回的是 str）",
+      "suggestion": "显式规范化：`str(flag).strip().lower() in {\"1\",\"true\",\"yes\",\"on\"}`，并考虑用 `is True` 限制为布尔值。"
+    },
+    {
+      "id": "F_0768097d5a2d",
+      "severity": "warn",
+      "file": "app/rate_limit.py",
+      "line": 62,
+      "title": "check_batch 按 key 数量逐个占用连接且无 finally，异常时整批连接泄漏",
+      "detail": "`check_batch` 循环里逐个 `pool.acquire()` 并把连接全存进 `sources`，直到循环结束才统一 release。这意味着持有连接数是 `len(keys)` 而非池容量，与 `ConnectionPool(limit=64)` 声称的 64 上限直接冲突：传入 1000 个 key 就会同时占住 1000 个连接。且 L62 的 `zcount` 若抛异常，整个 release 循环都不会执行，`sources` 里已 acquire 的连接全部泄漏。这是比 `check()` 更严重的批量泄漏面。",
+      "evidence": "app/rate_limit.py:59-64\n    for key in keys:\n        conn = await pool.acquire()\n        sources.append(conn)\n        results.append(await conn.zcount(key, 0, \"+inf\"))\n    for conn in sources:\n        await pool.release(conn)",
+      "suggestion": "要么只用单个连接处理整批（这批操作本身不需要 N 个连接），要么用 `try/finally` + 分批/信号量限制并发持有点数。"
+    },
+    {
+      "id": "F_268882d47414",
+      "severity": "note",
+      "file": "app/rate_limit.py",
+      "line": 49,
+      "title": "滑动窗口 zadd 的 member 只用时间戳，同值会被 ZADD 去重导致少计",
+      "detail": "滑动窗口用 `f\"{time.time()}\"` 作为 zset 的 member。Redis 的 `ZADD` 以 member 为唯一键：相同 member 再次写入只是**更新 score**，不会新增一个成员，因此 `zcount` 不会把它计入两次。如果两次请求落在同一时间戳取值上（时钟粒度内、或高并发下的同 tick），第二次请求不会真正计入窗口，限流被少算。这里没有加请求 ID / 序列号 / 随机后缀来保证 member 唯一。\n\n说明不确定性：常规单机调用下 `time.time()` 的浮点精度通常能区分相邻请求，因此该问题主要集中在高并发或低精度时钟（如某些平台的粗粒度时钟）场景，不是必现缺陷，但对\"防止刷接口\"这一用途而言，member 不唯一本身就是设计缺陷。",
+      "evidence": "app/rate_limit.py:49  await conn.zadd(key, int(time.time() * 1000), f\"{time.time()}\")\n（member 仅由时间戳构成，无唯一后缀；score 才是毫秒时间戳）",
+      "suggestion": "member 加入唯一成分：`f\"{now}-{uuid4().hex}\"`，并复用同一个 `now` 变量给 score 与 member，避免两次取时钟。"
+    }
+  ],
+  "warnings": [
+    "有 1 次调用被护栏拒绝，总结里没有说明",
+    "运行中发生 1 次工具失败：\n- run_command: HighRiskBlocked - `run_command` 属于高风险工具，当前运行未开启高风险权限。",
+    "有 1 次工具调用被护栏拒绝。",
+    "确定性规则命中但本次未报告的位置（疑似漏报，需人工复核）：\napp/auth.py:7 SEC001 硬编码密钥\napp/repository.py:21 ERR002 异常被静默吞掉\napp/utils.py:15 PY001 可变对象作为默认参数"
+  ],
+  "compression_events": [],
+  "prefix": {
+    "fingerprint": "6c1f3837fbf777e0",
+    "tokens": 4448,
+    "tool_count": 8
+  }
+}
