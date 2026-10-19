@@ -76,14 +76,74 @@
     {
       "code": "PY001-a",
       "file": "app/admin_api.py",
-      "line": 33,
-      "description": "管理员判断只看租户表里的 role=='admin'，忽略平台运营的 X-Tenant-Admin 代管关系，被代管租户的管理动作全部 403"
+      "line": 30,
+      "description": "管理员校验信任客户端自带的 X-Tenant-Admin 头，任意用户可自称任意租户管理员"
     },
     {
       "code": "ERR002-a",
       "file": "app/delivery.py",
       "line": 84,
       "description": "投递失败只往 failed 列表里追加一条 key 就返回，没有重试队列也没有落盘补偿，邮件渠道抖动时日报静默丢失"
+    },
+    {
+      "code": "PATH004-a",
+      "file": "app/delivery.py",
+      "line": 45,
+      "description": "站内信落盘路径由收件人字符串拼接，含 ../ 的地址可写到 outbox 之外"
+    },
+    {
+      "code": "PATH005-a",
+      "file": "app/subscriptions.py",
+      "line": 88,
+      "description": "收件人校验允许含 / 与 .. 的地址通过，为后续拼路径留下穿越入口"
+    },
+    {
+      "code": "ERR003-a",
+      "file": "app/ops_api.py",
+      "line": 125,
+      "description": "handle_query 导入不存在的 get_readonly_replica，接口一调用就 ImportError"
+    },
+    {
+      "code": "ERR004-a",
+      "file": "app/dashboard.py",
+      "line": 84,
+      "description": "DashboardService.configure 调用不存在的 self.save，保存看板必然 AttributeError"
+    },
+    {
+      "code": "AUTHZ004-a",
+      "file": "app/dashboard.py",
+      "line": 56,
+      "description": "render 收了 principal 却不做任何租户权限校验，可跨租户看图"
+    },
+    {
+      "code": "AUTHZ005-a",
+      "file": "app/service.py",
+      "line": 86,
+      "description": "create_export 用 can_view 代替 can_export，viewer 也能导出整份租户报表"
+    },
+    {
+      "code": "AUTHZ006-a",
+      "file": "app/service.py",
+      "line": 148,
+      "description": "register_source 只用 can_view 校验，任意 viewer 都能改全局数据源注册表"
+    },
+    {
+      "code": "STATE001-a",
+      "file": "app/service.py",
+      "line": 39,
+      "description": "导出任务表是 service 实例属性，而每个 handler 新建实例，任务建完即失联"
+    },
+    {
+      "code": "ERR005-a",
+      "file": "app/api.py",
+      "line": 115,
+      "description": "handle_export 缺 start/end 时抛 KeyError，未翻译为 400 直接 500"
+    },
+    {
+      "code": "INJ002-a",
+      "file": "app/ops_api.py",
+      "line": 122,
+      "description": "SQL 只校验前缀，多语句仍可执行；limit 无边界且非法值未捕获"
     }
   ]
 }

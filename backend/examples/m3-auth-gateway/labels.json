@@ -72,6 +72,90 @@
       "file": "app/gateway.py",
       "line": 190,
       "description": "introspect 只要会话在活跃就返回 active，不比对令牌 jti 是否属于当前会话，吊销前签发的旧令牌被判为有效"
+    },
+    {
+      "code": "CRYPTO006-a",
+      "file": "app/config.py",
+      "line": 24,
+      "description": "签名密钥默认取空串且不校验，未配置时令牌可被任意伪造"
+    },
+    {
+      "code": "AUTHZ004-a",
+      "file": "app/admin.py",
+      "line": 101,
+      "description": "reset_password 直接透传、无 require_admin，任意登录用户可重置他人口令（同文件 unlock_user 有校验）"
+    },
+    {
+      "code": "AUTHZ005-a",
+      "file": "app/api.py",
+      "line": 36,
+      "description": "可信代理用 startswith(\"172.\"/\"192.168.\") 判断，172.16 之外的 172.x 段全被当成内网，可伪造来源 IP"
+    },
+    {
+      "code": "AUTHZ006-a",
+      "file": "app/api.py",
+      "line": 136,
+      "description": "introspect 端点无调用方认证，任何人可把它当令牌有效性预言机"
+    },
+    {
+      "code": "SESS003-a",
+      "file": "app/gateway.py",
+      "line": 143,
+      "description": "刷新令牌不校验设备绑定，窃取后可在异地无限续期"
+    },
+    {
+      "code": "CRYPTO007-a",
+      "file": "app/tokens.py",
+      "line": 140,
+      "description": "令验签不区分 typ，刷新令牌可直接当访问令牌通过认证"
+    },
+    {
+      "code": "CRYPTO008-a",
+      "file": "app/hashing.py",
+      "line": 43,
+      "description": "仍接受无盐 MD5 口令哈希且无自动升级路径"
+    },
+    {
+      "code": "ERR003-a",
+      "file": "app/gateway.py",
+      "line": 110,
+      "description": "login_via_digest 对遗留 MD5 记录解包失败导致 500，兼容旧库时登录不可用"
+    },
+    {
+      "code": "AUTHZ007-a",
+      "file": "app/gateway.py",
+      "line": 190,
+      "description": "introspect 不检查账号停用状态，与 authenticate 判定不一致，停用账号的令牌仍被判有效"
+    },
+    {
+      "code": "RES001-a",
+      "file": "app/otp.py",
+      "line": 95,
+      "description": "OTP 挑战从不清理，purge 无调用点，内存持续增长"
+    },
+    {
+      "code": "SEC001-a",
+      "file": "app/seed.py",
+      "line": 14,
+      "description": "演示账号（含 admin）共用源码中的固定口令且无轮换机制"
+    },
+    {
+      "code": "CONC001-a",
+      "file": "app/devices.py",
+      "line": 80,
+      "description": "会话 meta 在锁外被修改，违反 store 的并发约定"
+    },
+    {
+      "code": "AUTHZ008-a",
+      "file": "app/ratelimit.py",
+      "line": 54,
+      "description": "限流桶按外部可控键无限增长且无回收，可被用于内存耗尽"
+    },
+    {
+      "code": "AUTHZ009-a",
+      "file": "app/gateway.py",
+      "line": 105,
+      "description": "高频登录通道绕过账号锁定，形成无限次口令猜测路径"
     }
   ]
 }

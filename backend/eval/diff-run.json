@@ -1,0 +1,152 @@
+{
+  "goal": "审查本次改动引入的缺陷。",
+  "agent": "review",
+  "outcome": "findings",
+  "artifacts": {
+    "finding": [
+      {
+        "id": "F_cbf8f91d0f20",
+        "severity": "blocker",
+        "file": "app/service.py",
+        "line": 281,
+        "title": "bulk_cancel 引用未定义的全局 WB，任何调用都会 NameError",
+        "detail": "模块作用域里没有 WB 这个名字：service.py 只有 OrderService（通过 self.wb 拿 workbench，见 34-35 行）和模块级辅助函数，全仓库 `WB` 只在 281/284/285 三处被引用，没有任何赋值/导入。因此 bulk_cancel 一旦被调用，第一条记录的处理就会抛 NameError: name 'WB' is not defined，整个批量取消功能不可用（不是数据错误，而是完全跑不通）。",
+        "evidence": "grep 'WB' 全仓库仅 4 处命中，全部在 app/service.py：278 def bulk_cancel、281 `order = WB.orders.get(order_id)`、284 `WB.inventory.release(...)`、285 `WB.orders.set_status(...)`，无定义处；对比 workbench 的正确入口 app/service.py:35 `self.wb = workbench or MemoryWorkbench()`。",
+        "suggestion": "改成 OrderService 的实例方法（或其他能拿到 workbench 的形式），如 `def bulk_cancel(self, order_ids, operator):` 并用 `self.wb`。"
+      },
+      {
+        "id": "F_fed4184edc09",
+        "severity": "blocker",
+        "file": "app/service.py",
+        "line": 284,
+        "title": "把 order_id 当成 SKU 传给 inventory.release，释放对象与数量都错",
+        "detail": "order.order_id 是订单号，不是 sku；且固定释放 1 件。StockRepository.release 会去库存表按该键找行，找不到就抛 RuntimeError，所以就算修好第 281 行的 WB，这条路径也会在第一次释放时炸掉。正确的等价实现见 cancel_order：`self.wb.inventory.release_items(order.items)`（service.py:136），按明细逐行释放 quantity。",
+        "evidence": "app/service.py:284 `WB.inventory.release(order.order_id, 1)`；app/repository.py:95-98 `def release(self, sku, quantity): if not self.store.release_stock(sku, quantity): raise RuntimeError(f\"{sku} 释放库存失败\")`；app/orm.py:88-90 `row = self._stock.get(sku); if row is None: return False`。",
+        "suggestion": "改为 `self.wb.inventory.release_items(order.items)`，与 cancel_order 保持一致。"
+      },
+      {
+        "id": "F_94f315abaa9d",
+        "severity": "blocker",
+        "file": "app/service.py",
+        "line": 285,
+        "title": "已支付订单被直接置为 CANCELLED，绕过退款登记，账本缺 refund_intent",
+        "detail": "bulk_cancel 只处理 PAID 订单（282 行），却直接用 set_status 改成 CANCELLED：既没有走状态机 can_transition（PAID -> CANCELLED 不在允许集合里），也没有像 cancel_order 那样先往账本登记负数 refund_intent。结果是已付款订单被取消后没有任何退款意向记录，而 refund 只允许 PAID/REFUNDING/SHIPPED/COMPLETED 状态退款，订单已变 CANCELLED，后续无法再补退款 —— 用户的钱在系统里没有出口。operator 参数也未被使用，账本里没有操作人审计。",
+        "evidence": "app/service.py:282-285 仅在 status == PAID 时执行 `WB.orders.set_status(order_id, OrderStatus.CANCELLED)`；对比 app/service.py:132-135 `refund = order.payable if order.status == OrderStatus.PAID else 0; if refund: self.wb.ledger.append(order_id, \"refund_intent\", -refund, \"system\")`；app/models.py:104 `OrderStatus.PAID: {OrderStatus.SHIPPED, OrderStatus.REFUNDING}`（不含 CANCELLED）；app/service.py:174-180 refund 的状态白名单不含 CANCELLED。",
+        "suggestion": "复用 cancel_order 的逻辑（可加 lock_for），保留退款意向登记与状态机校验；operator 传入 ledger.append。"
+      },
+      {
+        "id": "F_072425862af4",
+        "severity": "warn",
+        "file": "app/service.py",
+        "line": 286,
+        "title": "返回值 cancelled 用入参长度而非实际取消数，与实际处理结果不符",
+        "detail": "循环里对不存在的单号和状态不是 PAID 的单号都只是 continue 跳过，但最终仍返回 len(order_ids)。也就是说传 10 个 id、实际一个都没取消，接口依然报 cancelled=10；反过来同一 id 重复出现时还会被重复计数。调用方（运营后台/对账）无法据此判断真实结果。",
+        "evidence": "app/service.py:282-283 `if order is None or order.status != OrderStatus.PAID: continue`；app/service.py:286 `return {\"cancelled\": len(order_ids)}`（无任何计数器变量）。对比同类实现 bulk_ship 用 shipped/failed 两个列表分别累积 app/service.py:211-221。",
+        "suggestion": "维护 cancelled 与 skipped/failed 列表，按实际处理数量返回，并说明跳过原因。"
+      },
+      {
+        "id": "F_227c031b62fd",
+        "severity": "warn",
+        "file": "app/service.py",
+        "line": 278,
+        "title": "operator 参数完全未使用，批量取消无操作人审计记录",
+        "detail": "函数签名接收 operator，但函数体内没有任何地方使用它：既没有写 ledger，也没有记录到订单。批量取消是可影响资金的操作，取消后账本里查不到是谁发起的，与 cancel_order 的 refund_intent 记录和 purge_order 的 ledger.append(..., operator) 做法不一致。",
+        "evidence": "app/service.py:278 `def bulk_cancel(order_ids, operator):`，函数体 279-286 行内未出现 operator；对比 app/service.py:206 `self.wb.ledger.append(order_id, \"purge\", 0, operator)` 与 app/service.py:134 `self.wb.ledger.append(order_id, \"refund_intent\", -refund, \"system\")`。",
+        "suggestion": "在取消/退款登记时把 operator 写进 ledger.append。"
+      },
+      {
+        "id": "F_3218faa354fe",
+        "severity": "warn",
+        "file": "app/service.py",
+        "line": 280,
+        "title": "批量取消未按订单加锁，并发下会重复释放同一订单的库存",
+        "detail": "模块文档明确要求「修改同一张订单前先 with wb.lock_for(order_id)」（service.py:5），cancel_order 也确实持锁（service.py:125）。bulk_cancel 读取状态、释放库存、写状态三步全部裸奔在无锁区间里，docstring 里也自认「未按订单加锁」。一旦 281/284/285 行的错误被修好，两个并发的 bulk_cancel（或 bulk_cancel 与 cancel_order 并发）会同时读到同一张 PAID 订单，各自执行一次释放：release_stock 用 max(reserved - quantity, 0) 夹底，重复释放会把本属于自己的其它订单的预占也扣掉，造成库存账实不符。当前因 NameError 该路径不可达，属修复前述阻断项后立即暴露的问题。",
+        "evidence": "app/service.py:278-285 整个循环体内无 `with ...lock_for(...)`；app/service.py:5 约定 `修改同一张订单前先 with wb.lock_for(order_id):`；app/service.py:125 cancel_order 使用 `with self.wb.lock_for(order_id):`；app/orm.py:91 `row.reserved = max(row.reserved - quantity, 0)`（释放不校验上限，重复释放会静默吞掉差额）。",
+        "suggestion": "每张订单的处理包进 `with self.wb.lock_for(order_id):`，并在锁内重新读取订单状态后再判断。"
+      }
+    ]
+  },
+  "repo": "C:\\Users\\34442\\Desktop\\porject\\代码审查agent\\backend\\.difftest-enda2q3l\\repo",
+  "model": "deepseek-flash（DeepSeek）",
+  "iterations": 9,
+  "stop_reason": "finished",
+  "elapsed": 32.693,
+  "usage": {
+    "prompt_tokens": 135745,
+    "completion_tokens": 6126,
+    "cached_tokens": 113536
+  },
+  "findings": [
+    {
+      "id": "F_cbf8f91d0f20",
+      "severity": "blocker",
+      "file": "app/service.py",
+      "line": 281,
+      "title": "bulk_cancel 引用未定义的全局 WB，任何调用都会 NameError",
+      "detail": "模块作用域里没有 WB 这个名字：service.py 只有 OrderService（通过 self.wb 拿 workbench，见 34-35 行）和模块级辅助函数，全仓库 `WB` 只在 281/284/285 三处被引用，没有任何赋值/导入。因此 bulk_cancel 一旦被调用，第一条记录的处理就会抛 NameError: name 'WB' is not defined，整个批量取消功能不可用（不是数据错误，而是完全跑不通）。",
+      "evidence": "grep 'WB' 全仓库仅 4 处命中，全部在 app/service.py：278 def bulk_cancel、281 `order = WB.orders.get(order_id)`、284 `WB.inventory.release(...)`、285 `WB.orders.set_status(...)`，无定义处；对比 workbench 的正确入口 app/service.py:35 `self.wb = workbench or MemoryWorkbench()`。",
+      "suggestion": "改成 OrderService 的实例方法（或其他能拿到 workbench 的形式），如 `def bulk_cancel(self, order_ids, operator):` 并用 `self.wb`。"
+    },
+    {
+      "id": "F_fed4184edc09",
+      "severity": "blocker",
+      "file": "app/service.py",
+      "line": 284,
+      "title": "把 order_id 当成 SKU 传给 inventory.release，释放对象与数量都错",
+      "detail": "order.order_id 是订单号，不是 sku；且固定释放 1 件。StockRepository.release 会去库存表按该键找行，找不到就抛 RuntimeError，所以就算修好第 281 行的 WB，这条路径也会在第一次释放时炸掉。正确的等价实现见 cancel_order：`self.wb.inventory.release_items(order.items)`（service.py:136），按明细逐行释放 quantity。",
+      "evidence": "app/service.py:284 `WB.inventory.release(order.order_id, 1)`；app/repository.py:95-98 `def release(self, sku, quantity): if not self.store.release_stock(sku, quantity): raise RuntimeError(f\"{sku} 释放库存失败\")`；app/orm.py:88-90 `row = self._stock.get(sku); if row is None: return False`。",
+      "suggestion": "改为 `self.wb.inventory.release_items(order.items)`，与 cancel_order 保持一致。"
+    },
+    {
+      "id": "F_94f315abaa9d",
+      "severity": "blocker",
+      "file": "app/service.py",
+      "line": 285,
+      "title": "已支付订单被直接置为 CANCELLED，绕过退款登记，账本缺 refund_intent",
+      "detail": "bulk_cancel 只处理 PAID 订单（282 行），却直接用 set_status 改成 CANCELLED：既没有走状态机 can_transition（PAID -> CANCELLED 不在允许集合里），也没有像 cancel_order 那样先往账本登记负数 refund_intent。结果是已付款订单被取消后没有任何退款意向记录，而 refund 只允许 PAID/REFUNDING/SHIPPED/COMPLETED 状态退款，订单已变 CANCELLED，后续无法再补退款 —— 用户的钱在系统里没有出口。operator 参数也未被使用，账本里没有操作人审计。",
+      "evidence": "app/service.py:282-285 仅在 status == PAID 时执行 `WB.orders.set_status(order_id, OrderStatus.CANCELLED)`；对比 app/service.py:132-135 `refund = order.payable if order.status == OrderStatus.PAID else 0; if refund: self.wb.ledger.append(order_id, \"refund_intent\", -refund, \"system\")`；app/models.py:104 `OrderStatus.PAID: {OrderStatus.SHIPPED, OrderStatus.REFUNDING}`（不含 CANCELLED）；app/service.py:174-180 refund 的状态白名单不含 CANCELLED。",
+      "suggestion": "复用 cancel_order 的逻辑（可加 lock_for），保留退款意向登记与状态机校验；operator 传入 ledger.append。"
+    },
+    {
+      "id": "F_072425862af4",
+      "severity": "warn",
+      "file": "app/service.py",
+      "line": 286,
+      "title": "返回值 cancelled 用入参长度而非实际取消数，与实际处理结果不符",
+      "detail": "循环里对不存在的单号和状态不是 PAID 的单号都只是 continue 跳过，但最终仍返回 len(order_ids)。也就是说传 10 个 id、实际一个都没取消，接口依然报 cancelled=10；反过来同一 id 重复出现时还会被重复计数。调用方（运营后台/对账）无法据此判断真实结果。",
+      "evidence": "app/service.py:282-283 `if order is None or order.status != OrderStatus.PAID: continue`；app/service.py:286 `return {\"cancelled\": len(order_ids)}`（无任何计数器变量）。对比同类实现 bulk_ship 用 shipped/failed 两个列表分别累积 app/service.py:211-221。",
+      "suggestion": "维护 cancelled 与 skipped/failed 列表，按实际处理数量返回，并说明跳过原因。"
+    },
+    {
+      "id": "F_227c031b62fd",
+      "severity": "warn",
+      "file": "app/service.py",
+      "line": 278,
+      "title": "operator 参数完全未使用，批量取消无操作人审计记录",
+      "detail": "函数签名接收 operator，但函数体内没有任何地方使用它：既没有写 ledger，也没有记录到订单。批量取消是可影响资金的操作，取消后账本里查不到是谁发起的，与 cancel_order 的 refund_intent 记录和 purge_order 的 ledger.append(..., operator) 做法不一致。",
+      "evidence": "app/service.py:278 `def bulk_cancel(order_ids, operator):`，函数体 279-286 行内未出现 operator；对比 app/service.py:206 `self.wb.ledger.append(order_id, \"purge\", 0, operator)` 与 app/service.py:134 `self.wb.ledger.append(order_id, \"refund_intent\", -refund, \"system\")`。",
+      "suggestion": "在取消/退款登记时把 operator 写进 ledger.append。"
+    },
+    {
+      "id": "F_3218faa354fe",
+      "severity": "warn",
+      "file": "app/service.py",
+      "line": 280,
+      "title": "批量取消未按订单加锁，并发下会重复释放同一订单的库存",
+      "detail": "模块文档明确要求「修改同一张订单前先 with wb.lock_for(order_id)」（service.py:5），cancel_order 也确实持锁（service.py:125）。bulk_cancel 读取状态、释放库存、写状态三步全部裸奔在无锁区间里，docstring 里也自认「未按订单加锁」。一旦 281/284/285 行的错误被修好，两个并发的 bulk_cancel（或 bulk_cancel 与 cancel_order 并发）会同时读到同一张 PAID 订单，各自执行一次释放：release_stock 用 max(reserved - quantity, 0) 夹底，重复释放会把本属于自己的其它订单的预占也扣掉，造成库存账实不符。当前因 NameError 该路径不可达，属修复前述阻断项后立即暴露的问题。",
+      "evidence": "app/service.py:278-285 整个循环体内无 `with ...lock_for(...)`；app/service.py:5 约定 `修改同一张订单前先 with wb.lock_for(order_id):`；app/service.py:125 cancel_order 使用 `with self.wb.lock_for(order_id):`；app/orm.py:91 `row.reserved = max(row.reserved - quantity, 0)`（释放不校验上限，重复释放会静默吞掉差额）。",
+      "suggestion": "每张订单的处理包进 `with self.wb.lock_for(order_id):`，并在锁内重新读取订单状态后再判断。"
+    }
+  ],
+  "warnings": [
+    "以下引用位置在本次运行中没有被读取过，需人工复核：tools_audit.py:106",
+    "运行中发生 1 次工具失败：\n- lint_file: NameError - name 'ast' is not defined",
+    "确定性规则命中但本次未报告的位置（疑似漏报，需人工复核）：\napp/config.py:28 SEC001 硬编码密钥\napp/hooks.py:93 RES001 文件句柄未使用 with 管理"
+  ],
+  "compression_events": [],
+  "prefix": {
+    "fingerprint": "6c1f3837fbf777e0",
+    "tokens": 4448,
+    "tool_count": 8
+  }
+}

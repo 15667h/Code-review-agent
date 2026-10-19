@@ -10,6 +10,7 @@ schema 追加到轨迹末尾，静态前缀保持字节稳定、缓存不失效�
 
 from __future__ import annotations
 
+import ast
 import difflib
 import re
 from dataclasses import dataclass

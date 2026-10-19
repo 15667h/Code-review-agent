@@ -361,3 +361,33 @@ def test_sse_stream_supports_since_resume(sse_server: str) -> None:
     frames = _read_stream(sse_server, f"/api/audit/{run_id}/stream?since=9999")
     assert frames, "since 大于已有事件数时应直接进终态分支，仍要有关流帧"
     assert any("event: close" in f for f in frames)
+
+
+# =============================================================================
+# lint_file 的 import 完整性
+# =============================================================================
+
+
+def test_lint_file_runs_without_nameerror(tmp_path) -> None:
+    """lint_file 里用了 ast.parse，但曾经漏了 `import ast`。
+
+    这类错误单元测试最容易漏：只有真跑一次工具才暴露。当时是在一次
+    diff 增量审查里被 Agent 撞出来的（它在总结里如实报告了工具失败）。
+    """
+    from harness.sandbox import CommandRunner
+    from harness.tools_audit import _tool_lint_file
+
+    (tmp_path / "ok.py").write_text("def f():\n    return 1\n", encoding="utf-8")
+    (tmp_path / "bad.py").write_text("def f(:\n    pass\n", encoding="utf-8")
+
+    ws = Workspace(tmp_path)
+    runner = CommandRunner(workspace=ws, allow=[], timeout=10)
+    tool = _tool_lint_file(ws, runner)
+
+    good = tool.handler(path="ok.py")
+    assert good.ok, getattr(good, "error_message", good)
+
+    bad = tool.handler(path="bad.py")
+    # 语法错误应当被报告出来，而不是抛 NameError
+    text = str(getattr(bad, "output", "") or getattr(bad, "message", ""))
+    assert "NameError" not in text

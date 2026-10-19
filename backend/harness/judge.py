@@ -58,6 +58,9 @@ _SYSTEM = """你是一位资深代码评审的**复核人**，任务是判断别
    - 描述引用的是框架行为但代码里没有任何对应迹象；
    - 结论是纯风格偏好、命名意见、缺少注释之类的**非缺陷**。
 5. 拿不准时判 keep —— 你的作用是过滤明显站不住的，不是宁可错杀。
+6. **`note` 级（低置信度提示）请特别保守**：这类条目本来就是在指出「边界/前提未被约束」，
+   即使代码在数学上「不算错」，只要描述指出的前提确实没有校验，就判 keep。
+   只有当描述**指错了代码**时才判 drop。
 
 输出：只输出一个 JSON 对象，形如
 {"judgments": [{"id": "F1", "verdict": "keep", "reason": "一句话理由"}]}
@@ -81,6 +84,8 @@ class JudgeReport:
 
     total: int = 0
     dropped: list[Judgment] = field(default_factory=list)
+    # 被判官判 drop、但被保护规则拦下保留的（note 级）
+    kept_by_guard: list[Judgment] = field(default_factory=list)
     ungrounded: int = 0
     skipped_reason: str = ""
 
@@ -248,6 +253,14 @@ def judge_findings(
         fid = str(finding.get("id") or f"F{index}")
         judgment = verdicts.get(fid)
         if judgment and judgment.verdict == "drop":
+            # note 级是低置信度提示，判官容易把它当成「设计选择」删掉。
+            # 实测 s5 的两条 note 被删后召回从 100% 掉到 50%，而那两条确实指出了
+            # 「边界/前提未约束」——属于标注口径认可的缺陷。所以这里加一道闸：
+            # note 级只有在判官明确指出「代码里没有所描述的东西」时才允许删。
+            if _is_fragile_drop(finding, judgment):
+                report.kept_by_guard.append(judgment)
+                kept.append(finding)
+                continue
             report.dropped.append(judgment)
             continue
         kept.append(finding)
@@ -255,3 +268,24 @@ def judge_findings(
     # 超出一批上限的照原样保留：没被复核不等于被判错
     kept.extend(overflow)
     return kept, report
+
+# 判官理由里出现这些词，说明它是在说「代码里根本没有这回事」，可以删。
+# 否则（比如「这是设计选择」「依赖调用方假设」）更像是口径分歧，不该删 note 级。
+_MISSING_CUES = (
+    "没有", "不存在", "未出现", "找不到", "并无", "不符", "相反",
+    "已有", "已经", "实际是", "不是", "no such", "not present", "already",
+)
+
+
+def _is_fragile_drop(finding: dict[str, Any], judgment: Judgment) -> bool:
+    """判断这次 drop 是否该被保护规则拦下。
+
+    只保护 ``note`` 级：``blocker``/``warn`` 是明确缺陷，判官要删得给出硬理由；
+    而 note 本身就是「值得提一句」的弱提示，被误删的代价（真实发现丢失）
+    比多留一条噪声更高。
+    """
+    if str(finding.get("severity") or "").lower() != "note":
+        return False
+    reason = (judgment.reason or "").lower()
+    return not any(cue in reason for cue in _MISSING_CUES)
+

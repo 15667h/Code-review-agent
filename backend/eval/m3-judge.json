@@ -1,0 +1,548 @@
+{
+  "goal": "审查这个仓库中的缺陷：密码学误用、越权、时序攻击、审计遗漏、会话与令牌管理。逐文件检查，确认后记录发现。",
+  "agent": "review",
+  "outcome": "findings",
+  "artifacts": {
+    "finding": [
+      {
+        "id": "F_d1570d4235f0",
+        "severity": "blocker",
+        "file": "app/config.py",
+        "line": 24,
+        "title": "签名密钥默认为空串且无校验，令牌可被任意伪造",
+        "detail": "`SIGNING_SECRET` 取 `AUTHGW_SIGNING_SECRET`，环境变量缺失、且 `config.local` 不存在或为空时回落为 `\"\"`；`TokenSigner.secret` 默认即 `SIGNING_SECRET.encode(\"utf-8\")`，于是 HMAC 密钥为 `b\"\"`。空密钥是公开常量，任何能构造 `v1.<payload>.<sig>` 的人都能为任意 `sub`/`rol`/`sid` 签发合法访问令牌。`authenticate()` 只校验签名与 `exp`，`rol` 不参与鉴权（角色从目录现取），但攻击者可自造 `sid` 需要对应会话；真正致命的是空密钥让签名校验完全失效，配合 `issue_access_token` 的结构即可离线伪造。代码里对密钥长度/熵没有任何断言。此外 `_preload` 让 `config.local` 覆盖环境变量，轮换密钥时环境变量会被静默忽略。",
+        "evidence": "config.py:24 `SIGNING_SECRET = _preload(os.environ.get(\"AUTHGW_SIGNING_SECRET\", \"\"))`；config.py:19-21 `except OSError: return file_secret / return value or file_secret`；tokens.py:43 `secret: bytes = field(default_factory=lambda: SIGNING_SECRET.encode(\"utf-8\"))`；tokens.py:51 `hmac.new(self.secret, signing_input, hashlib.sha256)`",
+        "suggestion": "启动时校验密钥长度（如 >=32 字节）且非默认值，否则拒绝启动；不要在 import 期用文件静默覆盖环境变量。"
+      },
+      {
+        "id": "F_39484a9843af",
+        "severity": "blocker",
+        "file": "app/clients.py",
+        "line": 27,
+        "title": "未显式传 secret 的客户端共用固定硬编码密钥",
+        "detail": "`register()` 的文档说「secret 为空时自动生成，并只在返回值里出现一次」，但实现是在 `secret` 为空时使用常量字符串 `AuthgwInternalClient4e1f`。结果是所有走「发布流程注入/未传 secret」路径注册的应用共享同一个可预测密钥，且该常量在源码里。`authenticate()` 对这类应用会用 `verify_password(常量, hash_password(常量))` 通过校验，知道任一 `client_id` 的攻击者即可冒充该客户端取得 `service` 角色令牌。真正随机生成只需要 `secrets.token_urlsafe`。",
+        "evidence": "clients.py:27 `plain = secret or \"\".join([\"Authgw\", \"Internal\", \"Client\", \"4e1f\"])`；clients.py:28-30 `app.secret_hash = hash_password(plain)`；clients.py:47 `return verify_password(secret, app.secret_hash)`",
+        "suggestion": "空值时用 `secrets.token_urlsafe(32)` 生成；已有用固定值注册的客户端需强制轮换。"
+      },
+      {
+        "id": "F_daf8df9f2061",
+        "severity": "blocker",
+        "file": "app/admin.py",
+        "line": 101,
+        "title": "管理面重置口令缺少授权校验，任意登录用户可重置他人口令",
+        "detail": "`AdminService.reset_password` 直接把 `principal` 透传给 `AuthGateway.admin_reset_password`，两处都没有任何角色校验（同文件的 `unlock_user` 调了 `require_admin`、`kick_user` 调了 `tenant_admin`、`list_sessions` 调了 `require_admin`，唯独这个没有）。因此任何持有有效访问令牌的普通成员都能重置**任意租户任意账号**的口令，并从返回值拿到新口令明文，随后登录接管该账号（包括 `admin`）。这是完整的垂直+水平越权链。该路径还会清空 `locked_until` 并重置限流计数，进一步抵消防护。",
+        "evidence": "admin.py:100-101 `def reset_password(self, principal, username, new_password): return self.gateway.admin_reset_password(principal, username, new_password)`；gateway.py:228-237 `def admin_reset_password(self, actor, username, new_password)` 内无 `actor.can(\"admin\")` 判断，且 `return new_password`",
+        "suggestion": "在 `AdminService.reset_password` 前置 `require_admin(principal)`（或 `tenant_admin(principal, user.tenant)`），并在 `admin_reset_password` 内部再校验一次。"
+      },
+      {
+        "id": "F_7514f2e93229",
+        "severity": "blocker",
+        "file": "app/gateway.py",
+        "line": 105,
+        "title": "高频登录通道绕过账号锁定，形成无限次口令猜测",
+        "detail": "`login()` 在 4 个失败分支都会先过 `limiter.blocked_for` 再 `record_failure`，但 `login_via_digest` 完全没有检查锁定状态，直接在 `verify_password` 失败后 `record_failure`。锁定状态只体现在 `Attempt.locked_until`，`record_failure` 自身也不判断 `locked_until`（它只累加 count），因此这条路径会持续返回「用户名或口令不正确」而不是 `too_many_attempts`。这是无限次在线口令猜测通道：攻击者只需改走 `login_via_digest` 就可以绕开 5 次/15 分钟的锁定。该通道还额外造成 CPU 消耗 —— 每次尝试都按存储中的 `iterations`（默认 200000）做一次完整 PBKDF2。",
+        "evidence": "gateway.py:100-115 `login_via_digest` 全文无 `blocked_for` 调用；对比 gateway.py:74-77 `blocked = self.limiter.blocked_for(...)`；ratelimit.py:46-60 `record_failure` 只做 `attempt.count += 1`，未读 `locked_until`",
+        "suggestion": "`login_via_digest` 入口补 `blocked_for` 检查；或把锁定判断下沉进 `record_failure` 并统一走一个校验函数。"
+      },
+      {
+        "id": "F_05355c653163",
+        "severity": "blocker",
+        "file": "app/otp.py",
+        "line": 79,
+        "title": "OTP 校验无频率限制，6 位码可被爆破",
+        "detail": "`issue()` 用 `str(secrets.randbelow(10))` 生成 6 位数字码，在默认 10^6 空间内。`verify()` 只在**失败计数达到 3 才消费挑战**，但这 3 次机会没有时间间隔限制，也没有接 `AttemptLimiter`（`ratelimit.py` 的文档声称「登录、OTP 校验、找回口令三条路径共用同一套计数器」，但代码里 otp.py 完全没有引用 limiter）。攻击者在 300 秒有效期内可以高频爆破：单个挑战 3 次后作废，但可以无限次重新 `issue()`，累计成功率极高。`matches()` 虽用按位异或做等长比较，但比较长度不一致时提前返回，而且爆破成功与否的差异本身就足以被利用，时序保护在此不构成有效防护。",
+        "evidence": "otp.py:60 `code = \"\".join(str(secrets.randbelow(10)) for _ in range(self.length))`；otp.py:79-83 `if not challenge.matches(code): challenge.failures += 1; if challenge.failures >= MAX_VERIFY_FAILURES: challenge.consumed = True`；otp.py 全文无 `from .ratelimit import`",
+        "suggestion": "OTP 校验按用户名/IP 接入限流；单挑战失败即作废或限制重发频率；考虑延长码长或限制尝试总次数。"
+      },
+      {
+        "id": "F_6030bdb6480b",
+        "severity": "warn",
+        "file": "app/gateway.py",
+        "line": 110,
+        "title": "login_via_digest 对遗留 MD5 哈希解包失败导致 500",
+        "detail": "`login_via_digest` 用 `user.password_hash.split(\"$\")` 解包 4 个字段。`hashing.verify_password` 明确兼容早期 `md5$<hex>` 格式（只有 2 段），目录里只要存在一个这类老账号，这里就会抛 `ValueError: not enough values to unpack`。`AuthError` 不是该异常的基类，`api.with_errors` 只捕获 `AuthError`，所以异常会逃逸成 500。同时 `verify_password` 里 `int(iterations)` 对畸形哈希也在 try 内被吞掉，两条路径对同一数据的健壮性不一致。",
+        "evidence": "gateway.py:110 `_, iterations, salt, _ = user.password_hash.split(\"$\")`（无 try）；hashing.py:43-45 `if fields[0] == \"md5\": legacy = fields[1] ...`（说明 2 段格式真实存在）；api.py:82-87 `except AuthError as exc`",
+        "suggestion": "复用 `verify_password` 或先做格式校验，非 pbkdf2_sha256 四段格式直接拒绝。"
+      },
+      {
+        "id": "F_97001fdb9eef",
+        "severity": "blocker",
+        "file": "app/devices.py",
+        "line": 62,
+        "title": "设备查询的授权条件写反：租户管理员被拒、普通成员入参被忽略",
+        "detail": "文档说「主管（租户管理员）可以查看同租户成员的设备，普通成员只能看自己」，但条件写反了：`can_supervise` 为真（租户管理员）**且查询他人**时抛 `PermissionError`，而普通成员（`can_supervise` 为假）查询任意 `username` 时条件不成立、直接落到 `self.devices(principal)`，返回的是**自己的**设备列表。直接后果：租户管理员永远无法查看成员设备（功能不可用），而「只能看自己」的约束是靠忽略入参实现的，一旦有人按文档把条件改成 `if username != principal.subject and not can_supervise` 就会立刻变成越权读取同租户成员会话。这是一个当前静默失效、修复时极易翻转成漏洞的逻辑反转。",
+        "evidence": "devices.py:61-64 `can_supervise = principal.can(\"tenant_admin\")` / `if username != principal.subject and can_supervise:` / `raise PermissionError(\"只能查看自己的设备\")` / `return self.devices(principal)`",
+        "suggestion": "改成「无 supervise 权限且查询他人」才拒绝，且查询他人时按 username 取 `sessions_of(username)` 并校验租户一致；同时补上租户归属校验。"
+      },
+      {
+        "id": "F_37e27e3685ee",
+        "severity": "warn",
+        "file": "app/gateway.py",
+        "line": 139,
+        "title": "刷新令牌轮换不检测重放，旧令牌被重放无告警",
+        "detail": "`rotate()` 把旧摘要压入 `session.used_refresh` 并把 `_by_refresh` 里的旧键删掉，但 `refresh()` 只调用 `find_by_refresh`，旧令牌查不到时一律返回 `invalid_grant`，从不调用 `was_used()`，也不撤销该会话。因此刷新令牌被窃取后重放不会触发任何告警或「整条链下线」，窃取者与合法用户可长期交替刷新同一条会话。`used_refresh` 列表只增不减（每次刷新 append 一个 sha256），且 `was_used` 在全仓库无调用点，属于为此设计的检测被漏接。",
+        "evidence": "sessions.py:106-107 `session.used_refresh.append(session.refresh_hash)` / `self._by_refresh.pop(session.refresh_hash, None)`；gateway.py:139-142 `session = self.sessions.find_by_refresh(refresh_token)`，None 时直接 `raise AuthError(\"刷新令牌无效\")`；grep 结果 `was_used` 仅出现在 sessions.py:113 定义处",
+        "suggestion": "在 refresh 失败分支用 `sid` 反查会话并调用 `was_used`，命中即 `revoke_all(username)` 并记录高风险审计。"
+      },
+      {
+        "id": "F_7467c49ebf47",
+        "severity": "blocker",
+        "file": "app/gateway.py",
+        "line": 233,
+        "title": "管理员重置口令后不撤销既有会话，令牌仍可继续使用",
+        "detail": "`admin_reset_password` 改哈希、清锁定、重置限流，但**没有撤销该用户的现有会话**；而同类的 `change_password` 明确调用了 `sessions.revoke_all(user.username, \"password_change\")`。因此管理员因账号被盗而重置口令后，攻击者手上已签发的访问令牌（15 分钟）和刷新令牌（12 小时，且可无限续期）仍然有效，重置动作无法达到「把攻击者踢下线」的目的。另外该方法把明文新口令直接作为返回值，而调用链 `AdminService.reset_password` 在缺失授权校验（见另一条发现）下将其返回给任意调用者。",
+        "evidence": "gateway.py:233-237 `user.password_hash = hash_password(new_password)` / `user.locked_until = None` / `self.limiter.reset(username)` / `return new_password`，全程无 `revoke_all`；对比 gateway.py:224-225 `user.password_hash = hash_password(new_password)` / `self.sessions.revoke_all(user.username, \"password_change\")`",
+        "suggestion": "重置口令后调用 `self.sessions.revoke_all(username, \"admin_reset\")`；不要把明文口令经返回值跨层传递，改为一次性投递通道。"
+      },
+      {
+        "id": "F_6a00060c41fa",
+        "severity": "warn",
+        "file": "app/api.py",
+        "line": 36,
+        "title": "可信代理判定用字符串前缀，172./192.168. 前缀与默认回环都可绕过",
+        "detail": "`_is_trusted_proxy` 用字符串前缀判定 `addr.startswith((\"10.\", \"172.\", \"192.168.\"))`。这既漏掉 `127.0.0.1/32` 之外的回环写法（无影响），也**误把 `172.` 整个前缀当作内网**——真正的容灾/公网段是 `172.16.0.0/12`，`172.0.x.x`~`172.15.x.x` 与 `172.32.x.x` 以下是可路由的公网地址；同理 `192.168.` 前缀会放行 `192.168.0.1.evil.com` 这类非 IP 串（虽然此处是 IP 位置但字符串未解析）。更关键的是：只要对端地址落在这些前缀内，就无条件采信客户端可控的 `X-Real-IP` 头。而 `Request.remote_addr` 默认值是 `\"127.0.0.1\"`，回环恒被信任。这直接削弱 `AttemptLimiter` 的 `username|ip` 分桶（每条请求换一个伪造 IP 即等于没有 IP 维度限流），也污染审计中的来源记录。文件顶部的 `TRUSTED_PROXIES` 常量声明了精确网段，但从未被使用。",
+        "evidence": "api.py:15 `TRUSTED_PROXIES = {\"10.0.0.0/8\", \"192.168.0.0/16\", \"127.0.0.1/32\"}`（未被引用）；api.py:32-36 `if addr in {\"127.0.0.1\", \"::1\"}: return True` / `return addr.startswith((\"10.\", \"172.\", \"192.168.\"))`；api.py:24 `remote_addr: str = \"127.0.0.1\"`",
+        "suggestion": "用 `ipaddress` 解析并做 `ip in ip_network(...)` 判断，仅信任精确网段；不要用 `172.` 前缀；把 `TRUSTED_PROXIES` 真正用起来。"
+      },
+      {
+        "id": "F_6338c8a5032a",
+        "severity": "warn",
+        "file": "app/hashing.py",
+        "line": 83,
+        "title": "会话主键派生使用硬编码常量密钥，且截断到 64 位",
+        "detail": "`session_id_for` 用模块级硬编码常量 `b\"authgw-session-v1\"` 作为 HMAC 密钥，把访问令牌映射成 16 位十六进制（64 bit）会话主键。密钥写死在源码里，任何拿到代码的人都能对任意令牌计算相同的 `session_id`；若该值被用作会话表键或在日志/接口中暴露，就构成可预测的会话标识。截断到 16 位十六进制（64 bit）也低于常规安全余量，且该函数不在 `TokenSigner` 的密钥体系内，密钥轮换时不会同步更新。注释声称其用途是「审计与风控对齐」，但 grep 显示全仓库没有任何调用点，属于把弱密钥摘要暴露为公共 API 的隐患。",
+        "evidence": "hashing.py:83 `_SESSION_KEY = b\"authgw-session-v1\"`；hashing.py:86-88 `return hmac.new(_SESSION_KEY, access_token.encode(\"utf-8\"), hashlib.sha256).hexdigest()[:16]`；grep `session_id_for` 仅命中 hashing.py:86 定义处",
+        "suggestion": "密钥从配置/KMS 读取并与主签名密钥分离；输出至少保留 128 bit；无调用点则直接删除该函数。"
+      },
+      {
+        "id": "F_cae5d3c8c176",
+        "severity": "warn",
+        "file": "app/gateway.py",
+        "line": 262,
+        "title": "审计写入失败被降级为 best-effort，敏感操作在无审计下继续执行",
+        "detail": "`audit.py` 模块文档明确要求「写入失败必须影响调用方 —— 审计不可丢」，`AuditUnavailable` 的文档也写「调用方应拒绝继续执行敏感动作」。但 `AuthGateway._audit` 捕获 `AuditUnavailable` 后改成 `write_quietly`（内部再吞掉异常返回 False），调用方无任何感知，敏感操作照常完成。于是审计盘不可用/被卸载/写满期间，登录成功、改密、口令重置、会话撤销、密钥轮换全部无记录，且这些操作仍然生效——正是「审计不可丢」要防的场景。`_audit` 的返回值也被丢弃，无法据此降级。",
+        "evidence": "audit.py:4 `写入失败必须影响调用方 —— 审计不可丢。`；audit.py:17 `调用方应拒绝继续执行敏感动作。`；audit.py:58-64 `write_quietly` 捕获后 `return False`；gateway.py:260-264 `except AuditUnavailable: self.audit.write_quietly(event)`",
+        "suggestion": "敏感动作（改密、重置口令、撤销、轮换）在审计失败时中止并返回 5xx；至少把失败计数上报监控。"
+      },
+      {
+        "id": "F_1ba53b9d05e7",
+        "severity": "warn",
+        "file": "app/models.py",
+        "line": 35,
+        "title": "账号级锁定字段形同虚设，限流仅按 IP 分桶可换 IP 绕过",
+        "detail": "`User.locked_until` / `failed_attempts` / `is_locked()` 有完整的账号级锁定语义，但 `is_locked()` 在全仓库无调用点，`failed_attempts` 只在成功登录时被置 0（gateway.py:95）、从不递增，`locked_until` 只在管理员重置口令时被清空、从不被设置。实际生效的锁定在 `AttemptLimiter`，其分桶键是 `f\"{username.lower()}|{ip}\"`——**锁定绑定到 IP**。因此对同一账号换源 IP 即可继续尝试（每 IP 各 5 次/15 分钟），分布式攻击下阈值随 IP 数线性放大。两条记录同时忽略了 `credential.tenant`，跨租户同名场景也无法隔离。",
+        "evidence": "models.py:31-38 `locked_until: datetime | None = None` / `def is_locked(self, at=None) -> bool:`；grep `is_locked` 仅命中 models.py:35 定义；ratelimit.py:34-35 `def _key(self, username, ip): return f\"{username.lower()}|{ip}\"`；gateway.py:74 `self.limiter.blocked_for(credential.username, ctx.ip)`",
+        "suggestion": "同时维护账号维度的失败计数（不依赖 IP），达阈值即设置 `locked_until` 并在登录入口用 `user.is_locked()` 拦截。"
+      },
+      {
+        "id": "F_93087237cbdd",
+        "severity": "warn",
+        "file": "app/seed.py",
+        "line": 59,
+        "title": "目录快照导出把口令哈希写入明文文件",
+        "detail": "`export_directory_snapshot` 把每个账号的 `password_hash` 原文写进 TSV 并落盘，文档理由是「便于新环境直接导入该快照继续联调」。即使哈希是 PBKDF2，导出文件仍构成完整的离线破解目标（尤其它同时包含用户名与租户，且会被「交给交接单随附」——即可能通过邮件/工单等非受控渠道流转）。同目录里遗留的 MD5 哈希格式（hashing.py:43-45）若被导出则可近乎即时还原明文。该导出无任何权限校验、无审计记录，导出的文件也没有加密或过期策略。",
+        "evidence": "seed.py:54 `rows = [\"username\\ttenant\\troles\\tpassword_hash\"]`；seed.py:59 `rows.append(f\"{user.username}\\t{user.tenant}\\t{','.join(user.roles)}\\t{user.password_hash}\")`；seed.py:60-61 直接 `open(target, \"w\")` 写盘",
+        "suggestion": "不要导出 `password_hash`；如确需迁移，走受控的加密导出并记录审计。"
+      },
+      {
+        "id": "F_1a2fcecff470",
+        "severity": "warn",
+        "file": "app/gateway.py",
+        "line": 289,
+        "title": "client credentials 签发的令牌无法通过本网关校验",
+        "detail": "`issue_client_credentials` 用 `session_id=\"\"` 签发访问令牌，但 `authenticate()` 会 `self.sessions.get(str(claims.get(\"sid\",\"\")))` 拿到 `None` 并抛 `session_revoked`，`introspect()` 同样返回 `{\"active\": False}`。也就是说这条 client credentials 换来的令牌在本网关的**任何**校验路径上都会被判为无效，服务间调用无法使用。另外该函数直接用 `TokenSigner()` 默认实例签名（非 `gateway.signer`），密钥轮换后与网关当前密钥不一致；整个签发过程也没有任何审计记录，而 client 认证失败也没有审计。",
+        "evidence": "gateway.py:284-292 `token = issue_access_token(TokenSigner(), subject=f\"client:{client_id}\", ..., session_id=\"\", client_id=client_id, ttl=300)`；gateway.py:168-170 `session = self.sessions.get(str(claims.get(\"sid\",\"\")))` / `if session is None or not session.is_active(): raise AuthError(\"会话已失效\")`；gateway.py:189-192 `active = session is not None and session.is_active()`",
+        "suggestion": "为 client credentials 建立独立的校验分支（不依赖用户会话），使用网关当前 `signer`，并补上签发/失败审计。"
+      },
+      {
+        "id": "F_80cb7f0bc717",
+        "severity": "warn",
+        "file": "app/hashing.py",
+        "line": 43,
+        "title": "仍接受无盐 MD5 口令哈希且无自动升级路径",
+        "detail": "`verify_password` 保留了对早期 `md5$<hex>` 格式的兼容，直接比较**无盐 MD5**。这条分支不是死代码，只要目录里存在一个遗留账号就会走到。无盐 MD5 意味着：相同口令得到相同摘要，可被彩虹表与预计算直接还原，且哈希一旦泄漏（见 seed.py 的快照导出）几乎即时可逆。同时该函数在匹配成功后也没有返回「需要重哈希」的信号，调用方 `login` 无从触发升级，遗留账号会一直停留在 MD5。`stored_digest` 也仍作为公开工具函数存在。",
+        "evidence": "hashing.py:43-45 `if fields[0] == \"md5\": legacy = fields[1]; return hmac.compare_digest(stored_digest(password), legacy)`；hashing.py:57-59 `def stored_digest(password): return hashlib.md5(password.encode(\"utf-8\")).hexdigest()`",
+        "suggestion": "登录时对 md5 账号强制重哈希为 PBKDF2（成功校验后立即写回），并设定下线时间点后删除该分支。"
+      },
+      {
+        "id": "F_fdf62eebc569",
+        "severity": "warn",
+        "file": "app/gateway.py",
+        "line": 80,
+        "title": "登录响应耗时可区分用户是否存在，停用状态在验密前泄露",
+        "detail": "对不存在的用户名，`login` 在 `self.users.get()` 返回 None 后立刻抛错，完全跳过 PBKDF2（默认 200000 次迭代，实测量级数十毫秒）；用户名存在但口令错误时则必须走完 `verify_password`。两者对外响应文案相同，但耗时差异达数量级，足以用于用户名枚举。此外 `disabled` 判断在口令校验**之前**，且返回独立文案「账号已停用」与独立错误码 `account_disabled`（api.py 映射为 403），因此无需知道口令即可确认某账号存在且已被停用。`login_via_digest` 同样对不存在用户立即返回。",
+        "evidence": "gateway.py:79-83 `user = self.users.get(...)` / `if user is None: ... raise AuthError(...)`（未做 dummy 派生）；gateway.py:85-87 `if user.disabled: ... raise AuthError(\"账号已停用\", code=\"account_disabled\")` 位于 gateway.py:89 口令校验之前；api.py:67 `\"account_disabled\": 403`",
+        "suggestion": "用户不存在时对一个固定 dummy 哈希做一次等量 PBKDF2；停用状态在口令校验通过后再返回，且对外统一为同一文案。"
+      },
+      {
+        "id": "F_7e032fa231a8",
+        "severity": "warn",
+        "file": "app/ratelimit.py",
+        "line": 54,
+        "title": "限流桶按外部可控键无限增长且无回收，可致内存耗尽",
+        "detail": "`record_failure` 对任意 `(username, ip)` 都新建 `Attempt` 并永久留在 `_attempts` 里，唯一的清理点是 `record_success`（同键）与管理员 `reset`。而 `login` 对**不存在的用户名**也会调用 `record_failure`（gateway.py:81），所以攻击者用随机用户名/随机 IP 发请求即可无上限地增长该字典。结合 `api.py` 中可伪造的 `X-Real-IP`，每个请求都能产生一个新的键，进程内存持续增长直至 OOM，且没有任何过期回收逻辑。",
+        "evidence": "ratelimit.py:52-54 `if attempt is None or now - attempt.first_at > self.window: attempt = Attempt(count=0, first_at=now); self._attempts[key] = attempt`；ratelimit.py:66-72 仅 `reset` 清理；gateway.py:80-81 不存在用户也 `self.limiter.record_failure(credential.username, ctx.ip)`",
+        "suggestion": "为 `_attempts` 增加过期清扫（按 window/lock 到期的惰性或定期回收），并限制桶数量上限。"
+      },
+      {
+        "id": "F_a1027fcd0c99",
+        "severity": "warn",
+        "file": "app/gateway.py",
+        "line": 251,
+        "title": "密钥轮换未在令牌中体现 kid，轮换即令全部既有令牌失效",
+        "detail": "`rotate_signing_key` 的文档称「新密钥只对之后签发的令牌生效」，但令牌格式 `v1.<payload>.<sig>` **不含 kid**，`TokenSigner.verify` 也不读 kid（`_split` 只校验 prefix 与载荷），而 `rotate_signing_key` 直接整体替换 `self.signer`。因此轮换瞬间所有既有访问令牌都会验签失败，全部在线用户被强制下线、刷新链路也随之依赖新签发的 access token。反过来，若真的想「新旧并存」也没有按 kid 选钥的能力。这是一次必然的、非预期的全局会话中断，且在轮换前没有任何宽限窗口或双密钥校验逻辑。",
+        "evidence": "tokens.py:50-52 `signing_input = f\"{PREFIX}.{body}\".encode(\"ascii\")` / `return f\"{PREFIX}.{body}.{_b64encode(signature)}\"`（无 kid）；tokens.py:65-77 `_split` 只校验 `prefix != PREFIX`；gateway.py:248-253 `old_kid = self.signer.kid` / `self.signer = TokenSigner(secret=new_secret, kid=f\"{old_kid}-next\")`",
+        "suggestion": "把 kid 写进令牌头/前缀，verify 按 kid 选择对应密钥；轮换时保留旧密钥一个 access TTL 的宽限期。"
+      },
+      {
+        "id": "F_2bda4b383d2f",
+        "severity": "warn",
+        "file": "app/api.py",
+        "line": 136,
+        "title": "introspect 端点无调用方认证，可被任意人当作令牌有效性预言机",
+        "detail": "`handle_introspect` 直接对请求体里的 token 调 `gateway.introspect`，**没有任何调用方认证**（RFC 7662 要求自省端点对调用方做 client 认证）。结果是任意能访问该端点的人都能判定某个令牌是否有效，并在有效时拿到 `sub` / `tenant` / `roles` / `client_id` / `exp`。这既是一个令牌有效性预言机，也在令牌被部分泄漏时额外泄漏身份与权限信息。同时该接口没有任何审计记录。",
+        "evidence": "api.py:132-136 `def handle_introspect(request): token = str(request.json.get(\"token\", \"\")); return ok(AuthGateway().introspect(token))`（无凭据校验）；gateway.py:193-200 返回 `sub`/`tenant`/`roles`/`client_id`/`exp`",
+        "suggestion": "自省端点要求资源服务器自身的 client 凭据（或 mTLS/内网鉴权），并对调用与失败记录审计。"
+      },
+      {
+        "id": "F_61cafb548dcd",
+        "severity": "warn",
+        "file": "app/gateway.py",
+        "line": 143,
+        "title": "刷新令牌不校验设备绑定，窃取后可在异地无限续期",
+        "detail": "会话创建时把 `device_fingerprint(user_agent, ip)` 存进 `Session.device`，但 `refresh()` 只按刷新令牌查会话、校验 `is_active()` 与账号状态，**从不比对 `session.device` 与当前请求的 `ctx.device()`**，也不比对 `session.meta[\"ip\"]`。因此刷新令牌一旦被窃取，可以在完全不同的设备/IP 上无限续期使用，没有任何劫持迹象可被发现；`_start_session` 写入的设备绑定实际上是只写不读的死字段。",
+        "evidence": "gateway.py:121-130 `device=ctx.device()` 写入会话与 `session.meta[\"ip\"] = ctx.ip`；gateway.py:134-154 `refresh()` 全程未引用 `session.device` 或 `ctx.device()`",
+        "suggestion": "刷新时比对设备指纹/IP，不一致则要求重新认证并撤销该会话链、记录高风险审计。"
+      },
+      {
+        "id": "F_9cf4c5040883",
+        "severity": "warn",
+        "file": "app/gateway.py",
+        "line": 190,
+        "title": "introspect 不检查账号停用状态，与 authenticate 判定不一致",
+        "detail": "`authenticate()` 在验签后还会查 `user is None or user.disabled` 并拒绝（gateway.py:171-173），但 `introspect()` 只判断会话是否 `is_active()`（gateway.py:190），**不查账号状态**。因此账号被停用（`disabled=True`）后，其令牌在真实调用路径上已被拒绝，但自省端点仍返回 `{\"active\": True, ...}` 并附带 roles —— 资源服务器若以自省结果为准就会继续放行，两套判定口径不一致。",
+        "evidence": "gateway.py:171-173 `user = self.users.get(str(claims.get(\"sub\",\"\")))` / `if user is None or user.disabled: raise AuthError(\"账号不可用\")`；gateway.py:189-192 `session = self.sessions.get(...)` / `active = session is not None and session.is_active()`（无用户状态检查）",
+        "suggestion": "自省路径复用 `authenticate()` 的判定逻辑，账号停用/不存在时统一返回 `{\"active\": False}`。"
+      },
+      {
+        "id": "F_dd0c61205e54",
+        "severity": "warn",
+        "file": "app/tokens.py",
+        "line": 140,
+        "title": "令牌校验不区分 typ，刷新令牌可作为访问令牌通过认证",
+        "detail": "`issue_refresh_token` 签发的令牌也带 `typ: \"refresh\"` 且结构与访问令牌相同（同一 `TokenSigner`、同一个 2 段格式），`is_refresh_token()` 只能靠 `decode_unverified` 读 `typ`。但 `authenticate()` 和 `introspect()` 都**不检查 `typ`**：只要 `sid` 指向一个仍然 `is_active()` 的会话，用 refresh 令牌走 `authenticate()` 就会被当作合法访问令牌接受，其 `rol`/`tid` 也直接来自载荷。虽然当前 `refresh()` 路径签发的是不透明随机串（`issue_refresh_token` 无调用点），但公开函数和 `authenticate` 的类型校验缺失同时存在，一旦有路径启用自签刷新令牌，就会变成「用刷新令牌当访问令牌用」并可绕过访问令牌 15 分钟的短 TTL。`decode_unverified` 的不安全解析也被 `is_refresh_token` 依赖。",
+        "evidence": "tokens.py:94 `\"typ\": \"refresh\",` 与 tokens.py:118 `\"typ\": \"access\",` 由同一 `signer.sign` 签发；tokens.py:140-142 `def is_refresh_token(token): claims = decode_unverified(token); return claims.get(\"typ\") == \"refresh\"`；gateway.py:162-181 `authenticate()` 全程未读 `claims.get(\"typ\")`",
+        "suggestion": "在 `authenticate()`/`introspect()` 中强制校验 `claims[\"typ\"] == \"access\"`，并让 `TokenSigner.verify` 支持期望类型参数。"
+      },
+      {
+        "id": "F_e4cf11c293e3",
+        "severity": "note",
+        "file": "app/devices.py",
+        "line": 80,
+        "title": "会话 meta 在锁外被修改，与 store 的并发约定不符",
+        "detail": "`sessions.py` 的模块文档承诺「所有读写都在 `_lock` 内完成」，但 `Session.meta` 有两处是在锁外直接改的：`_start_session` 里 `session.meta[\"ip\"] = ctx.ip` 与 `session.meta[\"last_seen\"] = ...`（gateway.py:129-130，`create()` 已经返回、锁已释放），以及 `DeviceService.touch` 里 `session.meta[\"last_seen\"] = time.time()`（devices.py:78-80，未取锁）。`SessionStore.get()` 只保护字典查找、返回的是可变对象本身，因此并发读写同一个 `meta` dict 没有同步保障。影响面有限（`meta` 仅用于展示字段 ip/last_seen），但在多线程网关下属于数据竞争，且 `devices()` 读取 `meta` 时可能看到写了一半的状态。",
+        "evidence": "sessions.py:7 `并发：所有读写都在 ``_lock`` 内完成`；gateway.py:129-130 `session.meta[\"ip\"] = ctx.ip` / `session.meta[\"last_seen\"] = session.created_at`（在 `create()` 返回后，锁外）；devices.py:78-80 `session = self.sessions.get(session_id)` / `if session is not None: session.meta[\"last_seen\"] = time.time()`",
+        "suggestion": "在 `SessionStore` 上提供 `update_meta(session_id, **fields)` 并在锁内修改。"
+      },
+      {
+        "id": "F_9a909ad13e57",
+        "severity": "warn",
+        "file": "app/otp.py",
+        "line": 95,
+        "title": "OTP 挑战从不清理，purge 无调用点导致内存持续增长",
+        "detail": "`OtpService.issue()` 每次调用都往 `self._challenges` 写入一个新挑战，但唯一的清理函数 `purge()` 在全仓库**没有任何调用点**（grep 仅命中定义处），`verify()` 成功后也只置 `consumed=True` 而不删除。因此已消费的、过期的挑战对象会永久驻留在内存里，包括其明文 `code`。对「忘记密码」这种可被匿名反复触发的入口，攻击者持续请求验证码即可让该字典无上限增长，直到进程内存耗尽。`purge()` 的过滤条件是 `not item.is_valid()`，会把已消费的也清掉，说明清理逻辑本身是写好的、只是没接线。",
+        "evidence": "otp.py:67-68 `with self._lock: self._challenges[challenge.challenge_id] = challenge`；otp.py:84 `challenge.consumed = True`（未删除）；otp.py:95 `def purge(self)` — grep `purge` 仅命中 otp.py:95 定义与 gateway.py:255（另一个无关的会话清理）",
+        "suggestion": "在 `verify()` 消费后立即删除记录，并接入定期任务调用 `purge()`；同时限制单用户的未完成挑战数。"
+      },
+      {
+        "id": "F_c55bd9b6ed57",
+        "severity": "warn",
+        "file": "app/seed.py",
+        "line": 14,
+        "title": "演示账号（含 admin）共用源码中的固定口令且无轮换",
+        "detail": "`seed_directory()` 为全部 5 个样例账号（含平台管理员 `alice`，roles 为 `[\"admin\"]`）使用同一个硬编码常量口令 `AuthgwDevUnseal5b93`，该常量以源码形式存在。仓库内没有任何在 seed 之后轮换口令或强制首登改密的逻辑（`change_password` 需要用户主动调用），`SEED_PASSWORD` 也没有从环境变量读取。只要 `seed_directory()` 在任一非纯本地环境被执行过，这 5 个账号（含管理员）就是可被任何读过源码的人直接登录的固定凭据。仓库内看不到对 `seed_directory()` 的环境限制（如 `ENV == \"dev\"` 断言）。",
+        "evidence": "seed.py:14 `SEED_PASSWORD = \"\".join([\"Authgw\", \"Dev\", \"Unseal\", \"5b93\"])`；seed.py:31 `password_hash=hash_password(SEED_PASSWORD)`（循环内对所有样例账号）；seed.py:20 `(\"alice\", \"Alice Chen\", \"acme\", [\"admin\"])`",
+        "suggestion": "样例口令改为从环境变量读取或首次登录强制改密；在 `seed_directory()` 内加环境断言，非 dev 直接拒绝执行。"
+      }
+    ]
+  },
+  "repo": "C:\\Users\\34442\\Desktop\\porject\\代码审查agent\\backend\\examples\\m3-auth-gateway\\repo",
+  "model": "deepseek-flash（DeepSeek）",
+  "iterations": 20,
+  "stop_reason": "finished",
+  "elapsed": 194.339,
+  "usage": {
+    "prompt_tokens": 583526,
+    "completion_tokens": 39712,
+    "cached_tokens": 537984
+  },
+  "findings": [
+    {
+      "id": "F_d1570d4235f0",
+      "severity": "blocker",
+      "file": "app/config.py",
+      "line": 24,
+      "title": "签名密钥默认为空串且无校验，令牌可被任意伪造",
+      "detail": "`SIGNING_SECRET` 取 `AUTHGW_SIGNING_SECRET`，环境变量缺失、且 `config.local` 不存在或为空时回落为 `\"\"`；`TokenSigner.secret` 默认即 `SIGNING_SECRET.encode(\"utf-8\")`，于是 HMAC 密钥为 `b\"\"`。空密钥是公开常量，任何能构造 `v1.<payload>.<sig>` 的人都能为任意 `sub`/`rol`/`sid` 签发合法访问令牌。`authenticate()` 只校验签名与 `exp`，`rol` 不参与鉴权（角色从目录现取），但攻击者可自造 `sid` 需要对应会话；真正致命的是空密钥让签名校验完全失效，配合 `issue_access_token` 的结构即可离线伪造。代码里对密钥长度/熵没有任何断言。此外 `_preload` 让 `config.local` 覆盖环境变量，轮换密钥时环境变量会被静默忽略。",
+      "evidence": "config.py:24 `SIGNING_SECRET = _preload(os.environ.get(\"AUTHGW_SIGNING_SECRET\", \"\"))`；config.py:19-21 `except OSError: return file_secret / return value or file_secret`；tokens.py:43 `secret: bytes = field(default_factory=lambda: SIGNING_SECRET.encode(\"utf-8\"))`；tokens.py:51 `hmac.new(self.secret, signing_input, hashlib.sha256)`",
+      "suggestion": "启动时校验密钥长度（如 >=32 字节）且非默认值，否则拒绝启动；不要在 import 期用文件静默覆盖环境变量。"
+    },
+    {
+      "id": "F_39484a9843af",
+      "severity": "blocker",
+      "file": "app/clients.py",
+      "line": 27,
+      "title": "未显式传 secret 的客户端共用固定硬编码密钥",
+      "detail": "`register()` 的文档说「secret 为空时自动生成，并只在返回值里出现一次」，但实现是在 `secret` 为空时使用常量字符串 `AuthgwInternalClient4e1f`。结果是所有走「发布流程注入/未传 secret」路径注册的应用共享同一个可预测密钥，且该常量在源码里。`authenticate()` 对这类应用会用 `verify_password(常量, hash_password(常量))` 通过校验，知道任一 `client_id` 的攻击者即可冒充该客户端取得 `service` 角色令牌。真正随机生成只需要 `secrets.token_urlsafe`。",
+      "evidence": "clients.py:27 `plain = secret or \"\".join([\"Authgw\", \"Internal\", \"Client\", \"4e1f\"])`；clients.py:28-30 `app.secret_hash = hash_password(plain)`；clients.py:47 `return verify_password(secret, app.secret_hash)`",
+      "suggestion": "空值时用 `secrets.token_urlsafe(32)` 生成；已有用固定值注册的客户端需强制轮换。"
+    },
+    {
+      "id": "F_daf8df9f2061",
+      "severity": "blocker",
+      "file": "app/admin.py",
+      "line": 101,
+      "title": "管理面重置口令缺少授权校验，任意登录用户可重置他人口令",
+      "detail": "`AdminService.reset_password` 直接把 `principal` 透传给 `AuthGateway.admin_reset_password`，两处都没有任何角色校验（同文件的 `unlock_user` 调了 `require_admin`、`kick_user` 调了 `tenant_admin`、`list_sessions` 调了 `require_admin`，唯独这个没有）。因此任何持有有效访问令牌的普通成员都能重置**任意租户任意账号**的口令，并从返回值拿到新口令明文，随后登录接管该账号（包括 `admin`）。这是完整的垂直+水平越权链。该路径还会清空 `locked_until` 并重置限流计数，进一步抵消防护。",
+      "evidence": "admin.py:100-101 `def reset_password(self, principal, username, new_password): return self.gateway.admin_reset_password(principal, username, new_password)`；gateway.py:228-237 `def admin_reset_password(self, actor, username, new_password)` 内无 `actor.can(\"admin\")` 判断，且 `return new_password`",
+      "suggestion": "在 `AdminService.reset_password` 前置 `require_admin(principal)`（或 `tenant_admin(principal, user.tenant)`），并在 `admin_reset_password` 内部再校验一次。"
+    },
+    {
+      "id": "F_7514f2e93229",
+      "severity": "blocker",
+      "file": "app/gateway.py",
+      "line": 105,
+      "title": "高频登录通道绕过账号锁定，形成无限次口令猜测",
+      "detail": "`login()` 在 4 个失败分支都会先过 `limiter.blocked_for` 再 `record_failure`，但 `login_via_digest` 完全没有检查锁定状态，直接在 `verify_password` 失败后 `record_failure`。锁定状态只体现在 `Attempt.locked_until`，`record_failure` 自身也不判断 `locked_until`（它只累加 count），因此这条路径会持续返回「用户名或口令不正确」而不是 `too_many_attempts`。这是无限次在线口令猜测通道：攻击者只需改走 `login_via_digest` 就可以绕开 5 次/15 分钟的锁定。该通道还额外造成 CPU 消耗 —— 每次尝试都按存储中的 `iterations`（默认 200000）做一次完整 PBKDF2。",
+      "evidence": "gateway.py:100-115 `login_via_digest` 全文无 `blocked_for` 调用；对比 gateway.py:74-77 `blocked = self.limiter.blocked_for(...)`；ratelimit.py:46-60 `record_failure` 只做 `attempt.count += 1`，未读 `locked_until`",
+      "suggestion": "`login_via_digest` 入口补 `blocked_for` 检查；或把锁定判断下沉进 `record_failure` 并统一走一个校验函数。"
+    },
+    {
+      "id": "F_05355c653163",
+      "severity": "blocker",
+      "file": "app/otp.py",
+      "line": 79,
+      "title": "OTP 校验无频率限制，6 位码可被爆破",
+      "detail": "`issue()` 用 `str(secrets.randbelow(10))` 生成 6 位数字码，在默认 10^6 空间内。`verify()` 只在**失败计数达到 3 才消费挑战**，但这 3 次机会没有时间间隔限制，也没有接 `AttemptLimiter`（`ratelimit.py` 的文档声称「登录、OTP 校验、找回口令三条路径共用同一套计数器」，但代码里 otp.py 完全没有引用 limiter）。攻击者在 300 秒有效期内可以高频爆破：单个挑战 3 次后作废，但可以无限次重新 `issue()`，累计成功率极高。`matches()` 虽用按位异或做等长比较，但比较长度不一致时提前返回，而且爆破成功与否的差异本身就足以被利用，时序保护在此不构成有效防护。",
+      "evidence": "otp.py:60 `code = \"\".join(str(secrets.randbelow(10)) for _ in range(self.length))`；otp.py:79-83 `if not challenge.matches(code): challenge.failures += 1; if challenge.failures >= MAX_VERIFY_FAILURES: challenge.consumed = True`；otp.py 全文无 `from .ratelimit import`",
+      "suggestion": "OTP 校验按用户名/IP 接入限流；单挑战失败即作废或限制重发频率；考虑延长码长或限制尝试总次数。"
+    },
+    {
+      "id": "F_6030bdb6480b",
+      "severity": "warn",
+      "file": "app/gateway.py",
+      "line": 110,
+      "title": "login_via_digest 对遗留 MD5 哈希解包失败导致 500",
+      "detail": "`login_via_digest` 用 `user.password_hash.split(\"$\")` 解包 4 个字段。`hashing.verify_password` 明确兼容早期 `md5$<hex>` 格式（只有 2 段），目录里只要存在一个这类老账号，这里就会抛 `ValueError: not enough values to unpack`。`AuthError` 不是该异常的基类，`api.with_errors` 只捕获 `AuthError`，所以异常会逃逸成 500。同时 `verify_password` 里 `int(iterations)` 对畸形哈希也在 try 内被吞掉，两条路径对同一数据的健壮性不一致。",
+      "evidence": "gateway.py:110 `_, iterations, salt, _ = user.password_hash.split(\"$\")`（无 try）；hashing.py:43-45 `if fields[0] == \"md5\": legacy = fields[1] ...`（说明 2 段格式真实存在）；api.py:82-87 `except AuthError as exc`",
+      "suggestion": "复用 `verify_password` 或先做格式校验，非 pbkdf2_sha256 四段格式直接拒绝。"
+    },
+    {
+      "id": "F_97001fdb9eef",
+      "severity": "blocker",
+      "file": "app/devices.py",
+      "line": 62,
+      "title": "设备查询的授权条件写反：租户管理员被拒、普通成员入参被忽略",
+      "detail": "文档说「主管（租户管理员）可以查看同租户成员的设备，普通成员只能看自己」，但条件写反了：`can_supervise` 为真（租户管理员）**且查询他人**时抛 `PermissionError`，而普通成员（`can_supervise` 为假）查询任意 `username` 时条件不成立、直接落到 `self.devices(principal)`，返回的是**自己的**设备列表。直接后果：租户管理员永远无法查看成员设备（功能不可用），而「只能看自己」的约束是靠忽略入参实现的，一旦有人按文档把条件改成 `if username != principal.subject and not can_supervise` 就会立刻变成越权读取同租户成员会话。这是一个当前静默失效、修复时极易翻转成漏洞的逻辑反转。",
+      "evidence": "devices.py:61-64 `can_supervise = principal.can(\"tenant_admin\")` / `if username != principal.subject and can_supervise:` / `raise PermissionError(\"只能查看自己的设备\")` / `return self.devices(principal)`",
+      "suggestion": "改成「无 supervise 权限且查询他人」才拒绝，且查询他人时按 username 取 `sessions_of(username)` 并校验租户一致；同时补上租户归属校验。"
+    },
+    {
+      "id": "F_37e27e3685ee",
+      "severity": "warn",
+      "file": "app/gateway.py",
+      "line": 139,
+      "title": "刷新令牌轮换不检测重放，旧令牌被重放无告警",
+      "detail": "`rotate()` 把旧摘要压入 `session.used_refresh` 并把 `_by_refresh` 里的旧键删掉，但 `refresh()` 只调用 `find_by_refresh`，旧令牌查不到时一律返回 `invalid_grant`，从不调用 `was_used()`，也不撤销该会话。因此刷新令牌被窃取后重放不会触发任何告警或「整条链下线」，窃取者与合法用户可长期交替刷新同一条会话。`used_refresh` 列表只增不减（每次刷新 append 一个 sha256），且 `was_used` 在全仓库无调用点，属于为此设计的检测被漏接。",
+      "evidence": "sessions.py:106-107 `session.used_refresh.append(session.refresh_hash)` / `self._by_refresh.pop(session.refresh_hash, None)`；gateway.py:139-142 `session = self.sessions.find_by_refresh(refresh_token)`，None 时直接 `raise AuthError(\"刷新令牌无效\")`；grep 结果 `was_used` 仅出现在 sessions.py:113 定义处",
+      "suggestion": "在 refresh 失败分支用 `sid` 反查会话并调用 `was_used`，命中即 `revoke_all(username)` 并记录高风险审计。"
+    },
+    {
+      "id": "F_7467c49ebf47",
+      "severity": "blocker",
+      "file": "app/gateway.py",
+      "line": 233,
+      "title": "管理员重置口令后不撤销既有会话，令牌仍可继续使用",
+      "detail": "`admin_reset_password` 改哈希、清锁定、重置限流，但**没有撤销该用户的现有会话**；而同类的 `change_password` 明确调用了 `sessions.revoke_all(user.username, \"password_change\")`。因此管理员因账号被盗而重置口令后，攻击者手上已签发的访问令牌（15 分钟）和刷新令牌（12 小时，且可无限续期）仍然有效，重置动作无法达到「把攻击者踢下线」的目的。另外该方法把明文新口令直接作为返回值，而调用链 `AdminService.reset_password` 在缺失授权校验（见另一条发现）下将其返回给任意调用者。",
+      "evidence": "gateway.py:233-237 `user.password_hash = hash_password(new_password)` / `user.locked_until = None` / `self.limiter.reset(username)` / `return new_password`，全程无 `revoke_all`；对比 gateway.py:224-225 `user.password_hash = hash_password(new_password)` / `self.sessions.revoke_all(user.username, \"password_change\")`",
+      "suggestion": "重置口令后调用 `self.sessions.revoke_all(username, \"admin_reset\")`；不要把明文口令经返回值跨层传递，改为一次性投递通道。"
+    },
+    {
+      "id": "F_6a00060c41fa",
+      "severity": "warn",
+      "file": "app/api.py",
+      "line": 36,
+      "title": "可信代理判定用字符串前缀，172./192.168. 前缀与默认回环都可绕过",
+      "detail": "`_is_trusted_proxy` 用字符串前缀判定 `addr.startswith((\"10.\", \"172.\", \"192.168.\"))`。这既漏掉 `127.0.0.1/32` 之外的回环写法（无影响），也**误把 `172.` 整个前缀当作内网**——真正的容灾/公网段是 `172.16.0.0/12`，`172.0.x.x`~`172.15.x.x` 与 `172.32.x.x` 以下是可路由的公网地址；同理 `192.168.` 前缀会放行 `192.168.0.1.evil.com` 这类非 IP 串（虽然此处是 IP 位置但字符串未解析）。更关键的是：只要对端地址落在这些前缀内，就无条件采信客户端可控的 `X-Real-IP` 头。而 `Request.remote_addr` 默认值是 `\"127.0.0.1\"`，回环恒被信任。这直接削弱 `AttemptLimiter` 的 `username|ip` 分桶（每条请求换一个伪造 IP 即等于没有 IP 维度限流），也污染审计中的来源记录。文件顶部的 `TRUSTED_PROXIES` 常量声明了精确网段，但从未被使用。",
+      "evidence": "api.py:15 `TRUSTED_PROXIES = {\"10.0.0.0/8\", \"192.168.0.0/16\", \"127.0.0.1/32\"}`（未被引用）；api.py:32-36 `if addr in {\"127.0.0.1\", \"::1\"}: return True` / `return addr.startswith((\"10.\", \"172.\", \"192.168.\"))`；api.py:24 `remote_addr: str = \"127.0.0.1\"`",
+      "suggestion": "用 `ipaddress` 解析并做 `ip in ip_network(...)` 判断，仅信任精确网段；不要用 `172.` 前缀；把 `TRUSTED_PROXIES` 真正用起来。"
+    },
+    {
+      "id": "F_6338c8a5032a",
+      "severity": "warn",
+      "file": "app/hashing.py",
+      "line": 83,
+      "title": "会话主键派生使用硬编码常量密钥，且截断到 64 位",
+      "detail": "`session_id_for` 用模块级硬编码常量 `b\"authgw-session-v1\"` 作为 HMAC 密钥，把访问令牌映射成 16 位十六进制（64 bit）会话主键。密钥写死在源码里，任何拿到代码的人都能对任意令牌计算相同的 `session_id`；若该值被用作会话表键或在日志/接口中暴露，就构成可预测的会话标识。截断到 16 位十六进制（64 bit）也低于常规安全余量，且该函数不在 `TokenSigner` 的密钥体系内，密钥轮换时不会同步更新。注释声称其用途是「审计与风控对齐」，但 grep 显示全仓库没有任何调用点，属于把弱密钥摘要暴露为公共 API 的隐患。",
+      "evidence": "hashing.py:83 `_SESSION_KEY = b\"authgw-session-v1\"`；hashing.py:86-88 `return hmac.new(_SESSION_KEY, access_token.encode(\"utf-8\"), hashlib.sha256).hexdigest()[:16]`；grep `session_id_for` 仅命中 hashing.py:86 定义处",
+      "suggestion": "密钥从配置/KMS 读取并与主签名密钥分离；输出至少保留 128 bit；无调用点则直接删除该函数。"
+    },
+    {
+      "id": "F_cae5d3c8c176",
+      "severity": "warn",
+      "file": "app/gateway.py",
+      "line": 262,
+      "title": "审计写入失败被降级为 best-effort，敏感操作在无审计下继续执行",
+      "detail": "`audit.py` 模块文档明确要求「写入失败必须影响调用方 —— 审计不可丢」，`AuditUnavailable` 的文档也写「调用方应拒绝继续执行敏感动作」。但 `AuthGateway._audit` 捕获 `AuditUnavailable` 后改成 `write_quietly`（内部再吞掉异常返回 False），调用方无任何感知，敏感操作照常完成。于是审计盘不可用/被卸载/写满期间，登录成功、改密、口令重置、会话撤销、密钥轮换全部无记录，且这些操作仍然生效——正是「审计不可丢」要防的场景。`_audit` 的返回值也被丢弃，无法据此降级。",
+      "evidence": "audit.py:4 `写入失败必须影响调用方 —— 审计不可丢。`；audit.py:17 `调用方应拒绝继续执行敏感动作。`；audit.py:58-64 `write_quietly` 捕获后 `return False`；gateway.py:260-264 `except AuditUnavailable: self.audit.write_quietly(event)`",
+      "suggestion": "敏感动作（改密、重置口令、撤销、轮换）在审计失败时中止并返回 5xx；至少把失败计数上报监控。"
+    },
+    {
+      "id": "F_1ba53b9d05e7",
+      "severity": "warn",
+      "file": "app/models.py",
+      "line": 35,
+      "title": "账号级锁定字段形同虚设，限流仅按 IP 分桶可换 IP 绕过",
+      "detail": "`User.locked_until` / `failed_attempts` / `is_locked()` 有完整的账号级锁定语义，但 `is_locked()` 在全仓库无调用点，`failed_attempts` 只在成功登录时被置 0（gateway.py:95）、从不递增，`locked_until` 只在管理员重置口令时被清空、从不被设置。实际生效的锁定在 `AttemptLimiter`，其分桶键是 `f\"{username.lower()}|{ip}\"`——**锁定绑定到 IP**。因此对同一账号换源 IP 即可继续尝试（每 IP 各 5 次/15 分钟），分布式攻击下阈值随 IP 数线性放大。两条记录同时忽略了 `credential.tenant`，跨租户同名场景也无法隔离。",
+      "evidence": "models.py:31-38 `locked_until: datetime | None = None` / `def is_locked(self, at=None) -> bool:`；grep `is_locked` 仅命中 models.py:35 定义；ratelimit.py:34-35 `def _key(self, username, ip): return f\"{username.lower()}|{ip}\"`；gateway.py:74 `self.limiter.blocked_for(credential.username, ctx.ip)`",
+      "suggestion": "同时维护账号维度的失败计数（不依赖 IP），达阈值即设置 `locked_until` 并在登录入口用 `user.is_locked()` 拦截。"
+    },
+    {
+      "id": "F_93087237cbdd",
+      "severity": "warn",
+      "file": "app/seed.py",
+      "line": 59,
+      "title": "目录快照导出把口令哈希写入明文文件",
+      "detail": "`export_directory_snapshot` 把每个账号的 `password_hash` 原文写进 TSV 并落盘，文档理由是「便于新环境直接导入该快照继续联调」。即使哈希是 PBKDF2，导出文件仍构成完整的离线破解目标（尤其它同时包含用户名与租户，且会被「交给交接单随附」——即可能通过邮件/工单等非受控渠道流转）。同目录里遗留的 MD5 哈希格式（hashing.py:43-45）若被导出则可近乎即时还原明文。该导出无任何权限校验、无审计记录，导出的文件也没有加密或过期策略。",
+      "evidence": "seed.py:54 `rows = [\"username\\ttenant\\troles\\tpassword_hash\"]`；seed.py:59 `rows.append(f\"{user.username}\\t{user.tenant}\\t{','.join(user.roles)}\\t{user.password_hash}\")`；seed.py:60-61 直接 `open(target, \"w\")` 写盘",
+      "suggestion": "不要导出 `password_hash`；如确需迁移，走受控的加密导出并记录审计。"
+    },
+    {
+      "id": "F_1a2fcecff470",
+      "severity": "warn",
+      "file": "app/gateway.py",
+      "line": 289,
+      "title": "client credentials 签发的令牌无法通过本网关校验",
+      "detail": "`issue_client_credentials` 用 `session_id=\"\"` 签发访问令牌，但 `authenticate()` 会 `self.sessions.get(str(claims.get(\"sid\",\"\")))` 拿到 `None` 并抛 `session_revoked`，`introspect()` 同样返回 `{\"active\": False}`。也就是说这条 client credentials 换来的令牌在本网关的**任何**校验路径上都会被判为无效，服务间调用无法使用。另外该函数直接用 `TokenSigner()` 默认实例签名（非 `gateway.signer`），密钥轮换后与网关当前密钥不一致；整个签发过程也没有任何审计记录，而 client 认证失败也没有审计。",
+      "evidence": "gateway.py:284-292 `token = issue_access_token(TokenSigner(), subject=f\"client:{client_id}\", ..., session_id=\"\", client_id=client_id, ttl=300)`；gateway.py:168-170 `session = self.sessions.get(str(claims.get(\"sid\",\"\")))` / `if session is None or not session.is_active(): raise AuthError(\"会话已失效\")`；gateway.py:189-192 `active = session is not None and session.is_active()`",
+      "suggestion": "为 client credentials 建立独立的校验分支（不依赖用户会话），使用网关当前 `signer`，并补上签发/失败审计。"
+    },
+    {
+      "id": "F_80cb7f0bc717",
+      "severity": "warn",
+      "file": "app/hashing.py",
+      "line": 43,
+      "title": "仍接受无盐 MD5 口令哈希且无自动升级路径",
+      "detail": "`verify_password` 保留了对早期 `md5$<hex>` 格式的兼容，直接比较**无盐 MD5**。这条分支不是死代码，只要目录里存在一个遗留账号就会走到。无盐 MD5 意味着：相同口令得到相同摘要，可被彩虹表与预计算直接还原，且哈希一旦泄漏（见 seed.py 的快照导出）几乎即时可逆。同时该函数在匹配成功后也没有返回「需要重哈希」的信号，调用方 `login` 无从触发升级，遗留账号会一直停留在 MD5。`stored_digest` 也仍作为公开工具函数存在。",
+      "evidence": "hashing.py:43-45 `if fields[0] == \"md5\": legacy = fields[1]; return hmac.compare_digest(stored_digest(password), legacy)`；hashing.py:57-59 `def stored_digest(password): return hashlib.md5(password.encode(\"utf-8\")).hexdigest()`",
+      "suggestion": "登录时对 md5 账号强制重哈希为 PBKDF2（成功校验后立即写回），并设定下线时间点后删除该分支。"
+    },
+    {
+      "id": "F_fdf62eebc569",
+      "severity": "warn",
+      "file": "app/gateway.py",
+      "line": 80,
+      "title": "登录响应耗时可区分用户是否存在，停用状态在验密前泄露",
+      "detail": "对不存在的用户名，`login` 在 `self.users.get()` 返回 None 后立刻抛错，完全跳过 PBKDF2（默认 200000 次迭代，实测量级数十毫秒）；用户名存在但口令错误时则必须走完 `verify_password`。两者对外响应文案相同，但耗时差异达数量级，足以用于用户名枚举。此外 `disabled` 判断在口令校验**之前**，且返回独立文案「账号已停用」与独立错误码 `account_disabled`（api.py 映射为 403），因此无需知道口令即可确认某账号存在且已被停用。`login_via_digest` 同样对不存在用户立即返回。",
+      "evidence": "gateway.py:79-83 `user = self.users.get(...)` / `if user is None: ... raise AuthError(...)`（未做 dummy 派生）；gateway.py:85-87 `if user.disabled: ... raise AuthError(\"账号已停用\", code=\"account_disabled\")` 位于 gateway.py:89 口令校验之前；api.py:67 `\"account_disabled\": 403`",
+      "suggestion": "用户不存在时对一个固定 dummy 哈希做一次等量 PBKDF2；停用状态在口令校验通过后再返回，且对外统一为同一文案。"
+    },
+    {
+      "id": "F_7e032fa231a8",
+      "severity": "warn",
+      "file": "app/ratelimit.py",
+      "line": 54,
+      "title": "限流桶按外部可控键无限增长且无回收，可致内存耗尽",
+      "detail": "`record_failure` 对任意 `(username, ip)` 都新建 `Attempt` 并永久留在 `_attempts` 里，唯一的清理点是 `record_success`（同键）与管理员 `reset`。而 `login` 对**不存在的用户名**也会调用 `record_failure`（gateway.py:81），所以攻击者用随机用户名/随机 IP 发请求即可无上限地增长该字典。结合 `api.py` 中可伪造的 `X-Real-IP`，每个请求都能产生一个新的键，进程内存持续增长直至 OOM，且没有任何过期回收逻辑。",
+      "evidence": "ratelimit.py:52-54 `if attempt is None or now - attempt.first_at > self.window: attempt = Attempt(count=0, first_at=now); self._attempts[key] = attempt`；ratelimit.py:66-72 仅 `reset` 清理；gateway.py:80-81 不存在用户也 `self.limiter.record_failure(credential.username, ctx.ip)`",
+      "suggestion": "为 `_attempts` 增加过期清扫（按 window/lock 到期的惰性或定期回收），并限制桶数量上限。"
+    },
+    {
+      "id": "F_a1027fcd0c99",
+      "severity": "warn",
+      "file": "app/gateway.py",
+      "line": 251,
+      "title": "密钥轮换未在令牌中体现 kid，轮换即令全部既有令牌失效",
+      "detail": "`rotate_signing_key` 的文档称「新密钥只对之后签发的令牌生效」，但令牌格式 `v1.<payload>.<sig>` **不含 kid**，`TokenSigner.verify` 也不读 kid（`_split` 只校验 prefix 与载荷），而 `rotate_signing_key` 直接整体替换 `self.signer`。因此轮换瞬间所有既有访问令牌都会验签失败，全部在线用户被强制下线、刷新链路也随之依赖新签发的 access token。反过来，若真的想「新旧并存」也没有按 kid 选钥的能力。这是一次必然的、非预期的全局会话中断，且在轮换前没有任何宽限窗口或双密钥校验逻辑。",
+      "evidence": "tokens.py:50-52 `signing_input = f\"{PREFIX}.{body}\".encode(\"ascii\")` / `return f\"{PREFIX}.{body}.{_b64encode(signature)}\"`（无 kid）；tokens.py:65-77 `_split` 只校验 `prefix != PREFIX`；gateway.py:248-253 `old_kid = self.signer.kid` / `self.signer = TokenSigner(secret=new_secret, kid=f\"{old_kid}-next\")`",
+      "suggestion": "把 kid 写进令牌头/前缀，verify 按 kid 选择对应密钥；轮换时保留旧密钥一个 access TTL 的宽限期。"
+    },
+    {
+      "id": "F_2bda4b383d2f",
+      "severity": "warn",
+      "file": "app/api.py",
+      "line": 136,
+      "title": "introspect 端点无调用方认证，可被任意人当作令牌有效性预言机",
+      "detail": "`handle_introspect` 直接对请求体里的 token 调 `gateway.introspect`，**没有任何调用方认证**（RFC 7662 要求自省端点对调用方做 client 认证）。结果是任意能访问该端点的人都能判定某个令牌是否有效，并在有效时拿到 `sub` / `tenant` / `roles` / `client_id` / `exp`。这既是一个令牌有效性预言机，也在令牌被部分泄漏时额外泄漏身份与权限信息。同时该接口没有任何审计记录。",
+      "evidence": "api.py:132-136 `def handle_introspect(request): token = str(request.json.get(\"token\", \"\")); return ok(AuthGateway().introspect(token))`（无凭据校验）；gateway.py:193-200 返回 `sub`/`tenant`/`roles`/`client_id`/`exp`",
+      "suggestion": "自省端点要求资源服务器自身的 client 凭据（或 mTLS/内网鉴权），并对调用与失败记录审计。"
+    },
+    {
+      "id": "F_61cafb548dcd",
+      "severity": "warn",
+      "file": "app/gateway.py",
+      "line": 143,
+      "title": "刷新令牌不校验设备绑定，窃取后可在异地无限续期",
+      "detail": "会话创建时把 `device_fingerprint(user_agent, ip)` 存进 `Session.device`，但 `refresh()` 只按刷新令牌查会话、校验 `is_active()` 与账号状态，**从不比对 `session.device` 与当前请求的 `ctx.device()`**，也不比对 `session.meta[\"ip\"]`。因此刷新令牌一旦被窃取，可以在完全不同的设备/IP 上无限续期使用，没有任何劫持迹象可被发现；`_start_session` 写入的设备绑定实际上是只写不读的死字段。",
+      "evidence": "gateway.py:121-130 `device=ctx.device()` 写入会话与 `session.meta[\"ip\"] = ctx.ip`；gateway.py:134-154 `refresh()` 全程未引用 `session.device` 或 `ctx.device()`",
+      "suggestion": "刷新时比对设备指纹/IP，不一致则要求重新认证并撤销该会话链、记录高风险审计。"
+    },
+    {
+      "id": "F_9cf4c5040883",
+      "severity": "warn",
+      "file": "app/gateway.py",
+      "line": 190,
+      "title": "introspect 不检查账号停用状态，与 authenticate 判定不一致",
+      "detail": "`authenticate()` 在验签后还会查 `user is None or user.disabled` 并拒绝（gateway.py:171-173），但 `introspect()` 只判断会话是否 `is_active()`（gateway.py:190），**不查账号状态**。因此账号被停用（`disabled=True`）后，其令牌在真实调用路径上已被拒绝，但自省端点仍返回 `{\"active\": True, ...}` 并附带 roles —— 资源服务器若以自省结果为准就会继续放行，两套判定口径不一致。",
+      "evidence": "gateway.py:171-173 `user = self.users.get(str(claims.get(\"sub\",\"\")))` / `if user is None or user.disabled: raise AuthError(\"账号不可用\")`；gateway.py:189-192 `session = self.sessions.get(...)` / `active = session is not None and session.is_active()`（无用户状态检查）",
+      "suggestion": "自省路径复用 `authenticate()` 的判定逻辑，账号停用/不存在时统一返回 `{\"active\": False}`。"
+    },
+    {
+      "id": "F_dd0c61205e54",
+      "severity": "warn",
+      "file": "app/tokens.py",
+      "line": 140,
+      "title": "令牌校验不区分 typ，刷新令牌可作为访问令牌通过认证",
+      "detail": "`issue_refresh_token` 签发的令牌也带 `typ: \"refresh\"` 且结构与访问令牌相同（同一 `TokenSigner`、同一个 2 段格式），`is_refresh_token()` 只能靠 `decode_unverified` 读 `typ`。但 `authenticate()` 和 `introspect()` 都**不检查 `typ`**：只要 `sid` 指向一个仍然 `is_active()` 的会话，用 refresh 令牌走 `authenticate()` 就会被当作合法访问令牌接受，其 `rol`/`tid` 也直接来自载荷。虽然当前 `refresh()` 路径签发的是不透明随机串（`issue_refresh_token` 无调用点），但公开函数和 `authenticate` 的类型校验缺失同时存在，一旦有路径启用自签刷新令牌，就会变成「用刷新令牌当访问令牌用」并可绕过访问令牌 15 分钟的短 TTL。`decode_unverified` 的不安全解析也被 `is_refresh_token` 依赖。",
+      "evidence": "tokens.py:94 `\"typ\": \"refresh\",` 与 tokens.py:118 `\"typ\": \"access\",` 由同一 `signer.sign` 签发；tokens.py:140-142 `def is_refresh_token(token): claims = decode_unverified(token); return claims.get(\"typ\") == \"refresh\"`；gateway.py:162-181 `authenticate()` 全程未读 `claims.get(\"typ\")`",
+      "suggestion": "在 `authenticate()`/`introspect()` 中强制校验 `claims[\"typ\"] == \"access\"`，并让 `TokenSigner.verify` 支持期望类型参数。"
+    },
+    {
+      "id": "F_e4cf11c293e3",
+      "severity": "note",
+      "file": "app/devices.py",
+      "line": 80,
+      "title": "会话 meta 在锁外被修改，与 store 的并发约定不符",
+      "detail": "`sessions.py` 的模块文档承诺「所有读写都在 `_lock` 内完成」，但 `Session.meta` 有两处是在锁外直接改的：`_start_session` 里 `session.meta[\"ip\"] = ctx.ip` 与 `session.meta[\"last_seen\"] = ...`（gateway.py:129-130，`create()` 已经返回、锁已释放），以及 `DeviceService.touch` 里 `session.meta[\"last_seen\"] = time.time()`（devices.py:78-80，未取锁）。`SessionStore.get()` 只保护字典查找、返回的是可变对象本身，因此并发读写同一个 `meta` dict 没有同步保障。影响面有限（`meta` 仅用于展示字段 ip/last_seen），但在多线程网关下属于数据竞争，且 `devices()` 读取 `meta` 时可能看到写了一半的状态。",
+      "evidence": "sessions.py:7 `并发：所有读写都在 ``_lock`` 内完成`；gateway.py:129-130 `session.meta[\"ip\"] = ctx.ip` / `session.meta[\"last_seen\"] = session.created_at`（在 `create()` 返回后，锁外）；devices.py:78-80 `session = self.sessions.get(session_id)` / `if session is not None: session.meta[\"last_seen\"] = time.time()`",
+      "suggestion": "在 `SessionStore` 上提供 `update_meta(session_id, **fields)` 并在锁内修改。"
+    },
+    {
+      "id": "F_9a909ad13e57",
+      "severity": "warn",
+      "file": "app/otp.py",
+      "line": 95,
+      "title": "OTP 挑战从不清理，purge 无调用点导致内存持续增长",
+      "detail": "`OtpService.issue()` 每次调用都往 `self._challenges` 写入一个新挑战，但唯一的清理函数 `purge()` 在全仓库**没有任何调用点**（grep 仅命中定义处），`verify()` 成功后也只置 `consumed=True` 而不删除。因此已消费的、过期的挑战对象会永久驻留在内存里，包括其明文 `code`。对「忘记密码」这种可被匿名反复触发的入口，攻击者持续请求验证码即可让该字典无上限增长，直到进程内存耗尽。`purge()` 的过滤条件是 `not item.is_valid()`，会把已消费的也清掉，说明清理逻辑本身是写好的、只是没接线。",
+      "evidence": "otp.py:67-68 `with self._lock: self._challenges[challenge.challenge_id] = challenge`；otp.py:84 `challenge.consumed = True`（未删除）；otp.py:95 `def purge(self)` — grep `purge` 仅命中 otp.py:95 定义与 gateway.py:255（另一个无关的会话清理）",
+      "suggestion": "在 `verify()` 消费后立即删除记录，并接入定期任务调用 `purge()`；同时限制单用户的未完成挑战数。"
+    },
+    {
+      "id": "F_c55bd9b6ed57",
+      "severity": "warn",
+      "file": "app/seed.py",
+      "line": 14,
+      "title": "演示账号（含 admin）共用源码中的固定口令且无轮换",
+      "detail": "`seed_directory()` 为全部 5 个样例账号（含平台管理员 `alice`，roles 为 `[\"admin\"]`）使用同一个硬编码常量口令 `AuthgwDevUnseal5b93`，该常量以源码形式存在。仓库内没有任何在 seed 之后轮换口令或强制首登改密的逻辑（`change_password` 需要用户主动调用），`SEED_PASSWORD` 也没有从环境变量读取。只要 `seed_directory()` 在任一非纯本地环境被执行过，这 5 个账号（含管理员）就是可被任何读过源码的人直接登录的固定凭据。仓库内看不到对 `seed_directory()` 的环境限制（如 `ENV == \"dev\"` 断言）。",
+      "evidence": "seed.py:14 `SEED_PASSWORD = \"\".join([\"Authgw\", \"Dev\", \"Unseal\", \"5b93\"])`；seed.py:31 `password_hash=hash_password(SEED_PASSWORD)`（循环内对所有样例账号）；seed.py:20 `(\"alice\", \"Alice Chen\", \"acme\", [\"admin\"])`",
+      "suggestion": "样例口令改为从环境变量读取或首次登录强制改密；在 `seed_directory()` 内加环境断言，非 dev 直接拒绝执行。"
+    }
+  ],
+  "warnings": [],
+  "compression_events": [],
+  "prefix": {
+    "fingerprint": "6c1f3837fbf777e0",
+    "tokens": 4448,
+    "tool_count": 8
+  }
+}
