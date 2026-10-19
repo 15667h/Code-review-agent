@@ -3202,3 +3202,58 @@ a.rail__user-name:hover {
     min-width: 7ch;
   }
 }
+
+/* 架构产出的「代码依据」：可点击复制的一串位置。
+   数据侧的 evidence 是 2026-10-19 才加的，界面要能看见它，
+   否则加了等于没加（评审没法拿它去核对）。 */
+.bp-evidence {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 2px;
+}
+
+.bp-evidence__ref {
+  max-width: 100%;
+  padding: 2px 7px;
+  border: 1px solid var(--rule);
+  border-radius: var(--r-sm);
+  background: var(--surface-quiet);
+  color: var(--ink-2);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 1.6;
+  text-align: left;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  transition-property: background-color, border-color, color;
+  transition-duration: var(--dur-fast);
+  transition-timing-function: var(--ease-out);
+}
+
+.bp-evidence__ref:hover {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  color: var(--accent-deep);
+}
+
+.bp-evidence__ref.is-copied {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  color: var(--accent-deep);
+  font-family: inherit;
+}
+
+.bp-card__evidence {
+  display: flex;
+  align-items: baseline;
+  gap: var(--sp-2);
+  margin-top: var(--sp-2);
+  padding-top: var(--sp-2);
+  border-top: 1px dashed var(--rule-soft);
+}
+
+.bp-card__evidence .bp-card__label {
+  flex: none;
+}

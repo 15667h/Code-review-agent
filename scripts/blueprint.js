@@ -470,11 +470,52 @@
       if (comp.rationale) {
         dl.appendChild(fact('为什么这样切', el('p', null, comp.rationale)));
       }
+      if ((comp.evidence || []).length) {
+        dl.appendChild(fact('代码依据', evidenceNode(comp.evidence)));
+      }
 
       if (!dl.childElementCount) {
         dl.appendChild(el('p', 'bp__detail-empty', '这个组件只登记了名字。'));
       }
       detail.appendChild(dl);
+    }
+
+    /* 代码依据：一条产出凭什么说自己存在。
+       做成可点击复制而不是超链接 —— 前端拿不到源码查看器，
+       能一键复制路径去编辑器里定位，比点了没反应强。 */
+    function evidenceNode(refs) {
+      var box = el('div', 'bp-evidence');
+      refs.forEach(function (ref) {
+        var chip = el('button', 'bp-evidence__ref');
+        chip.type = 'button';
+        chip.textContent = ref;
+        chip.title = '点击复制：' + ref;
+        chip.setAttribute('translate', 'no');
+        chip.addEventListener('click', function () {
+          var label = chip.getAttribute('data-copied');
+          if (label) {
+            return;
+          }
+          var done = function () {
+            chip.setAttribute('data-copied', '1');
+            chip.classList.add('is-copied');
+            var original = ref;
+            chip.textContent = '已复制';
+            setTimeout(function () {
+              chip.textContent = original;
+              chip.classList.remove('is-copied');
+              chip.removeAttribute('data-copied');
+            }, 1200);
+          };
+          if (navigator.clipboard && navigator.clipboard.writeText) {
+            navigator.clipboard.writeText(ref).then(done, done);
+          } else {
+            done();
+          }
+        });
+        box.appendChild(chip);
+      });
+      return box;
     }
 
     /* ======================================================================
@@ -513,6 +554,12 @@
           cost.appendChild(el('span', 'bp-card__label', '代价'));
           cost.appendChild(el('span', null, item.consequences));
           card.appendChild(cost);
+        }
+        if ((item.evidence || []).length) {
+          var ev = el('div', 'bp-card__evidence');
+          ev.appendChild(el('span', 'bp-card__label', '代码依据'));
+          ev.appendChild(evidenceNode(item.evidence));
+          card.appendChild(ev);
         }
         list.appendChild(card);
       });

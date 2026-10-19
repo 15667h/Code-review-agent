@@ -1,0 +1,763 @@
+{
+  "goal": "给出这个仓库的分层、组件职责与依赖、关键设计决策及其代价，以及尚未确定的问题。每条都要给 evidence。",
+  "agent": "architect",
+  "outcome": "blueprint",
+  "artifacts": {
+    "layer": [
+      {
+        "id": "L_6ce2b4fbf572",
+        "name": "接口/入口层",
+        "purpose": "把 CLI 命令、任务装饰器与公共 API（Celery / shared_task / current_app / canvas 构造器）转成对应用层的调用",
+        "hint": "不负责业务语义（路由、重试、结果存储都不在这里）。当前取舍：命令行与库入口共用同一个 Celery 对象，靠 click 的 UNPROCESSED 参数避免二次转换；这一层大量 import 具体应用层模块，并非纯防腐层。",
+        "order": 0,
+        "evidence": [
+          "celery/bin/celery.py:55",
+          "celery/bin/celery.py:57",
+          "celery/__init__.py:153",
+          "celery/app/__init__.py:24"
+        ]
+      },
+      {
+        "id": "L_74d35f19436c",
+        "name": "应用层（App 与任务模型）",
+        "purpose": "承载 Celery 应用对象本身：配置装载、任务注册表、消息发送（send_task/apply_async）、任务类语义与执行追踪",
+        "hint": "不负责进程管理、消息拉取、并发调度；也不直接持有 broker 连接（连接与 producer 池只是被借出/归还）。取舍：App 是个「上帝对象」，把配置、注册表、后端、AMQP、worker 工厂都挂成 cached_property，换来用户侧单对象体验，代价是 import 图高度中心化。",
+        "order": 1,
+        "evidence": [
+          "celery/app/base.py:376",
+          "celery/app/base.py:1033",
+          "celery/app/task.py:207",
+          "celery/app/trace.py:344",
+          "celery/app/registry.py:12"
+        ]
+      },
+      {
+        "id": "L_e17540826d49",
+        "name": "编排层（Canvas 与 Beat 调度）",
+        "purpose": "把多个任务组合成 DAG（chain/group/chord）并生成投递计划；beat 按时间表周期性投递",
+        "hint": "不负责消息实际发送到 broker（落到应用层的 amqp 发送器），也不负责任务执行。取舍：编排在客户端完成、以「签名冻结成消息」的方式下发，服务端只认消息头，因此不存在中心调度器——代价是执行期无法整体取消/观测一个 chain。",
+        "order": 2,
+        "evidence": [
+          "celery/canvas.py:356",
+          "celery/canvas.py:1199",
+          "celery/canvas.py:2395",
+          "celery/beat.py:225",
+          "celery/beat.py:332"
+        ]
+      },
+      {
+        "id": "L_1e86632217b9",
+        "name": "传输层（消息适配）",
+        "purpose": "把「任务调用」编码为 broker 消息（protocol v1/v2 头字段、队列/交换机/路由）、以及把消息还原成请求",
+        "hint": "不负责执行任务，也不选择结果后端。取舍：队列与路由声明放在应用侧（AMQP 对象），worker 启动时按同一份配置声明队列，因此生产端与消费端的队列拓扑必须一致，这一致性靠配置而不是契约校验保证。",
+        "order": 3,
+        "evidence": [
+          "celery/app/amqp.py:225",
+          "celery/app/amqp.py:326",
+          "celery/app/amqp.py:487",
+          "celery/worker/strategy.py:99",
+          "celery/worker/strategy.py:132"
+        ]
+      },
+      {
+        "id": "L_657ff9681dfe",
+        "name": "执行层（Worker 与并发池）",
+        "purpose": "长驻进程侧：从 broker 拉消息、把消息变成 Request、交给并发池执行、并回写状态与事件",
+        "hint": "不负责决定任务发到哪个队列（那是应用侧的 router），也不负责结果的持久化编码（那是后端）。取舍：worker 的拓扑由 bootsteps 蓝图在运行时按「条件是否满足」动态装配，而非静态进程结构；代价是启动顺序与依赖关系只能靠 requires/conditional 声明，出错时表现为启动期缺属性。",
+        "order": 4,
+        "evidence": [
+          "celery/worker/worker.py:64",
+          "celery/worker/components.py:101",
+          "celery/worker/consumer/consumer.py:146",
+          "celery/concurrency/prefork.py:149",
+          "celery/bootsteps.py:74"
+        ]
+      }
+    ],
+    "component": [
+      {
+        "id": "C_e50758105840",
+        "name": "Celery App",
+        "layer": "应用层（App 与任务模型）",
+        "role": "应用门面",
+        "responsibility": "装载配置、维护任务注册表、把一次任务调用编码成 AMQP 消息并投递、暴露 worker/beat/result 的工厂属性",
+        "interfaces": [
+          "Celery(main, ...)",
+          "app.task(...) 装饰器 / app.register_task()",
+          "app.send_task(name, args, kwargs, **options)",
+          "app.config_from_object / config_from_envvar / config_from_cmdline",
+          "app.finalize() / app.autodiscover_tasks()",
+          "app.connection_for_read() / connection_for_write() / producer_or_acquire()"
+        ],
+        "depends_on": [
+          "任务模型与请求上下文",
+          "结果后端",
+          "AMQP 消息与队列拓扑"
+        ],
+        "failure_modes": [
+          "配置装载失败时（config_from_object 找不到模块）在 finalize 阶段才抛 ImproperlyConfigured，任务装饰器已注册但 app 不可用",
+          "send_task 时 broker 不可达会在 producer_or_acquire 内抛连接错误，此时任务已生成 task_id 但没有消息落地，调用方拿不到 AsyncResult",
+          "任务名未注册时 send_task 仍能发送（故意不 finalize），错误推迟到 worker 侧以 NotRegistered 出现"
+        ],
+        "rationale": "send_task 是「调用方唯一入口」，配置、router、producer 池、backend 钩子都在这一个方法里汇合（celery/app/base.py:1033-1226），说明它是不可再拆的编排点；其余能力都通过 cached_property 挂回同一对象。不按「配置/发送/注册」拆成多个服务，是因为用户侧的 API 契约就是单对象，拆了会破坏 `shared_task` 与多 app 并存的语义。",
+        "evidence": [
+          "celery/app/base.py:376",
+          "celery/app/base.py:1033",
+          "celery/app/base.py:1409",
+          "celery/app/base.py:1617"
+        ]
+      },
+      {
+        "id": "C_b91323836cd5",
+        "name": "任务模型与请求上下文",
+        "layer": "应用层（App 与任务模型）",
+        "role": "任务契约",
+        "responsibility": "定义任务的可调用契约、执行选项继承、重试/替换/更新状态，以及承载单次执行上下文的 Context",
+        "interfaces": [
+          "Task.apply_async(args, kwargs, **options)",
+          "Task.delay(*args, **kwargs)",
+          "Task.apply(...)（同步/eager）",
+          "Task.retry(...)",
+          "Task.update_state(task_id, state, meta)",
+          "Task.before_start/on_success/on_failure/after_return 回调"
+        ],
+        "depends_on": [
+          "Celery App"
+        ],
+        "failure_modes": [
+          "apply_async 的参数与 exec options 合并出错时（例如 time_limit 既在 options 又在显式参数）会抛 TypeError，任务不会发送",
+          "retry 在无 request 上下文（直接调用）时抛 TypeError，说明该组件依赖线程局部的执行上下文",
+          "eager 模式下 apply() 同步执行，重试与 ETA 语义被弱化，与真实投递行为不同"
+        ],
+        "rationale": "Task 同时承载「用户代码」与「投递语义」（apply_async 里既有路由也有 retry 策略），这是现状里最强的耦合；把它单独作为组件而不是塞进 App，是因为 Context 与重试状态机在 worker 侧（trace/request）也被直接复用。",
+        "evidence": [
+          "celery/app/task.py:207",
+          "celery/app/task.py:75",
+          "celery/app/task.py:788",
+          "celery/app/task.py:901"
+        ]
+      },
+      {
+        "id": "C_dfd226f9ad06",
+        "name": "任务追踪器",
+        "layer": "应用层（App 与任务模型）",
+        "role": "执行生命周期",
+        "responsibility": "一次任务执行的完整生命周期：入栈 request、执行 body、状态落库、信号与回调、错误分类（retry/reject/ignore/failure）",
+        "interfaces": [
+          "build_tracer(name, task, ...) -> trace callable",
+          "trace_task(task, uuid, args, kwargs, request)",
+          "trace_task_ret(...) / fast_trace_task(...)（worker 用）",
+          "setup_worker_optimizations(app, hostname)"
+        ],
+        "depends_on": [
+          "任务模型与请求上下文",
+          "结果后端"
+        ],
+        "failure_modes": [
+          "任务体外的异常（反序列化、回调）走 report_internal_error 只写日志并返回 FAILURE，result backend 不可用时这一路径仍不会抛给调用方",
+          "fast_trace_task 在 spawn 型进程模型下没有 _localized 会直接 RuntimeError，必须退回 trace_task_ret",
+          "回调（on_success/on_failure/errbacks）异常被吞成日志，结果状态仍是成功"
+        ],
+        "rationale": "trace 是唯一同时依赖 Task、Context、signals、backend 的地方，把它独立成组件才能让 worker 侧（Request/Pool）只关心「调用一个 trace 函数并回传状态」。没有把状态落库并进 trace：backends 还要服务客户端 join，职责不同。",
+        "evidence": [
+          "celery/app/trace.py:344",
+          "celery/app/trace.py:735",
+          "celery/app/trace.py:804",
+          "celery/app/trace.py:188"
+        ]
+      },
+      {
+        "id": "C_ec08324ac019",
+        "name": "结果后端",
+        "layer": "应用层（App 与任务模型）",
+        "role": "状态持久化",
+        "responsibility": "任务状态的写读、结果序列化与压缩、group/chord 元数据与计数、结果过期",
+        "interfaces": [
+          "Backend.store_result / mark_as_done / mark_as_failure / mark_as_retry",
+          "Backend.get_task_meta(task_id) / get_state / get_result",
+          "Backend.save_group / restore_group",
+          "Backend.apply_chord / on_chord_part_return / set_chord_size",
+          "app.backends.by_url(backend) -> (cls, url)"
+        ],
+        "depends_on": [
+          "任务模型与请求上下文",
+          "结果句柄 (AsyncResult/ResultSet)"
+        ],
+        "failure_modes": [
+          "result_backend 未配置时落到 DisabledBackend，任何 get_state/get_result 直接抛 NotImplementedError，且 chord 在 worker 侧不可用（ensure_chords_allowed 抛错）",
+          "后端不可达时 store_result 抛错，任务已执行但结果丢失，调用方会一直 pending 直到超时",
+          "chord 计数器依赖 incr：后端不支持原子自增时 on_chord_part_return 直接 return，回调永不触发"
+        ],
+        "rationale": "把它归在应用层而不是执行层：客户端进程（join/get）与 worker 进程都会写读，任何只挂在 worker 下都会画错依赖图。选择以抽象基类 + 别名表（celery/app/backends.py:15-38）+ entry points 扩展的方式选型，而不是硬编码分支，代价是这个组件反向 import 了 celery.app.task 与 celery.result（见开放问题）。",
+        "evidence": [
+          "celery/backends/base.py:179",
+          "celery/backends/base.py:1406",
+          "celery/app/backends.py:41",
+          "celery/backends/base.py:1150"
+        ]
+      },
+      {
+        "id": "C_11c95c3f2154",
+        "name": "结果句柄 (AsyncResult/ResultSet)",
+        "layer": "应用层（App 与任务模型）",
+        "role": "结果查询",
+        "responsibility": "面向调用方的结果查询/等待句柄，含 join 原生批量读与结果图构建",
+        "interfaces": [
+          "AsyncResult(id, backend=...).get(timeout, propagate)",
+          "ResultSet/GroupResult.join / join_native / restore",
+          "result.revoke() / forget() / as_tuple()"
+        ],
+        "depends_on": [
+          "结果后端",
+          "Celery App"
+        ],
+        "failure_modes": [
+          "get() 默认 propagation 下会把子任务的异常抛给调用方；在 worker 内调用会因 assert_will_not_block 直接报错，除非包在 allow_join_result 里",
+          "AsyncResult 只持有 task_id，后端被清空/过期后 get() 会阻塞到超时而不是立即报错",
+          "EagerResult 不落后端，应用重启后不可恢复"
+        ],
+        "rationale": "与结果后端分开的理由是可替换性方向不同：后端按存储选型（redis/db/rpc），句柄按等待语义分型（同步 join / native join / eager）。合在一起会导致每个后端都重新实现一遍 join 逻辑。",
+        "evidence": [
+          "celery/result.py:70",
+          "celery/result.py:191",
+          "celery/result.py:581",
+          "celery/result.py:935",
+          "celery/result.py:1031"
+        ]
+      },
+      {
+        "id": "C_ad774bc5c18e",
+        "name": "AMQP 消息与队列拓扑",
+        "layer": "传输层（消息适配）",
+        "role": "消息编解码与路由",
+        "responsibility": "构造任务消息头与体、维护队列/交换机/路由表、按 route 规则选出目标队列、提供 producer 池",
+        "interfaces": [
+          "AMQP.create_task_message / send_task_message",
+          "AMQP.as_task_v2(...) / as_task_v1(...)",
+          "AMQP.Queues / AMQP.Router / AMQP.TaskConsumer",
+          "AMQP.default_queue / producer_pool / routes"
+        ],
+        "depends_on": [
+          "Celery App"
+        ],
+        "failure_modes": [
+          "生产端与消费端队列声明不一致（queue_type/exchange_type 不同）时启动即报 PRECONDITION_FAILED，worker 起不来且只影响该队列",
+          "quorum 队列下 direct exchange + ETA 会退化为 worker 内阻塞等待，只有一条 warning 日志（celery/app/base.py:1148）",
+          "协议版本混用（v1/v2）时 strategy 需做 proto1_to_proto2 转换，字段丢失表现为 request 里 root_id/parent_id 为空"
+        ],
+        "rationale": "把「消息长什么样」与「消息发到哪」放在同一组件，是因为二者共用 Queues 与 Router 的同一份配置；而把它与 send_task 分开，是因为 worker 的 TaskConsumer 也要用同一个 Queues 对象来声明队列，双方必须共享同一拓扑来源。",
+        "evidence": [
+          "celery/app/amqp.py:225",
+          "celery/app/amqp.py:326",
+          "celery/app/amqp.py:487",
+          "celery/app/amqp.py:40"
+        ]
+      },
+      {
+        "id": "C_79ca8b81c8c6",
+        "name": "任务执行策略与 Request",
+        "layer": "执行层（Worker 与并发池）",
+        "role": "单任务执行与确认",
+        "responsibility": "把一条消息变成可跟踪的 Request：限速、ETA 排程、撤销判断、投池执行、ack/reject 与超时处理",
+        "interfaces": [
+          "create_request_cls(base, task, pool, hostname, eventer, ...) -> Req",
+          "Request.execute_using_pool(pool) / execute()",
+          "Request.acknowledge() / reject(requeue) / revoked() / maybe_expire()",
+          "Request.on_success / on_failure / on_timeout / on_retry"
+        ],
+        "depends_on": [
+          "AMQP 消息与队列拓扑",
+          "任务追踪器",
+          "并发池抽象与 prefork 实现",
+          "结果后端"
+        ],
+        "failure_modes": [
+          "ETA 任务被塞进 timer，若 timer 线程卡住则任务既不执行也不重新入队，表现为「消息被 ack 但没跑」",
+          "on_timeout 触发硬超时时进程被 terminate，若 pool 不支持 terminate 则该任务占住槽位直到结束",
+          "反序列化失败（on_decode_error）消息被 reject 不 requeue，只能靠 DLX 兜底，默认配置下直接丢失"
+        ],
+        "rationale": "strategy 里把 timer、bucket、pool、state 的引用全部在闭包外预取（celery/worker/strategy.py:109-131），Request 再持有 ack/reject 回调（celery/worker/request.py:145）。这种「热路径预绑定」说明它是性能敏感路径，必须与 consumer 的循环分开，否则每次消息都要做属性查找；同时 Request 是 ack 语义的唯一归属者，不能再拆。",
+        "evidence": [
+          "celery/worker/strategy.py:99",
+          "celery/worker/strategy.py:132",
+          "celery/worker/request.py:67",
+          "celery/worker/request.py:535",
+          "celery/worker/request.py:638"
+        ]
+      },
+      {
+        "id": "C_cf480b53af31",
+        "name": "Broker 消费循环",
+        "layer": "执行层（Worker 与并发池）",
+        "role": "消息拉取与事件循环",
+        "responsibility": "建立并维持 broker 连接、按 prefetch/QoS 拉取消息、驱动事件循环（asyn/sync）、维护限速桶与 ETA timer",
+        "interfaces": [
+          "Consumer.start() / stop() / shutdown()",
+          "Consumer.on_task_request(message)",
+          "Consumer.add_task_queue / cancel_task_queue",
+          "asynloop / synloop(obj, connection, consumer, blueprint, ...)"
+        ],
+        "depends_on": [
+          "任务执行策略与 Request",
+          "AMQP 消息与队列拓扑"
+        ],
+        "failure_modes": [
+          "连接断开时按 on_connection_error_after_connected 重连，期间 prefetch 配额被重算，可能瞬时过取消息",
+          "eventlet/gevent 下 hub 与 timer 必须成对替换，任一缺失会在 start 阶段抛错",
+          "control/gossip/mingle 是可选 bootstep，禁用它们不影响取消息，但集群拓扑不会收敛（同队列消费者数不准）"
+        ],
+        "rationale": "Consumer 被再拆成 connection/events/gossip/mingle/control/agent 等子 bootstep（celery/worker/consumer/__init__.py:2-10），正好说明「取消息」这条主线与集群协作、监控、远程控制是可分离的旁路；把它们留在 Consumer 内部就无法在不启用 gossip 的情况下复用主循环。",
+        "evidence": [
+          "celery/worker/consumer/consumer.py:146",
+          "celery/worker/consumer/consumer.py:375",
+          "celery/worker/loops.py:50",
+          "celery/worker/consumer/__init__.py:2"
+        ]
+      },
+      {
+        "id": "C_c55cde521d77",
+        "name": "并发池抽象与 prefork 实现",
+        "layer": "执行层（Worker 与并发池）",
+        "role": "执行单元管理",
+        "responsibility": "定义「执行目标 + 回调 + 超时 + 终止」的统一池接口，并实现 prefork（进程池）、线程、eventlet/gevent、solo 等变体",
+        "interfaces": [
+          "BasePool.apply_async(target, args, kwargs, **options)",
+          "BasePool.terminate_job(pid, signal) / restart() / info()",
+          "get_implementation(name) -> TaskPool 类"
+        ],
+        "depends_on": [
+          "任务追踪器"
+        ],
+        "failure_modes": [
+          "prefork 子进程被 OOM/信号杀死时靠 lost_worker_timeout 判定 worker lost，任务按配置重投或标记失败",
+          "gevent/eventlet 池无法被强制 terminate，硬超时只能标记而不能真正中断任务",
+          "线程/绿色线程池与事件循环的组合约束（pool_putlocks、uses_semaphore）配错时启动期报错或吞吐异常"
+        ],
+        "rationale": "抽象只在 BasePool（celery/concurrency/base.py:47）这一处，实现按别名表延迟导入，且 pool 在 worker 侧被当成「可以整个替换的驱动器」。这层不能并进 Consumer：pool 决定的是进程模型，Consumer 决定的是 IO 模型，两者在 eventlet/gevent 下需要交叉约束（见 GREEN_POOLS 警告与 Beat 的 ERR_B_GREEN），所以必须各自成组件才能分别校验。",
+        "evidence": [
+          "celery/concurrency/base.py:47",
+          "celery/concurrency/base.py:140",
+          "celery/concurrency/prefork.py:149",
+          "celery/concurrency/__init__.py:11"
+        ]
+      },
+      {
+        "id": "C_f2323365625c",
+        "name": "Worker 装配蓝图",
+        "layer": "执行层（Worker 与并发池）",
+        "role": "进程生命周期装配",
+        "responsibility": "把 pool、consumer、timer、hub、statedb、autoscale、beat 等启动单元按依赖顺序装配成 worker 进程生命周期",
+        "interfaces": [
+          "Blueprint(steps=..., on_start/on_close/on_stopped).apply(worker)",
+          "Step / StartStopStep / ConsumerStep（requires、conditional、create/start/close/terminate）",
+          "WorkController(app, hostname, **kwargs) / start() / stop() / terminate()"
+        ],
+        "depends_on": [
+          "Broker 消费循环",
+          "并发池抽象与 prefork 实现",
+          "Beat 调度器"
+        ],
+        "failure_modes": [
+          "bootstep 的 requires 未满足时（例如 Consumer 依赖 pool，但 pool 条件为 False）启动期以属性缺失形式报错，堆栈指向无关位置",
+          "worker 启动顺序由蓝图拓扑决定，自定义 step 忘记声明 requires 会静默提前执行",
+          "蓝图中途某 step start 抛错时，已启动的 step 靠 close/terminate 逐级回滚，回滚本身失败会掩盖原始异常"
+        ],
+        "rationale": "用 DAG 而不是固定的 __init__ 序列（celery/bootsteps.py:74-117、worker.py:83-95 的 default_steps 是字符串集合），是为了让扩展方只声明「我需要什么」就能插进正确位置。代价是启动期错误全部变成运行期的属性缺失，这一点必须登记而不是抹平。",
+        "evidence": [
+          "celery/bootsteps.py:74",
+          "celery/worker/worker.py:64",
+          "celery/worker/worker.py:83",
+          "celery/worker/components.py:101",
+          "celery/worker/components.py:221"
+        ]
+      },
+      {
+        "id": "C_36c67bb92634",
+        "name": "Canvas 编排",
+        "layer": "编排层（Canvas 与 Beat 调度）",
+        "role": "任务 DAG 组合",
+        "responsibility": "构造任务组合（chain/group/chord/chunks）、冻结任务 id 与依赖关系、把整张 DAG 展开成一系列投递动作",
+        "interfaces": [
+          "signature(name, args, kwargs, options)",
+          "chain(...) / group(...) / chord(header, body) / chunks(...)",
+          "Signature.freeze(...) -> 可投递的签名",
+          "Signature.apply_async(...) / __or__ 运算符组合"
+        ],
+        "depends_on": [
+          "Celery App",
+          "AMQP 消息与队列拓扑",
+          "结果后端"
+        ],
+        "failure_modes": [
+          "chain 在中途某个任务失败时不会自动通知后继，后续步骤永不执行，调用方只能看到第一个任务 FAILURE",
+          "chord 的 header 结果必须持久化到后端：backend 不支持 incr 或结果过期被清掉时回调永不触发，且只留一条日志",
+          "group 的 tasks 在 freeze 时一次性展开，超大 group 会在客户端产生海量消息与内存尖峰"
+        ],
+        "rationale": "Signature 本身是 dict 子类（celery/canvas.py:356），因此「组合」是客户端的数据结构操作，freeze 之后只剩消息里的 link/group/chord 字段（celery/canvas.py:607）。把它与 App 分开，是因为它不含连接与后端访问，只产出「要发什么」；把它与 AMQP 分开，是因为同一份组合在 eager 模式下完全不经过 AMQP。",
+        "evidence": [
+          "celery/canvas.py:356",
+          "celery/canvas.py:1199",
+          "celery/canvas.py:2395",
+          "celery/canvas.py:607"
+        ]
+      },
+      {
+        "id": "C_e5fbb994cd38",
+        "name": "Beat 调度器",
+        "layer": "编排层（Canvas 与 Beat 调度）",
+        "role": "周期触发",
+        "responsibility": "维护周期任务表（含持久化）、按最小堆推进到期时间、把到期条目投递到 broker、接受远程控��",
+        "interfaces": [
+          "Scheduler(app, schedule).tick() / apply_entry(entry)",
+          "PersistentScheduler（schedule_filename 持久化）",
+          "Service(app, max_interval, schedule_filename, ...).start()",
+          "BeatPidbox（远程控制与 state 同步）"
+        ],
+        "depends_on": [
+          "Celery App",
+          "Canvas 编排"
+        ],
+        "failure_modes": [
+          "多实例同时跑 beat 时 PersistentScheduler 只靠本地文件加锁，跨主机不互斥，同一周期任务会被重复投递",
+          "beat 进程暂停（GC/宿主卡顿）后 tick 一次性补发堆积的到期条目，形成突发流量",
+          "远程控制失效（pidbox 连不上）时 beat 无法被动态调整，只能重启"
+        ],
+        "rationale": "beat 与 canvas 同属编排层但互不依赖：beat 解的是「何时投递」，canvas 解的是「投递什么结构」。它可以内嵌进 worker（EmbeddedService，celery/worker/components.py:195）也可以独立进程，说明它只能作为独立组件挂在编排层，不能折进执行层。",
+        "evidence": [
+          "celery/beat.py:225",
+          "celery/beat.py:332",
+          "celery/beat.py:552",
+          "celery/beat.py:720"
+        ]
+      },
+      {
+        "id": "C_6be6a20db3ae",
+        "name": "事件总线与远程控制",
+        "layer": "接口/入口层",
+        "role": "可观测性与运维通道",
+        "responsibility": "把 worker 的运行事件发布成可订阅流；通过 pidbox 广播在 worker 上执行 inspect/control 命令",
+        "interfaces": [
+          "EventDispatcher.send(type, **fields) / flush()",
+          "events.State.event(event)（内存聚合视图）",
+          "app.control.broadcast(command, arguments, destination)",
+          "worker.control.Panel + @control_command / @inspect_command"
+        ],
+        "depends_on": [
+          "Celery App",
+          "AMQP 消息与队列拓扑"
+        ],
+        "failure_modes": [
+          "event 是 fire-and-forget 的 topic 消息，监控端不在线就永久丢失历史，State 只能重建近似拓扑",
+          "远程控制广播在无 worker 应答时静默返回空，调用方无法区分「没 worker」与「worker 不支持该命令」",
+          "pidbox 广播走 broker，broker 抖动时 control 命令超时但命令可能已执行（非幂等）"
+        ],
+        "rationale": "二者共用同一条「broker 上的旁路通道」，且都只承载观测/运维语义、不参与任务执行主链路，故与 CLI 一起归入接口层，而不塞进执行层。这样执行层不必知道监控端是否存在（celery/worker/strategy.py:114-117 处 eventer 为 None 时整条事件分支被短路）。",
+        "evidence": [
+          "celery/events/dispatcher.py:19",
+          "celery/events/state.py:398",
+          "celery/app/control.py:426",
+          "celery/worker/pidbox.py:20",
+          "celery/worker/control.py:40"
+        ]
+      },
+      {
+        "id": "C_c937123e1003",
+        "name": "CLI 与命令入口",
+        "layer": "接口/入口层",
+        "role": "程序入口",
+        "responsibility": "解析命令行与应用装载、把参数落到配置、启动 worker/beat/control 等程序形态",
+        "interfaces": [
+          "celery [--app/-A] <subcommand>",
+          "CeleryCommand / CeleryOption / CLIContext",
+          "celery.apps.worker.Worker（program 版 worker）",
+          "celery.bin.worker / bin.beat / bin.control / bin.events"
+        ],
+        "depends_on": [
+          "Celery App",
+          "Beat 调度器",
+          "Worker 装配蓝图"
+        ],
+        "failure_modes": [
+          "-A 指定的模块导入失败时提示文案分三种（模块不存在/导入报错/无 app 实例），说明入口对应用装载失败没有统一异常契约",
+          "CLI 选项与应用配置是两套来源，同名项以命令行优先，配置里写错的值可能被静默覆盖",
+          "worker 命令把平台适配（信号、daemon、pidfile）混在 apps/worker 里，测试时无法只起 WorkController"
+        ],
+        "rationale": "bin 层大量直接 import 应用层模块并构造对象（celery/bin/celery.py:13-30），它并不是防腐层；但把它单独设为组件仍然有价值：库内嵌用法完全绕过它（app.Worker()/app.WorkController()），所以「平台适配」必须能被识别为可选外层。",
+        "evidence": [
+          "celery/bin/celery.py:55",
+          "celery/bin/base.py:178",
+          "celery/bin/worker.py:1",
+          "celery/apps/worker.py:35"
+        ]
+      }
+    ],
+    "decision": [
+      {
+        "id": "D_e23f6e92edb8",
+        "title": "任务编排在客户端展开，服务端不持有 DAG 引擎",
+        "decision": "chain/group/chord 全部在调用方进程里 freeze 成消息（link/group_id/chord 头字段），worker 只按单条消息执行并通过结果后端汇合 chord",
+        "rationale": "现状里 Signature.freeze 产出的就是纯消息字段（celery/canvas.py:607），chord 的汇合点落在后端计数上（celery/backends/base.py:1406），执行侧没有任何 DAG 状态机。这样 broker 与后端就是唯一共享状态，worker 无状态可水平扩展",
+        "alternatives": [
+          "引入中心调度器/工作流引擎持有 DAG 状态：可实现整体取消、可视化与重跑，但需要额外的状态存储与高可用，且与现有 broker-即-契约的部署模型冲突",
+          "把组合逻辑下沉到 worker（接收一个 workflow 消息再自行展开）：会要求 worker 之间互相派发，放大重试语义的复杂度"
+        ],
+        "consequences": "chain 中途失败后后继任务永不执行、整体进度不可查询，只能靠事件流（events.State）事后重建；chord 依赖结果后端提供原子 incr 且 header 结果在汇合前不能过期，后端选型从「可选组件」变成「功能前置条件」",
+        "evidence": [
+          "celery/canvas.py:607",
+          "celery/canvas.py:1199",
+          "celery/backends/base.py:1406",
+          "celery/backends/base.py:1433"
+        ]
+      },
+      {
+        "id": "D_e32feff17bd5",
+        "title": "worker 拓扑用 bootsteps DAG 动态装配，而非固定启动序列",
+        "decision": "worker 的各启动单元（Hub/Pool/Timer/StateDB/Consumer/Beat/autoscale）以 Step 类和 requires/conditional 声明依赖，由 Blueprint 拓扑排序后 apply",
+        "rationale": "default_steps 是字符串集合而非硬编码顺序（celery/worker/worker.py:87-95），Blueprint 依据 requires 做拓扑排序并分阶段 start/close/terminate（celery/bootsteps.py:109-117）。这种结构让第三方只声明依赖就能插入，也让「未启用 beat」「无 eventloop」这类条件组合不必写分支",
+        "alternatives": [
+          "在 WorkController.__init__/start 里写死顺序：可读性更好、启动期错误更明确，但每新增一种 pool/loop 组合都要改主干代码",
+          "用 DI 容器：能表达生命周期，但会引入新依赖且难以保持与现有 bootsteps 插件生态兼容"
+        ],
+        "consequences": "依赖声明错误（忘写 requires）只在启动后以「属性不存在」形式暴露，堆栈指向无关位置；启动失败的半初始化状态要靠 close/terminate 逐级回滚，回滚失败会掩盖原始异常",
+        "evidence": [
+          "celery/bootsteps.py:74",
+          "celery/worker/worker.py:83",
+          "celery/worker/components.py:115",
+          "celery/worker/components.py:224"
+        ]
+      },
+      {
+        "id": "D_987f66c728e3",
+        "title": "公共 API 走惰性模块代理，牺牲静态可分析性换取导入速度",
+        "decision": "celery/__init__.py 在导入时用 local.recreate_module 把 Celery/Task/canvas 等替换为按需导入的代理，并对 eventlet/gevent 的 monkey patch 做最早的时机保证",
+        "rationale": "monkey patch 必须早于任何 IO 模块导入（celery/__init__.py:80-82 的注释与 evenlet/gevent 分支），且 celery 被大量短进程工具导入，惰性化能显著降低启动成本",
+        "alternatives": [
+          "直接 import 所有公共符号：类型检查与 IDE 跳转正常，但会破坏 monkey patch 时机并拖慢 CLI 启动",
+          "只用 PEP 562 的 __getattr__：更标准，但无法整体替换模块对象，也难以同时暴露 __version__ 等元数据"
+        ],
+        "consequences": "运行期符号不来自模块真实定义，静态工具与 pickling 依赖字符串路径（celery/app/utils.py:299 AppPickler、celery/app/base.py:1577 __reduce__）来兜底；导入顺序错误会在很晚的阶段才暴露",
+        "evidence": [
+          "celery/__init__.py:153",
+          "celery/__init__.py:119",
+          "celery/app/base.py:1577",
+          "celery/app/utils.py:299"
+        ]
+      },
+      {
+        "id": "D_cb78256cc1ad",
+        "title": "结果后端与并发池都用别名表 + entry points 选型",
+        "decision": "后端通过 BACKEND_ALIASES 字典加 load_extension_class_names('celery.result_backends') 解析，池通过 ALIASES 加 CELERY_CUSTOM_WORKER_POOL 环境变量解析，两者都在使用时才 import",
+        "rationale": "可选依赖很多（redis/mongodb/dynamodb/s3…），若在包内直接 import 会让所有用户承担全部依赖；别名表 + 延迟 symbol_by_name 使各实现可独立缺失（celery/app/backends.py:41-56、celery/concurrency/__init__.py:41-43）",
+        "alternatives": [
+          "用 setuptools entry_points 作为唯一注册机制：更规范，但会丢掉 'redis'/'db' 这类短别名与 url scheme 到实现的直接映射",
+          "在主包里 import 全部实现并 try/except：代码更直白，但 import 图无法收敛，且缺失依赖只能在运行时逐个发现"
+        ],
+        "consequences": "别名表里保留了大量历史别名（如 'riak'、'processes'、'rediss'），拼错时错误信息依赖 UNKNOWN_BACKEND 文案而非类型系统的帮助；第三方实现与内置实现在解析顺序上共存，覆盖关系需要读代码才能确认",
+        "evidence": [
+          "celery/app/backends.py:15",
+          "celery/app/backends.py:46",
+          "celery/concurrency/__init__.py:11",
+          "celery/concurrency/__init__.py:33"
+        ]
+      },
+      {
+        "id": "D_2b5d89a602dd",
+        "title": "接受「一个进程只能有效使用一个 App」的单例假设",
+        "decision": "current_app/current_task 走线程局部加全局 default_app，worker 启动时用 set_current()+set_default() 强行把进程绑定到单一 app，并显式标注为 hack",
+        "rationale": "worker 内的 task 代码通过 current_app/current_task 隐式取上下文，若不绑定则新线程会回落到 default_app（celery/app/trace.py:812-819 的注释直接说明了这一点）。用户侧 shared_task 也依赖 on_app_finalize 的多 app 复制机制（celery/app/__init__.py:54-62）",
+        "alternatives": [
+          "显式把 app 注入每个 task 与 pool 子进程（contextvar/参数传递）：支持同进程多 app，但要改所有公共签名，破坏现有任务代码",
+          "用 contextvars 替代 LocalStack：更契合新异步模型，但 prefork/gevent 下的继承语义仍需验证"
+        ],
+        "consequences": "同一进程内启动两个 app 的 worker 会互相污染 current_app；测试里同时用多个 app 需要手动切换 set_current，否则取到错误注册表；这条假设一旦被打破，故障形式是「静默用错 app」而不是报错",
+        "evidence": [
+          "celery/_state.py:92",
+          "celery/_state.py:139",
+          "celery/app/trace.py:818",
+          "celery/app/__init__.py:54"
+        ]
+      },
+      {
+        "id": "D_a5437b6d2df9",
+        "title": "worker 热路径保留 fast_trace_task 快路径",
+        "decision": "worker 内默认走 fast_trace_task（预置 tasks/accept/hostname 到 _localized 列表），仅在不满足条件时回落到 trace_task_ret",
+        "rationale": "每条消息都要解析 content-type 与查注册表，预置后省掉这些查找（celery/app/trace.py:757-788），setup_worker_optimizations 还把 BaseTask.__call__ 优化掉直接调 run",
+        "alternatives": [
+          "统一只保留 trace_task_ret：代码路径单一、spawn 模型天然可用，代价是每条消息多几次查找与字典访问",
+          "把快路径做成可配置的编译期开关：能兼顾，但会引入两套行为矩阵的测试负担"
+        ],
+        "consequences": "spawn 型进程模型下 _localized 未填充会直接 RuntimeError，必须显式改用 solo/threads 池（celery/app/trace.py:764-774 的错误文案就是在告诉用户这件事）；同时在进程内改注册表（register_task）不会进入快路径视图，必须重新 setup",
+        "evidence": [
+          "celery/app/trace.py:757",
+          "celery/app/trace.py:764",
+          "celery/app/trace.py:825",
+          "celery/app/trace.py:847"
+        ]
+      },
+      {
+        "id": "D_7e61ad3c8d72",
+        "title": "结果 payload 的压缩类型用带内魔数标记",
+        "decision": "存储结果时把压缩类型写在 body 前面（b'\\x00celery-compressed\\x00' + content-type + \\0 + body），而不是依赖消息头",
+        "rationale": "后端把结果当单个不透明值存，没有地方放 kombu 的 compression 头（celery/backends/base.py:44-56 的注释明确说明了这一点）；以 NUL 开头可保证任何现存序列化输出都不会被误判为已压缩",
+        "alternatives": [
+          "给每个 key 单独存一个 compression 元数据键：读放大（每次读两次），且多键写入不具备原子性",
+          "按后端配置全局推断压缩算法：改动配置后旧结果无法解码，会直接读失败"
+        ],
+        "consequences": "payload 与压缩算法绑定，切换压缩算法必须保持解压侧向后兼容；而消息路径（kombu 头）与结果路径（带内魔数）采用了两套不同机制，排查问题时需要区分",
+        "evidence": [
+          "celery/backends/base.py:44",
+          "celery/backends/base.py:57",
+          "celery/backends/base.py:97",
+          "celery/backends/base.py:115"
+        ]
+      }
+    ],
+    "open_question": [
+      {
+        "id": "Q_430457592907",
+        "question": "目标部署是 CPU 密集还是 IO 密集，池类型（prefork / gevent / eventlet / threads）是否已定？",
+        "why_it_matters": "它决定执行层的关键约束：CPU 型才受 cgroup quota 约束（celery/worker/worker.py:167-185 只对 prefork 生效），绿色线程池与内嵌 beat 互斥（celery/worker/components.py:198-201），且绿色池无法硬中断超时任务。选错会让并发模型、超时语义与容量规划全部要重做",
+        "blocking": true,
+        "evidence": [
+          "celery/concurrency/__init__.py:11",
+          "celery/worker/components.py:141",
+          "celery/worker/components.py:201"
+        ]
+      },
+      {
+        "id": "Q_832643fddab1",
+        "question": "是否使用 chord / group 结果聚合？若使用，结果后端的选型与可用性由谁保证？",
+        "why_it_matters": "默认后端是 disabled（celery/app/backends.py:44），而 chord 依赖后端提供原子 incr 与 group 元数据（celery/backends/base.py:1407、1433）。这不只是性能取舍：选 DisabledBackend 或 RPC 后端会让 chord 直接不可用，进而否掉编排层的部分能力",
+        "blocking": true,
+        "evidence": [
+          "celery/backends/base.py:1489",
+          "celery/backends/base.py:1497",
+          "celery/backends/base.py:1407",
+          "celery/app/backends.py:31"
+        ]
+      },
+      {
+        "id": "Q_bc4383100d00",
+        "question": "后端 ↔ 结果句柄 ↔ App 之间的循环依赖是否要拆？",
+        "why_it_matters": "backends.base 反向 import 了 celery.result 与 celery.app.task（celery/backends/base.py:29-32），而 celery.result 又回到 celery.app（celery/result.py:16）、App 再 import backends（celery/app/base.py:47）。这违反了本次分层的单向依赖假设，目前靠惰性代理与延迟 import 绕开。若要做后端独立分发或类型化接口，这个环必须先拆",
+        "blocking": false,
+        "evidence": [
+          "celery/backends/base.py:27",
+          "celery/backends/base.py:32",
+          "celery/result.py:16",
+          "celery/app/base.py:47"
+        ]
+      },
+      {
+        "id": "Q_1f8a4de68819",
+        "question": "beat 是否允许横向多副本？当前持久化只有本地文件，跨主机没有互斥。",
+        "why_it_matters": "如果部署要 beat 高可用，就必须引入外部租约（DB/Redis 锁）或改用分布式调度；否则重复触发会污染下游任务语义。这一条会改变编排层的组件边界（新增一个选主组件），也会改变「周期任务必须幂等」的假设",
+        "blocking": false,
+        "evidence": [
+          "celery/beat.py:552",
+          "celery/beat.py:578",
+          "celery/beat.py:720"
+        ]
+      },
+      {
+        "id": "Q_90e19de7f231",
+        "question": "消息协议 v1/v2 兼容期还要保持多久？超时与 ack 语义是否允许破坏性收紧？",
+        "why_it_matters": "strategy 里仍保留 proto1_to_proto2 与 hybrid 分支（celery/worker/strategy.py:99-143）、amqp 保留 as_task_v1（celery/app/amqp.py:420）。只要兼容期存在，Request 与 trace 的字段解析就不能简化；而硬超时依赖 pool.terminate_job（celery/worker/request.py:535），收紧会改变「超时后是否重投」的可观测行为",
+        "blocking": false,
+        "evidence": [
+          "celery/worker/request.py:535",
+          "celery/worker/request.py:612",
+          "celery/app/amqp.py:420",
+          "celery/worker/strategy.py:66"
+        ]
+      },
+      {
+        "id": "Q_0c8ec54f0a35",
+        "question": "broker 断连后的语义要求是什么（会话亲和、QoS 配额、ETA 任务是否允许重排）？",
+        "why_it_matters": "Consumer 在重连时会重算 prefetch（celery/worker/consumer/consumer.py:820 的 _restore_prefetch_count_after_connection_restart），延迟投递也会重试声明（delayed_delivery.py:31-33）。这些行为决定断连期的重复投递上界，直接影响下游是否必须幂等；需求里没有给出这条约束",
+        "blocking": false,
+        "evidence": [
+          "celery/worker/consumer/consumer.py:428",
+          "celery/worker/consumer/consumer.py:820",
+          "celery/worker/consumer/delayed_delivery.py:31"
+        ]
+      }
+    ]
+  },
+  "repo": "C:\\Users\\34442\\Desktop\\porject\\代码审查agent\\backend\\arch-cases\\e3-celery\\repo",
+  "model": "deepseek-flash（DeepSeek）",
+  "iterations": 23,
+  "stop_reason": "finished",
+  "elapsed": 143.446,
+  "usage": {
+    "prompt_tokens": 930792,
+    "completion_tokens": 25611,
+    "cached_tokens": 856960
+  },
+  "findings": [],
+  "warnings": [
+    "1 处证据不够精确（只有文件名，或指向空行/注释），建议补全完整路径。",
+    "证据核验：132/133 处可精确核实（99.2%）。",
+    "决策「任务编排在客户端展开，服务端不持有 DAG 引擎」的 consequences 里没有任何负面信号（成本/风险/复杂度/迁移…）—— 只有好处没有代价，通常不是选择，而是还没想清楚",
+    "决策「任务编排在客户端展开，服务端不持有 DAG 引擎」的备选像稻草人（只写缺点、没写它自己的优点）：引入中心调度器/工作流引擎持有 DAG 状态：可实现整体取消、可视化与重跑，但需；把组合逻辑下沉到 worker（接收一个 workflow 消息再自行展开）：会 —— 真正的备选至少有它成立的理由",
+    "决策「worker 拓扑用 bootsteps DAG 动态装配，而非固定启动序列」的 consequences 里没有任何负面信号（成本/风险/复杂度/迁移…）—— 只有好处没有代价，通常不是选择，而是还没想清楚",
+    "决策「公共 API 走惰性模块代理，牺牲静态可分析性换取导入速度」的 consequences 里没有任何负面信号（成本/风险/复杂度/迁移…）—— 只有好处没有代价，通常不是选择，而是还没想清楚",
+    "决策「结果后端与并发池都用别名表 + entry points 选型」的备选像稻草人（只写缺点、没写它自己的优点）：在主包里 import 全部实现并 try/except：代码更直白，但 imp —— 真正的备选至少有它成立的理由",
+    "决策「接受「一个进程只能有效使用一个 App」的单例假设」的备选像稻草人（只写缺点、没写它自己的优点）：显式把 app 注入每个 task 与 pool 子进程（contextvar/；用 contextvars 替代 LocalStack：更契合新异步模型，但 p —— 真正的备选至少有它成立的理由",
+    "决策「worker 热路径保留 fast_trace_task 快路径」的备选像稻草人（只写缺点、没写它自己的优点）：统一只保留 trace_task_ret：代码路径单一、spawn 模型天然可用 —— 真正的备选至少有它成立的理由",
+    "决策「结果 payload 的压缩类型用带内魔数标记」的备选像稻草人（只写缺点、没写它自己的优点）：给每个 key 单独存一个 compression 元数据键：读放大（每次读两次 —— 真正的备选至少有它成立的理由"
+  ],
+  "compression_events": [],
+  "prefix": {
+    "fingerprint": "d48575cbcdae6445",
+    "tokens": 7367,
+    "tool_count": 11
+  },
+  "evidence_report": {
+    "total_refs": 133,
+    "ok": 132,
+    "weak": 1,
+    "bad": 0,
+    "items_without_evidence": 0,
+    "grounded_rate": 99.2,
+    "per_kind": {
+      "layer": {
+        "total": 24,
+        "ok": 24,
+        "weak": 0,
+        "bad": 0,
+        "no_evidence": 0
+      },
+      "component": {
+        "total": 60,
+        "ok": 60,
+        "weak": 0,
+        "bad": 0,
+        "no_evidence": 0
+      },
+      "decision": {
+        "total": 28,
+        "ok": 27,
+        "weak": 1,
+        "bad": 0,
+        "no_evidence": 0
+      },
+      "open_question": {
+        "total": 21,
+        "ok": 21,
+        "weak": 0,
+        "bad": 0,
+        "no_evidence": 0
+      }
+    },
+    "problems": [
+      {
+        "kind": "decision",
+        "name": "结果 payload 的压缩类型用带内魔数标记",
+        "evidence": "celery/backends/base.py:44",
+        "status": "weak",
+        "why": "证据只指向注释：celery/backends/base.py:44"
+      }
+    ]
+  }
+}

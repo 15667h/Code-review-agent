@@ -53,6 +53,7 @@ from .guardrails import (
 from .arch_check import check_blueprint_quality, summary_lines, verify_blueprint
 from .arch_check import summary_lines, verify_blueprint
 from .judge import judge_findings
+from .pacing import pacing_note
 from .model import Model, ModelError
 from .sandbox import CommandRunner, Workspace
 from .tools import Risk, tool_report
@@ -263,8 +264,13 @@ def run_agent(
 
         # ---- 构造上下文并调用模型 ----
         extra = spec.status_lines(state) if spec.status_lines else None
+        # 轮次预算与助手自己的状态行并列展示：模型要能一眼看出「还剩几轮」，
+        # 否则会边读边画直到撞上限，留下一份没写完的产出。
+        pace = pacing_note(state.iteration, state.max_iterations)
+        lines = ([pace] if pace else []) + (list(extra) if extra else [])
         messages = builder.build(
-            trajectory, status_message(state, note=status_note, extra_lines=extra)
+            trajectory,
+            status_message(state, note=status_note, extra_lines=lines or None),
         )
 
         # 发出去之前先本地校验一遍消息协议。这一步是 Harness 的自我保护：

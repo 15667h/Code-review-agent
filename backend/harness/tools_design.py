@@ -461,6 +461,9 @@ def build_design_toolbox(
     registry = ToolRegistry()
 
     registry.register(bind_discovery(registry), core=True)
+    # sketch 进核心：它是「先看全局再判断」的入口，如果藏进 discover_tools，
+    # 模型会照旧逐个 read_file，那这条改进就等于没做。
+    registry.register(_tool_sketch(workspace), core=True)
     registry.register(_tool_list_files(workspace), core=True)
     registry.register(_tool_read_file(workspace), core=True)
     registry.register(_tool_grep(workspace), core=True)
@@ -487,3 +490,69 @@ def build_design_toolbox(
 
 
 __all__ = ["CORE_TOOLS", "build_design_toolbox"]
+
+# =============================================================================
+# 架构速写（两阶段里的第一阶段：先拿结构，再判断）
+# =============================================================================
+
+
+def _tool_sketch(workspace: Workspace) -> Tool:
+    def handler(path: str = ".") -> ToolResult:
+        from .sketch import render, sketch_repo
+
+        try:
+            base = workspace.resolve(path)
+        except PathEscape as exc:
+            return ToolResult.failure("PathEscape", str(exc), {"path": path})
+        if not base.is_dir():
+            return ToolResult.failure(
+                "NotADirectory",
+                f"不是一个目录：{path}",
+                {"path": path},
+                suggestion="用 list_files('.') 先看目录结构。",
+            )
+
+        sketches = sketch_repo(base)
+        if not sketches:
+            return ToolResult.success(
+                f"在 {path} 下没有找到可解析的 Python 文件。\n"
+                "如果这个仓库主要是其它语言，请用 list_files + read_file 逐个看。"
+            )
+        return ToolResult.success(render(sketches))
+
+    return Tool(
+        name="sketch",
+        summary="一次扫描出仓库的结构清单：每个文件的行数、类、函数、内部依赖",
+        description="""Sketch the repository structure in ONE call: for every Python file, its line count,
+classes, functions and internal dependencies.
+
+何时用：
+- **开工第一步就该用它**。先拿到全局结构，再决定读哪几个文件 ——
+  逐个 read_file 摸结构很慢，而且很容易在读完之前就用完轮次预算。
+- 准备分层或划组件之前，用它确认「仓库里到底有哪些模块」。
+
+何时不用：
+- 需要看具体实现细节：速写只有符号名，没有函数体，那要用 read_file。
+- 仓库不是 Python：这个工具只解析 Python 的 ast。
+
+边界：
+- 只做结构提取，不做架构判断 —— 它不会告诉你该怎么分层。
+- 默认最多列 120 个文件，超出会明说还剩多少。
+- 语法错误的文件会被跳过（那不是架构问题）。
+
+Returns: 紧凑的结构清单文本。""",
+        parameters={
+            "type": "object",
+            "properties": {
+                "path": {
+                    "type": "string",
+                    "description": "要扫描的目录（相对工作区），默认 '.' 即整个仓库",
+                }
+            },
+            "required": [],
+        },
+        handler=handler,
+        risk=Risk.LOW,
+        examples=[{"path": "."}, {"path": "src"}],
+        keywords=("sketch", "structure", "overview", "outline", "速写", "结构", "概览", "目录"),
+    )

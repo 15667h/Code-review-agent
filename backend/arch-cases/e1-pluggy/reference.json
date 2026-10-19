@@ -1,0 +1,298 @@
+{
+  "case": "e1-pluggy",
+  "note": "参考蓝图：用来把「照妖镜定性通过」变成可复算的分数。组件名后面的 aliases 是同一概念的其它叫法，评分时会归一匹配。",
+  "layers": [
+    {
+      "name": "公开门面层",
+      "aliases": [
+        "public",
+        "门面",
+        "publie api",
+        "对外接口"
+      ]
+    },
+    {
+      "name": "注册编排层",
+      "aliases": [
+        "register",
+        "注册",
+        "编排",
+        "plugin manager"
+      ]
+    },
+    {
+      "name": "调用执行层",
+      "aliases": [
+        "caller",
+        "调用",
+        "执行"
+      ]
+    },
+    {
+      "name": "hook 描述层",
+      "aliases": [
+        "hook-model",
+        "spec",
+        "规格",
+        "描述",
+        "契约"
+      ]
+    },
+    {
+      "name": "基础支撑层",
+      "aliases": [
+        "support",
+        "支撑",
+        "基础设施",
+        "公共"
+      ]
+    }
+  ],
+  "components": [
+    {
+      "name": "HookCaller",
+      "aliases": [
+        "hook-caller",
+        "调用执行",
+        "执行内核",
+        "execution-core",
+        "调用器"
+      ],
+      "layer": "调用执行层"
+    },
+    {
+      "name": "PluginManager",
+      "aliases": [
+        "plugin-manager",
+        "注册编排",
+        "管理器",
+        "插件管理器"
+      ],
+      "layer": "注册编排层"
+    },
+    {
+      "name": "HookSpec/HookImpl 模型",
+      "aliases": [
+        "hook-model",
+        "hook 描述",
+        "HookSpec",
+        "HookImpl",
+        "hookspec",
+        "hookimpl",
+        "规格",
+        "实现模型"
+      ],
+      "layer": "hook 描述层"
+    },
+    {
+      "name": "HookRelay",
+      "aliases": [
+        "relay",
+        "中继",
+        "动态属性",
+        "hook 名字暴露"
+      ],
+      "layer": "注册编排层"
+    },
+    {
+      "name": "Result 汇总",
+      "aliases": [
+        "result-and-warnings",
+        "result",
+        "结果汇总",
+        "返回值处理",
+        "结果与告警"
+      ],
+      "layer": "基础支撑层"
+    },
+    {
+      "name": "包装器织入",
+      "aliases": [
+        "wrappers",
+        "wrapper",
+        "包装器",
+        "hookwrapper",
+        "两代 wrapper"
+      ],
+      "layer": "调用执行层"
+    },
+    {
+      "name": "子集过滤",
+      "aliases": [
+        "subset",
+        "子集",
+        "subset_hook_caller",
+        "SubsetHookCaller"
+      ],
+      "layer": "调用执行层"
+    },
+    {
+      "name": "公开门面/兼容层",
+      "aliases": [
+        "public-api",
+        "compat-facade",
+        "legacy-reexport-shims",
+        "门面",
+        "兼容",
+        "shim",
+        "旧名"
+      ],
+      "layer": "公开门面层"
+    },
+    {
+      "name": "hook 标记与选项",
+      "aliases": [
+        "hook-markers",
+        "hook-opts",
+        "markers",
+        "opts",
+        "标记",
+        "选项"
+      ],
+      "layer": "hook 描述层"
+    },
+    {
+      "name": "tracer",
+      "aliases": [
+        "追踪",
+        "tracing",
+        "调试追踪"
+      ],
+      "layer": "基础支撑层"
+    }
+  ],
+  "edges": [
+    {
+      "from": "公开门面/兼容层",
+      "to": "PluginManager"
+    },
+    {
+      "from": "公开门面/兼容层",
+      "to": "HookCaller"
+    },
+    {
+      "from": "公开门面/兼容层",
+      "to": "HookSpec/HookImpl 模型"
+    },
+    {
+      "from": "公开门面/兼容层",
+      "to": "Result 汇总"
+    },
+    {
+      "from": "PluginManager",
+      "to": "HookCaller"
+    },
+    {
+      "from": "PluginManager",
+      "to": "HookSpec/HookImpl 模型"
+    },
+    {
+      "from": "PluginManager",
+      "to": "hook 标记与选项"
+    },
+    {
+      "from": "PluginManager",
+      "to": "Result 汇总"
+    },
+    {
+      "from": "PluginManager",
+      "to": "tracer"
+    },
+    {
+      "from": "HookRelay",
+      "to": "HookCaller"
+    },
+    {
+      "from": "HookCaller",
+      "to": "HookSpec/HookImpl 模型"
+    },
+    {
+      "from": "HookCaller",
+      "to": "hook 标记与选项"
+    },
+    {
+      "from": "HookCaller",
+      "to": "Result 汇总"
+    },
+    {
+      "from": "HookSpec/HookImpl 模型",
+      "to": "hook 标记与选项"
+    },
+    {
+      "from": "HookSpec/HookImpl 模型",
+      "to": "Result 汇总"
+    },
+    {
+      "from": "hook 标记与选项",
+      "to": "HookSpec/HookImpl 模型"
+    }
+  ],
+  "decisions": [
+    {
+      "title": "调用链惰性组装（首次调用时）",
+      "aliases": [
+        "惰性",
+        "首次调用",
+        "lazy",
+        "延迟组装",
+        "回调注入",
+        "不直接依赖 multicall"
+      ]
+    },
+    {
+      "title": "hookimpl 按 LIFO 逆序执行",
+      "aliases": [
+        "LIFO",
+        "逆序",
+        "后注册先执行"
+      ]
+    },
+    {
+      "title": "不支持异步 hook",
+      "aliases": [
+        "同步 only",
+        "无异步",
+        "异步不支持"
+      ]
+    },
+    {
+      "title": "旧式 hookimpl / _hooks 兼容 shim 并存",
+      "aliases": [
+        "兼容",
+        "shim",
+        "旧名",
+        "legacy",
+        "两代 wrapper 并存",
+        "保留旧名"
+      ]
+    },
+    {
+      "title": "subset 用共享状态代理而非复制列表",
+      "aliases": [
+        "subset",
+        "子集",
+        "共享状态",
+        "代理",
+        "不复制"
+      ]
+    },
+    {
+      "title": "register 先全量校验再改状态（失败原子性）",
+      "aliases": [
+        "原子性",
+        "全量校验",
+        "先校验",
+        "失败回滚"
+      ]
+    },
+    {
+      "title": "hook 发现走 inspect.getattr_static（不执行 descriptor）",
+      "aliases": [
+        "getattr_static",
+        "descriptor",
+        "静态发现",
+        "不执行"
+      ]
+    }
+  ]
+}
