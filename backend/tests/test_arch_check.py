@@ -106,3 +106,65 @@ def test_summary_mentions_specifics(root: Path) -> None:
     )
     text = " ".join(arch_check.summary_lines(report))
     assert "接入层" in text and "越界" in text
+
+
+# =============================================================================
+# 权衡真实性（P1）—— 这一组全部来自真实产出的修正
+# =============================================================================
+
+
+def test_flags_only_benefits() -> None:
+    problems = arch_check.check_decision_quality(
+        {"title": "用缓存", "consequences": "性能提升，代码更清晰", "alternatives": ["直查：简单"]}
+    )
+    assert any("只有一句好话" in p or "没有代价" in p for p in problems)
+
+
+def test_accepts_concrete_cost_without_buzzword() -> None:
+    """真实产出写的代价通常不带「成本」二字，例如「假边」「必须穷举」。"""
+    problems = arch_check.check_decision_quality(
+        {
+            "title": "用 TYPE_CHECKING 单向化循环依赖",
+            "consequences": "依赖图里 models → adapters 是一条假边：只在类型检查期存在，运行时不存在",
+            "alternatives": ["把构建下沉到独立模块：更干净，但需大范围重构"],
+        }
+    )
+    assert problems == []
+
+
+def test_requires_at_least_one_alternative_with_merit() -> None:
+    """判据是「整条决策至少有一个备选写了优点」，不是每条都要。
+
+    真实场景：一条决策有三个备选，其中一个（回滚方案）确实只有坏处可写，
+    但它旁边的备选写了「实现简单、一遍扫描」—— 这不算敷衍。
+    """
+    problems = arch_check.check_decision_quality(
+        {
+            "title": "先全量校验再改状态",
+            "consequences": "需要为每个 HookCaller 设计幂等撤销",
+            "alternatives": [
+                "边发现边挂载：实现简单、一遍扫描，但中途失败会留下部分状态",
+                "全部挂载后回滚：需要设计幂等撤销，还要处理不可撤销的副作用",
+            ],
+        }
+    )
+    assert problems == []
+
+
+def test_flags_all_straw_alternatives() -> None:
+    problems = arch_check.check_decision_quality(
+        {"title": "选 A", "consequences": "增加运维成本", "alternatives": ["方案B：不好", "方案C：没人用"]}
+    )
+    assert any("全都没写自己的优点" in p for p in problems)
+
+
+def test_flags_missing_alternatives() -> None:
+    problems = arch_check.check_decision_quality(
+        {"title": "选 D", "consequences": "增加延迟", "alternatives": []}
+    )
+    assert any("没有登记任何被放弃的备选" in p for p in problems)
+
+
+def test_flags_empty_consequences() -> None:
+    problems = arch_check.check_decision_quality({"title": "X", "consequences": ""})
+    assert any("没有写 consequences" in p for p in problems)

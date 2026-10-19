@@ -1,0 +1,725 @@
+{
+  "goal": "给出这个仓库的分层、组件职责与依赖、关键设计决策及其代价，以及尚未确定的问题。每条都要给 evidence。",
+  "agent": "architect",
+  "outcome": "blueprint",
+  "artifacts": {
+    "layer": [
+      {
+        "id": "L_9cbe5964a29c",
+        "name": "公共 API 层",
+        "purpose": "对外的稳定入口：把「一次性的函数式调用」翻译成一次 Session 生命周期，并做依赖/版本自检",
+        "hint": "不负责请求准备、连接选择、重定向策略。这里刻意没有任何状态：每次调用新建并 with 关闭 Session，因此 API 层不能承载连接复用或配置默认值——那些都在会话编排层",
+        "order": 0,
+        "evidence": [
+          "src/requests/api.py:70",
+          "src/requests/api.py:87",
+          "src/requests/__init__.py:60"
+        ]
+      },
+      {
+        "id": "L_ded595c00cb8",
+        "name": "会话编排层",
+        "purpose": "持有跨请求的可变配置（headers/cookies/auth/proxies/verify/cert），把用户传参与会话默认值合并成 PreparedRequest，选 adapter，并驱动重定向与响应后处理",
+        "hint": "不负责字节传输、不做 URL 编码细节、不解析状态码语义。这一层是唯一知道「一次逻辑请求可能对应多个物理请求」的地方；adapter 侧被要求 redirect=False，所以重定向绝不能下沉到适配层",
+        "order": 1,
+        "evidence": [
+          "src/requests/sessions.py:395",
+          "src/requests/sessions.py:752",
+          "src/requests/sessions.py:127",
+          "src/requests/sessions.py:186"
+        ]
+      },
+      {
+        "id": "L_0614b971a471",
+        "name": "传输适配层",
+        "purpose": "把 PreparedRequest 落到一次实际 socket 写入，管理连接池/TLS 上下文/代理，并把底层异常与原始流式响应交回上层",
+        "hint": "不负责重定向、不负责 cookie 持久化、不负责决定超时默认值（只解析传入的 timeout）。当前只有一个真实实现 HTTPAdapter，BaseAdapter 的抽象很薄——它的价值是「替换传输后端」的接缝，而不是分层依赖方向的另一端",
+        "order": 2,
+        "evidence": [
+          "src/requests/adapters.py:122",
+          "src/requests/adapters.py:158",
+          "src/requests/adapters.py:634",
+          "src/requests/adapters.py:701"
+        ]
+      },
+      {
+        "id": "L_7a2d158f324c",
+        "name": "协议对象层",
+        "purpose": "定义请求/响应这两个数据契约及其编码、解码、流式读取语义；不含连接与 I/O 管理",
+        "hint": "不发起网络调用、不知道 adapter 存在（只在 TYPE_CHECKING 下引用 HTTPAdapter 类型）。注意依赖方向上这一层在传输适配层之下：因为适配层要生产 Response 对象，models 不能反向依赖 adapters",
+        "order": 3,
+        "evidence": [
+          "src/requests/models.py:378",
+          "src/requests/models.py:732",
+          "src/requests/models.py:90",
+          "src/requests/hooks.py:22"
+        ]
+      },
+      {
+        "id": "L_f03aa0c9f8f9",
+        "name": "基础支撑层",
+        "purpose": "无业务编排含义的横切能力：类型别名与内部工具、兼容层、数据结构、异常体系、cookie jar 适配、认证方案、URL/流/头处理工具",
+        "hint": "不发起请求、不持有会话状态。层内部有强制顺序 compat → structures → cookies → utils → auth：cookies 明确不能反向 import utils，utils 又从 cookies 取 cookiejar_from_dict，auth 同时依赖两者——这是本层最容易引入循环导入的地方",
+        "order": 4,
+        "evidence": [
+          "src/requests/compat.py:5",
+          "src/requests/cookies.py:7",
+          "src/requests/utils.py:62",
+          "src/requests/auth.py:21",
+          "src/requests/exceptions.py:12",
+          "src/requests/structures.py:20"
+        ]
+      }
+    ],
+    "component": [
+      {
+        "id": "C_a2cce0085d46",
+        "name": "public-api",
+        "layer": "公共 API 层",
+        "role": "函数式入口",
+        "responsibility": "提供 request/get/options/head/post/put/patch/delete 八个无状态函数，并作为包导出门面（__init__ 做 urllib3/chardet 版本兼容性告警与公开符号 re-export）",
+        "interfaces": [
+          "requests.request(method, url, **kwargs)",
+          "requests.get/post/put/patch/delete/head/options",
+          "import requests 时的版本自检告警"
+        ],
+        "depends_on": [
+          "session"
+        ],
+        "failure_modes": [
+          "每次调用都新建 Session 并在 with 退出时 close，因此函数式 API 用完即关连接池，高频调用下无法复用 TCP/TLS 连接",
+          "依赖版本不匹配时只发 RequestsDependencyWarning 而不报错，用户可能带着不兼容的 urllib3/chardet 继续运行"
+        ],
+        "rationale": "单独成层是因为它不含任何状态与策略：所有 HTTP 方法函数都只是 request() 的薄包装（api.py:87/99/114 等），唯一有实质逻辑的是 with sessions.Session() 的生命周期管理。把它并进会话层会让人误以为函数式调用也能复用到连接池",
+        "evidence": [
+          "src/requests/api.py:24",
+          "src/requests/api.py:70",
+          "src/requests/__init__.py:60"
+        ]
+      },
+      {
+        "id": "C_32b0f9f74009",
+        "name": "session",
+        "layer": "会话编排层",
+        "role": "请求编排与状态持有",
+        "responsibility": "合并会话默认值与单次请求参数（merge_setting/merge_hooks/merge_environment_settings）、组装 PreparedRequest、按 URL 前缀选 adapter、计时、派发 response hook、持久化 cookie、驱动重定向、非 stream 时强制读尽响应体",
+        "interfaces": [
+          "Session.request(method, url, ...)",
+          "Session.send(PreparedRequest, **kwargs)",
+          "Session.prepare_request(Request)",
+          "Session.mount(prefix, adapter)",
+          "Session.close() / 上下文管理器"
+        ],
+        "depends_on": [
+          "redirect-policy",
+          "http-adapter",
+          "request-model",
+          "response-model",
+          "cookies-jar",
+          "auth-handlers",
+          "utils-toolkit",
+          "compat"
+        ],
+        "failure_modes": [
+          "没有 adapter 前缀匹配时 get_adapter 抛 InvalidSchema，请求在发出前即失败",
+          "传入未 prepare 的 Request 对象时 send 直接 raise ValueError(\"You can only send PreparedRequests.\")",
+          "trust_env 默认为 True，会静默把环境变量里的代理和 netrc 凭据注入请求，容器/CI 环境里常导致连到非预期代理",
+          "stream=False 时在 send 末尾触发 r.content，大响应会把整个 body 读进内存"
+        ],
+        "rationale": "这是全库唯一「知道一次逻辑请求可能展开成多次物理请求」的组件，也是唯一持有可变配置的地方。之所以不把合并逻辑下沉到 PreparedRequest：合并需要同时看到会话默认值与单次参数，而 PreparedRequest 被要求只表达最终结果，否则 copy()（模型 copy 用于重定向）会带上会话引用",
+        "evidence": [
+          "src/requests/sessions.py:395",
+          "src/requests/sessions.py:511",
+          "src/requests/sessions.py:752",
+          "src/requests/sessions.py:831",
+          "src/requests/sessions.py:870",
+          "src/requests/sessions.py:826"
+        ]
+      },
+      {
+        "id": "C_7082e8d9398b",
+        "name": "redirect-policy",
+        "layer": "会话编排层",
+        "role": "重定向与凭据安全策略",
+        "responsibility": "判定 Location、按 RFC 语义重建 method/auth/proxies、在跨主机或降级 scheme 时剥离 Authorization、累计 history 并执行 max_redirects 上限",
+        "interfaces": [
+          "SessionRedirectMixin.resolve_redirects(resp, req, ..., yield_requests=False)",
+          "SessionRedirectMixin.get_redirect_target(resp)",
+          "SessionRedirectMixin.should_strip_auth(old_url, new_url)"
+        ],
+        "depends_on": [
+          "request-model",
+          "response-model",
+          "utils-toolkit",
+          "cookies-jar"
+        ],
+        "failure_modes": [
+          "should_strip_auth 在跨主机时剥离 Authorization，但同主机 http→https（各用默认端口）被特例保留，这个特例与 RFC 7235 不一致，属兼容性妥协",
+          "resolve_redirects 依赖调用方传入 stream/timeout/verify/cert/proxies；漏传会退化成默认值，重定向后的请求与首次请求安全设置不一致",
+          "以 yield_requests=True 供 Response.next() 使用时只产出一个 PreparedRequest，不真正发送"
+        ],
+        "rationale": "从 Session 里拆出来单独登记，是因为它是纯策略、可被替换（注释明确鼓励自定义 mixin 并缓存 location），且失效后果（凭据泄漏、死循环重定向）与 Session 的其他职责完全不同。它与 session 构成 mixin 级的双向引用（Session 继承它，它又调用 self.send），属于同一模块内的策略分离，不构成跨层反向依赖",
+        "evidence": [
+          "src/requests/sessions.py:127",
+          "src/requests/sessions.py:154",
+          "src/requests/sessions.py:186",
+          "src/requests/sessions.py:132"
+        ]
+      },
+      {
+        "id": "C_e56f2507d0a7",
+        "name": "http-adapter",
+        "layer": "传输适配层",
+        "role": "字节传输与连接池",
+        "responsibility": "维护 PoolManager/ProxyManager，按请求构造 TLS 上下文与池 key，计算最终 request_url 与 headers，调用 urlopen，并把 urllib3 异常统一翻译为 requests.exceptions，最后用原始响应构建 Response",
+        "interfaces": [
+          "BaseAdapter.send(request, stream, timeout, verify, cert, proxies)",
+          "BaseAdapter.close()",
+          "HTTPAdapter.mount 所需的 init_poolmanager/proxy_manager_for/get_connection"
+        ],
+        "depends_on": [
+          "request-model",
+          "response-model",
+          "auth-handlers",
+          "utils-toolkit",
+          "exceptions",
+          "compat"
+        ],
+        "failure_modes": [
+          "连接失败/超时/代理错误都被翻译成 ConnectionError、ConnectTimeout、ReadTimeout、ProxyError、SSLError，原始 urllib3 异常类型信息仅保留在 __cause__",
+          "SOCKS 依赖缺失时 SOCKSProxyManager 被替换为直接抛 InvalidSchema 的桩函数，代理请求当场失败而非降级直连",
+          "preload_content=False 表示适配层不读 body，忘记消费 raw 会占住连接池槽位",
+          "pool_maxsize 默认 10 且 pool_block=False，并发超过池容量时新建连接而非阻塞"
+        ],
+        "rationale": "切分依据是「唯一与 socket/urllib3 打交道的地方」：BaseAdapter 只有 send/close 两个方法，说明接缝被刻意做窄，目的是让 Session 能按 URL 前缀替换整个传输后端（mount），而不是在 Session 里堆 if 分支。它必须显式 redirect=False、preload_content=False，因为重定向与懒读都是上层策略",
+        "evidence": [
+          "src/requests/adapters.py:122",
+          "src/requests/adapters.py:158",
+          "src/requests/adapters.py:634",
+          "src/requests/adapters.py:701",
+          "src/requests/adapters.py:703",
+          "src/requests/adapters.py:710"
+        ]
+      },
+      {
+        "id": "C_c948e64e6ba4",
+        "name": "request-model",
+        "layer": "协议对象层",
+        "role": "请求数据契约与编码",
+        "responsibility": "Request 收集用户意图，PreparedRequest 完成 method/url/headers/cookies/body/auth/hooks 的规范化与编码（含 multipart、IDNA、Content-Length 推断），并支持 copy() 供重定向复用",
+        "interfaces": [
+          "Request.prepare() -> PreparedRequest",
+          "PreparedRequest.prepare(method, url, headers, files, data, params, auth, cookies, hooks, json)",
+          "PreparedRequest.copy()",
+          "RequestHooksMixin.register_hook/deregister_hook"
+        ],
+        "depends_on": [
+          "auth-handlers",
+          "compat",
+          "exceptions",
+          "utils-toolkit",
+          "structures",
+          "cookies-jar"
+        ],
+        "failure_modes": [
+          "URL 缺少 scheme 抛 MissingSchema、缺少 host 或非法 label 抛 InvalidURL，都在网络调用之前",
+          "prepare() 的顺序是硬约束：prepare_auth 必须最后且 prepare_hooks 在其后，否则 OAuth 类认证加不上 hook",
+          "copy() 共享 body 对象而只深拷贝 headers/cookies，重定向时对 body 的 rewind 依赖 _body_position，不支持 seek 的流会抛 UnrewindableBodyError"
+        ],
+        "rationale": "request-model 与 response-model 分开登记而不是合并成一个 models 组件：二者被不同方向使用（请求对象由会话层构造、响应对象由适配层构造），失败模式完全不同，且合并会掩盖「适配层只依赖 Response 而不依赖 PreparedRequest 的实现细节」这一事实",
+        "evidence": [
+          "src/requests/models.py:284",
+          "src/requests/models.py:378",
+          "src/requests/models.py:424",
+          "src/requests/models.py:456",
+          "src/requests/models.py:483"
+        ]
+      },
+      {
+        "id": "C_6726a43fb3ea",
+        "name": "response-model",
+        "layer": "协议对象层",
+        "role": "响应契约与流式解码",
+        "responsibility": "表达一次响应的状态与视图：状态码语义（ok/is_redirect/raise_for_status）、content/text/json 属性、iter_content/iter_lines 流式读取、hooks 与 history/_next 承载、close() 释放底层连接",
+        "interfaces": [],
+        "depends_on": [
+          "compat",
+          "exceptions",
+          "utils-toolkit",
+          "structures"
+        ],
+        "failure_modes": [
+          "非 stream 且已消费 body 后再次 iter_content 会从内存切片重放，但 _content 为 None 时抛 StreamConsumedError",
+          "content 在 stream 模式下读取失败会抛 ChunkedEncodingError/ContentDecodingError，此时连接状态不可信",
+          "text 依赖 chardet/charset_normalizer 猜测编码，guess_json_utf 只对 JSON 生效，其他类型可能解出乱码而不报错",
+          "__exit__ 只调用 close()，不消费 body，with 块中未读完的响应无法复用连接"
+        ],
+        "rationale": "Response 的核心是「延迟消费」状态机（_content_consumed/raw/_content），与 PreparedRequest 的一次性编码职责几乎没有交集。单独登记才能把「适配层以 preload_content=False 交回原始流、由本组件决定何时读」这条契约写清楚——这是整个库里最容易出资源问题的接缝",
+        "evidence": [
+          "src/requests/models.py:732",
+          "src/requests/models.py:907",
+          "src/requests/models.py:1035",
+          "src/requests/models.py:1054",
+          "src/requests/models.py:1144",
+          "src/requests/models.py:1173"
+        ]
+      },
+      {
+        "id": "C_9d00bcb98253",
+        "name": "cookies-jar",
+        "layer": "基础支撑层",
+        "role": "cookie jar 适配",
+        "responsibility": "在 stdlib http.cookiejar 与 requests 对象之间做双向适配：RequestsCookieJar（含 dict 式访问与域冲突语义）、MockRequest/MockResponse 伪装、extract_cookies_to_jar、get_cookie_header、merge_cookies、cookiejar_from_dict",
+        "interfaces": [],
+        "depends_on": [
+          "compat",
+          "structures"
+        ],
+        "failure_modes": [
+          "MockRequest/MockResponse 把 PreparedRequest 伪装成 urllib2.Request，任何新增的 request 属性都需同步补齐，否则 http.cookiejar 策略静默错判",
+          "cookie 冲突读取（get_dict 同名不同域）抛 CookieConflictError，调用方需显式处理",
+          "会话 jar 是进程内可变对象，多线程共享同一 Session 时并发写 jar 无锁保护"
+        ],
+        "rationale": "它是 stdlib http.cookiejar 与 requests 对象模型之间的适配层，位置被 import 顺序锁死：cookies 不能 import utils（模块头注释明确警告），而 utils 反过来要 cookiejar_from_dict。正因为这条约束，它必须是支撑层里较底层的一员，不能并进 session",
+        "evidence": [
+          "src/requests/cookies.py:7",
+          "src/requests/cookies.py:31",
+          "src/requests/cookies.py:625",
+          "src/requests/sessions.py:799"
+        ]
+      },
+      {
+        "id": "C_ed1d8523adef",
+        "name": "auth-handlers",
+        "layer": "基础支撑层",
+        "role": "认证策略",
+        "responsibility": "把认证方案渲染成请求头或 hook：Basic/Proxy/Digest 实现、_basic_auth_str；Digest 额外维护 401 后重放的 nonce 计数状态",
+        "interfaces": [],
+        "depends_on": [
+          "cookies-jar",
+          "utils-toolkit",
+          "compat"
+        ],
+        "failure_modes": [
+          "HTTPDigestAuth 在 401 场景会重复发起一次请求并在 4xx 后重置计数，重试边界依服务端行为而定",
+          "netrc 凭据在 trust_env 且未显式设置 auth 时被自动注入，凭据来源对调用方不可见",
+          "认证对象可能通过 prepare_auth 追加 hooks，因此它在 prepare 顺序中必须最后，顺序变化会静默失效"
+        ],
+        "rationale": "Basic/Digest/Proxy 认证被切成可替换的策略对象（AuthBase 子类），原因是认证既有「一次性拼 header」形态也有「401 后重放」形态，后者需要持有状态。它依赖 cookies（Digest 要从 401 响应取 cookie）与 utils（parse_dict_header），却又被 models/adapters 反过来引用，因此只能放在支撑层偏上位置",
+        "evidence": [
+          "src/requests/auth.py:34",
+          "src/requests/auth.py:21",
+          "src/requests/sessions.py:537",
+          "src/requests/models.py:445",
+          "src/requests/adapters.py:36"
+        ]
+      },
+      {
+        "id": "C_32009525ea7a",
+        "name": "utils-toolkit",
+        "layer": "基础支撑层",
+        "role": "横切工具库",
+        "responsibility": "横切工具函数集：URL 拼接/替换/授权剥离（urldefragauth、requote_uri、prepend_scheme_if_needed）、代理与环境解析（get_environ_proxies、select_proxy、should_bypass_proxies、resolve_proxies）、默认头部与 CA 路径、编码/流处理（guess_json_utf、iter_slices、stream_decode_response_unicode、super_len）、头部校验、netrc 与文件名推断、rewind_body",
+        "interfaces": [],
+        "depends_on": [
+          "compat",
+          "exceptions",
+          "structures",
+          "cookies-jar"
+        ],
+        "failure_modes": [
+          "代理解析混合了 getproxies/proxy_bypass 与 REQUESTS_CA_BUNDLE 等环境变量，环境差异会让相同代码在不同机器走不同路径",
+          "get_netrc_auth 读取用户 home 下的 netrc，读取失败被吞掉并返回 None，凭据缺失表现为匿名请求",
+          "atomic_open 用临时文件落盘，磁盘不可写时抛 OSError 而非降级为内存"
+        ],
+        "rationale": "1155 行、44 个函数的集中地，明显不是「一个组件」意义上的内聚单元，但现状就是被所有上层当作函数工具集直接 import。登记它而不是拆成多个虚构组件，是因为拆分建议属于重构议题、当前没有代码支撑；把它记成单一组件反而能让评审看到「这一层正在承担 URL 处理 + 代理解析 + 流/编码工具 + 头部校验四种不相关职责」这个事实",
+        "evidence": [
+          "src/requests/utils.py:33",
+          "src/requests/utils.py:62",
+          "src/requests/utils.py:69",
+          "src/requests/utils.py:7"
+        ]
+      },
+      {
+        "id": "C_a212c85632d4",
+        "name": "structures",
+        "layer": "基础支撑层",
+        "role": "语义容器",
+        "responsibility": "提供全库共用的语义容器：CaseInsensitiveDict（headers 的大小写不敏感语义）与 LookupDict（status_codes 的属性式查表）",
+        "interfaces": [],
+        "depends_on": [
+          "compat"
+        ],
+        "failure_modes": [
+          "CaseInsensitiveDict 对 lower() 相同的重复 key 行为未定义（文档明示），大小写混合写入时后写覆盖前写",
+          "LookupDict.__getitem__ 落在 __dict__ 上，未命中的状态码查询返回 None 而不是 KeyError，错误会被静默传递"
+        ],
+        "rationale": "headers 的大小写不敏感语义被 session、models、utils、adapters 共同依赖，因此它必须位于比这些调用者更低的支撑位置，且只依赖 compat（MutableMapping 的兼容导入）。单独登记是因为它的「未定义行为」与 status_codes 的 None 回退是两个独立的语义风险点",
+        "evidence": [
+          "src/requests/structures.py:20",
+          "src/requests/structures.py:96",
+          "src/requests/utils.py:69",
+          "src/requests/models.py:71"
+        ]
+      },
+      {
+        "id": "C_4584ac2509e2",
+        "name": "compat",
+        "layer": "基础支撑层",
+        "role": "兼容与条件导入",
+        "responsibility": "集中所有环境/版本条件判断：urllib3 主版本探测（is_urllib3_1）、chardet 与 charset_normalizer 择优加载、simplejson 顶替 json、stdlib 跨版本符号 re-export、以及 requests.packages.* 历史别名注入",
+        "interfaces": [],
+        "depends_on": [],
+        "failure_modes": [
+          "urllib3 版本探测失败时 is_urllib3_1 回退为 True（\"prefer old functionality\"），可能对 v2 走错分支",
+          "chardet 与 charset_normalizer 都缺失时 chardet 为 None，Response.text 的编码猜测退化为 None 编码并走默认路径",
+          "packages.py 在 import 时遍历 sys.modules 注入 requests.packages.* 别名，改变了模块命名空间，任何打包/冻结工具都可能与之冲突",
+          "simplejson 若安装则自动顶替标准库 json，编码行为随环境变化"
+        ],
+        "rationale": "它是分层图里唯一的汇点：几乎所有模块都 import 它，它不 import 任何兄弟模块。这种「零出边」位置正是它能安全承载版本探测与条件导入的原因，因此必须单列而不是把这些开关散落到使用点",
+        "evidence": [
+          "src/requests/compat.py:22",
+          "src/requests/compat.py:36",
+          "src/requests/compat.py:61",
+          "src/requests/compat.py:90",
+          "src/requests/packages.py:5"
+        ]
+      },
+      {
+        "id": "C_968f5a3a6c4a",
+        "name": "exceptions",
+        "layer": "基础支撑层",
+        "role": "异常契约",
+        "responsibility": "定义对外的稳定异常契约，并用 request/response 上下文增强异常；把 urllib3 的 HTTPError 作为基类以便双向捕获",
+        "interfaces": [],
+        "depends_on": [
+          "compat"
+        ],
+        "failure_modes": [
+          "继承 IOError 是为历史兼容，使 ConnectionError 与内建 OSError 子类产生层次重叠，捕获顺序会影响行为",
+          "适配层把 urllib3 的 _ProxyError/_SSLError 按版本分成新旧两条分支翻译，边界情形（如 ConnectTimeout 与 NewConnectionError 的先后）依 urllib3 版本而变",
+          "RequestException 自动从 response 反填 request，若异常被序列化跨进程传递会带出整个请求上下文"
+        ],
+        "rationale": "异常体系必须比所有使用它的模块更底层，同时它又是对外 API 的一部分（用户捕获的是 requests.exceptions 而非 urllib3 异常）。单独登记是为了标出「异常翻译的收敛点只在适配层」这条边界——其他模块只允许抛已定义的语义异常",
+        "evidence": [
+          "src/requests/exceptions.py:20",
+          "src/requests/exceptions.py:12",
+          "src/requests/adapters.py:717",
+          "src/requests/adapters.py:740"
+        ]
+      },
+      {
+        "id": "C_736898e14bab",
+        "name": "internal-utils",
+        "layer": "基础支撑层",
+        "role": "内部类型与校验基元",
+        "responsibility": "私有类型契约与最小依赖工具：SupportsRead/SupportsItems 协议、is_prepared/has_read 运行期探测、header 名值正则表、to_native_string、unicode_is_ascii",
+        "interfaces": [],
+        "depends_on": [
+          "compat"
+        ],
+        "failure_modes": [
+          "_types 里的 Protocol 与 TypeIs 只在类型检查期生效，运行时所谓「已 prepare」校验退化为 hasattr 探测，传入伪装对象可通过 for 型断言",
+          "HEADER_VALIDATORS 按 bytes/str 分表，传入非 str/bytes 的 header 名会 KeyError 而非给出可读错误"
+        ],
+        "rationale": "与 utils-toolkit 的分界线是「是否对外承诺」：utils.py 明说是 also useful for external consumption，而 _internal_utils.py 与 _types.py 用下划线声明私有。把二者分开登记，才能让评审看到「外部兼容面」与「内部可自由重构面」的边界在哪",
+        "evidence": [
+          "src/requests/_internal_utils.py:5",
+          "src/requests/_types.py:5",
+          "src/requests/_types.py:32",
+          "src/requests/models.py:90"
+        ]
+      }
+    ],
+    "decision": [
+      {
+        "id": "D_3f85146ec9e1",
+        "title": "用 TYPE_CHECKING 单向化 models ↔ adapters 的循环",
+        "decision": "adapters 运行期 import Response 并负责构建响应对象；models 对 adapters 的引用全部收在 TYPE_CHECKING 内，只在类型注解层面出现",
+        "rationale": "适配层是 Response 的生产者（build_response 用 urllib3 原始响应填字段），协议层是消费者的语义容器。要避免 models↔adapters 的循环，只能让一个方向的引用变成纯类型引用。选择了「适配层依赖协议层」这个方向，因为反之无法成立：Response 不感知连接，而适配层必须构造 Response",
+        "alternatives": [
+          "把 Response 的构建下沉到独立的 result 模块，让 adapters 与 models 互不引用：更干净，但会新增一层且需搬迁 build_response 与全部状态码语义，属于大范围破坏性重构",
+          "允许 adapters 在运行期 import models（现状之外的写法）：会在 adapters 与 models 之间形成真实环，import 顺序一变就 ImportError",
+          "在 adapters 内另造一个轻量响应壳，再由 session 转成 Response：多一次对象拷贝，且适配层与协议层语义会分叉"
+        ],
+        "consequences": "依赖图里 models → adapters 是一条「假边」：只在类型检查期存在，运行时不存在，所以任何在 models.py 里对 HTTPAdapter 的实质使用都会立刻触发循环导入。评审时必须区分这两类边，否则会误判分层已经闭环",
+        "evidence": [
+          "src/requests/models.py:90",
+          "src/requests/adapters.py:51",
+          "src/requests/adapters.py:365",
+          "src/requests/adapters.py:75"
+        ]
+      },
+      {
+        "id": "D_23407c959db7",
+        "title": "重定向上移到会话层，适配层禁止自行跟随",
+        "decision": "适配层固定以 redirect=False 调用 urlopen，重定向完全由会话编排层的 resolve_redirects 生成器驱动，逐跳重建请求并累计 history",
+        "rationale": "重定向需要读取中间响应的 Set-Cookie、按跨主机策略剥离 Authorization、并让用户可以逐跳挂钩子。这些信息一旦在 urllib3 内部被消费掉，上层就拿不到了。因此把「一跳」的边界画在 adapter.send，把「一次逻辑请求」的边界画在 Session.send",
+        "alternatives": [
+          "启用 urllib3 自带重定向（redirect=True）交给连接池处理：少一层状态机，但 cookie 持久化、auth 剥离、per-redirect 计时与 hooks 都拿不到中间响应，等于放弃现有可观测性",
+          "在适配层用 retry 机制模拟重定向：语义不等价，且无法在跨主机时按策略重建 auth"
+        ],
+        "consequences": "重定向的每次跳跃都是一个完整的 PreparedRequest + adapter.send 往返，意味着没有跨跳跃的连接复用优化、history 全量驻留内存（含未读 body 时更危险），而 max_redirects 上限必须由编排层自己兜住；适配层则被永久约束为 redirect=False，不能把跳转委托给 urllib3",
+        "evidence": [
+          "src/requests/adapters.py:701",
+          "src/requests/sessions.py:804",
+          "src/requests/sessions.py:186",
+          "src/requests/sessions.py:154"
+        ]
+      },
+      {
+        "id": "D_f4abb334535f",
+        "title": "异常翻译收敛在适配层一处",
+        "decision": "所有底层异常在 HTTPAdapter.send 的 try/except 中收敛为 requests.exceptions 的语义子类；协议层与编排层只抛这些已定义异常",
+        "rationale": "requests 对外承诺的是自己的异常层次（多数用户写 except requests.exceptions.Timeout），所以翻译点必须唯一且贴在 urllib3 调用处。放在适配层而不是会话层，是因为会话层不该知道 urllib3 的存在",
+        "alternatives": [
+          "让 urllib3 异常直接冒泡给用户：少一层映射，但会暴露后端实现细节，且换传输后端时用户代码全部失效",
+          "用异常链只包一层 RequestException：会丢掉 Timeout/Proxy/SSL 的语义区分，用户无法按类捕获"
+        ],
+        "consequences": "适配层 send 里的 try/except 必须穷举 urllib3 各版本的异常类型（_ProxyError/_SSLError/_InvalidHeader 新旧分支共存），任何 urllib3 版本升级都可能漏掉一支从而把原始异常泄漏给用户；同时原始类型信息只保留在 __cause__，调试时需要二次展开",
+        "evidence": [
+          "src/requests/adapters.py:710",
+          "src/requests/adapters.py:713",
+          "src/requests/adapters.py:737",
+          "src/requests/exceptions.py:12",
+          "src/requests/exceptions.py:20"
+        ]
+      },
+      {
+        "id": "D_617482216f02",
+        "title": "body 延迟读取的职责放在协议层，而非传输层",
+        "decision": "适配层固定 preload_content=False 交回未读的原始流，Response 以 _content_consumed/_content/raw 三态表达是否已读；仅在 Session.send 末尾当 stream=False 时才强制 r.content",
+        "rationale": "stream=True 是公开契约，意味着适配层不能预先读；但非 stream 时又必须读完才能复用连接。把「读」的时机交给编排层与协议层，是唯一能同时满足两种模式的做法",
+        "alternatives": [
+          "适配层用 preload_content=True 直接读满 body：Session 无需再触发 r.content，但 stream=True 的能力彻底消失，大响应会全部进内存",
+          "引入独立的读取器对象（类似 Response.iter_content 委托给 reader）：边界更清，但需要改动 Response 的全部属性访问路径，破坏生态里大量直接访问 r.content/r.raw 的代码"
+        ],
+        "consequences": "「谁负责读 body」被拆成两个决策点：适配层只给原始流，协议层负责是否/何时读，编排层在 stream=False 时兜底触发（sessions.py:826）。代价是泄漏点变多——任何绕过 Session.send 直接用 adapter.send 的代码、或在 stream=True 下忘记消费 raw 的调用，都会占住连接池槽位而不报错",
+        "evidence": [
+          "src/requests/adapters.py:703",
+          "src/requests/sessions.py:826",
+          "src/requests/models.py:967",
+          "src/requests/models.py:1173"
+        ]
+      },
+      {
+        "id": "D_999a3b40ae2d",
+        "title": "配置合并在会话层完成，模型只承载结果",
+        "decision": "会话级默认值以 Session 的可变属性存在，单次请求参数在 prepare_request/merge_environment_settings 时与之合并，合并结果固化进 PreparedRequest",
+        "rationale": "对外 API 契约要求 users 能 s.headers.update(...)、s.verify=False 这样直接改属性，因此配置合并必须发生在「已有可变会话」与「一次性入参」之间，而 PreparedRequest 只承载最终结果",
+        "alternatives": [
+          "把合并逻辑放进 PreparedRequest.prepare()：会让模型层反向依赖会话配置，且 copy() 用于重定向时会把会话引用带进每一跳",
+          "引入独立的 settings 对象做不可变合并：设计更干净，但公开 API 长期以 Session 属性（s.headers、s.verify）形式暴露，改成对象会破坏生态兼容"
+        ],
+        "consequences": "Session 是进程内可变的共享状态，headers/cookies/auth 在多个请求间被原地修改；多线程共享同一 Session 时无锁保护，且 hooks 子典在 merge_hooks 时被浅拷贝（列表共享）。同时 merge_setting 的「None 表示不覆盖」语义让「显式把 verify 设为 None」与「未设置」不可区分",
+        "evidence": [
+          "src/requests/sessions.py:76",
+          "src/requests/sessions.py:108",
+          "src/requests/sessions.py:547",
+          "src/requests/sessions.py:831",
+          "src/requests/sessions.py:442"
+        ]
+      },
+      {
+        "id": "D_42645ed2d07e",
+        "title": "compat 作为零出边的依赖汇点，集中所有条件导入",
+        "decision": "所有版本探测、条件导入与 stdlib 符号 re-export 收敛到 compat.py，compat 不 import 任何兄弟模块，形成依赖图的汇点",
+        "rationale": "urllib3 v1/v2、chardet/charset_normalizer、simplejson 三种条件分支必须在单一位置判定，否则不同模块可能对同一环境给出不同结论。选择让 compat 零出边，是用「一处集中」换「局部不可理解」",
+        "alternatives": [
+          "用 importlib.metadata 在每个使用点按需探测版本：无汇点依赖，但同一判断会散落多处、结果可能不一致",
+          "只支持 urllib3 v2 并在 import 期硬失败：代码大幅简化，但违反当前对 v1/v2 双支持的兼容承诺"
+        ],
+        "consequences": "compat 成为零出边的汇点，代价是所有版本分支判断都被集中到这里，探测失败时的回退策略（is_urllib3_1 回退为 True、chardet 缺失时置 None）会静默影响下游行为；同时 packages.py 通过改写 sys.modules 注入 requests.packages.* 别名，让 import 期产生全局副作用",
+        "evidence": [
+          "src/requests/compat.py:22",
+          "src/requests/compat.py:26",
+          "src/requests/compat.py:36",
+          "src/requests/compat.py:69",
+          "src/requests/packages.py:5"
+        ]
+      },
+      {
+        "id": "D_4a6b3c3bc43c",
+        "title": "保留 __attrs__ 与 packages 别名，兼容负担显式留下",
+        "decision": "用 __attrs__ 显式白名单控制 Session/Response 的 pickle 形状，并用 requests.packages 的 sys.modules 别名维持旧版导入路径",
+        "rationale": "这是一个向后兼容优先的取舍：requests 的历史版本已经把这些路径写进了下游代码与序列化数据里，去掉的成本高于保留。登记它是为了让评审看到「兼容性负担」是有意留下的，而不是遗漏",
+        "alternatives": [
+          "在每个对象上增加显式的 __attrs__ 序列化白名单并移除 packages.py 别名：更干净，但会改变 pickle 后的兼容形态，不能让旧版 pickle 数据在新版读回",
+          "直接放弃 pickling 支持：不现实，multiprocessing 场景大量依赖 Transmission of Session"
+        ],
+        "consequences": "import 期改写 sys.modules（packages.py 遍历已有模块并插入 requests.packages.* 键）会对打包/冻结工具与调试器产生可观测副作用；同时 __attrs__ 字符串白名单与真实字段是两处需要同步维护的清单，新增会话属性但漏加白名单时 pickle 往返会静默丢字段",
+        "evidence": [
+          "src/requests/sessions.py:427",
+          "src/requests/sessions.py:899",
+          "src/requests/models.py:818",
+          "src/requests/packages.py:8"
+        ]
+      }
+    ],
+    "open_question": [
+      {
+        "id": "Q_d13f1bd817b2",
+        "question": "支持矩阵到底是什么：urllib3 v1 还要支持多久、chardet 与 charset_normalizer 谁优先、最低 Python 版本？",
+        "why_it_matters": "compat.py 里 is_urllib3_1 的分支、_resolve_char_detection 的择优顺序、以及两套新旧异常与 header 校验表都是为了同时兼容多个版本而存在。若 v1 可以退场，适配层 send 中约一半的 except 分支与 compat 的探测逻辑可以删除；反之，任何把传输层换成 urllib3 v2 独有 API 的重构都会被这条约束否掉。这是决定「哪些代码是资产、哪些是负债」的前提",
+        "blocking": true,
+        "evidence": [
+          "src/requests/compat.py:26",
+          "src/requests/compat.py:22",
+          "src/requests/compat.py:36"
+        ]
+      },
+      {
+        "id": "Q_9e5c8bc46179",
+        "question": "Session 的线程安全边界是什么？「一个 Session 在多线程间共享」是否属于承诺的支持范围？",
+        "why_it_matters": "现状是混合的：HTTPDigestAuth 明确用 threading.local 隔离 nonce 状态，说明作者意识到并发；但 Session.cookies 与 Session.headers 是裸的可变对象，send/prepare_request 无任何锁，merge_hooks 还会共享 hook 列表。这决定了方案里是否需要把「会话状态」与「连接池」拆成不同生命周期（连接池本身线程安全，会话配置不是）。若不澄清，任何声称支持并发的结论都无据",
+        "blocking": true,
+        "evidence": [
+          "src/requests/sessions.py:498",
+          "src/requests/sessions.py:427",
+          "src/requests/auth.py:145",
+          "src/requests/cookies.py:28"
+        ]
+      },
+      {
+        "id": "Q_426621e6ee79",
+        "question": "utils.py（1155 行 / 44 个函数）是否允许内部重组？requests.utils 被声明为「also useful for external consumption」，其符号是否属于不可动的公开契约？",
+        "why_it_matters": "这决定我能否把它按代理解析、URL 处理、编码/流工具、头部校验拆成支撑层内的四个组件。若能拆，支撑层从 6 个部件变成更清晰的边界并消除 utils↔cookies 的隐性顺序约束；若不能拆，就只能保留现状并把它登记成一条已知的技术债。我当前登记为单一组件正是基于「不确定」而非「认为它内聚」",
+        "blocking": false,
+        "evidence": [
+          "src/requests/utils.py:7",
+          "src/requests/utils.py:33",
+          "src/requests/utils.py:62"
+        ]
+      },
+      {
+        "id": "Q_e80e12e5214a",
+        "question": "回归验证能依赖真实 httpbin 服务吗？CI 是否在无外网环境下运行？",
+        "why_it_matters": "conftest 的 httpbin/httpbin_secure fixture 依赖外部 HTTP 服务，而重定向策略、cookie 持久化、代理行为这些最关键的编排逻辑主要在 test_requests.py（3094 行）里做端到端验证。如果评审要求「改动后必须用现有测试证明」，那么在离线环境下这条验证路径是断的，方案里对重定向/cookie 的调整就必须先补可控的本地服务或用 tests/testserver/server.py 兜住",
+        "blocking": false,
+        "evidence": [
+          "tests/conftest.py:35",
+          "tests/conftest.py:40",
+          "tests/test_requests.py:1"
+        ]
+      },
+      {
+        "id": "Q_e328e7d1b634",
+        "question": "hook 机制是否要扩展？目前 HOOKS 只有 \"response\" 一个事件，且代码里留着 TODO 注释。",
+        "why_it_matters": "如果确认只保留 response 一个事件，那么 hooks 可以作为协议对象层的附属逻辑，工作方式就是现状的 dispatch_hook 单点派发；如果要引入 pre_request/on_error 等事件，派发点必须同时进 prepare_request 与 adapter.send 的错误路径，这会把钩子从「模型附属」提升为编排层的一等组件，直接改变分层结果。当前我按「不扩展」登记",
+        "blocking": false,
+        "evidence": [
+          "src/requests/hooks.py:22",
+          "src/requests/hooks.py:29",
+          "src/requests/sessions.py:791"
+        ]
+      },
+      {
+        "id": "Q_8b4889cedfe6",
+        "question": "这次设计任务的验收约束没有给出：是否允许破坏公开 API/pickle 兼容？是否有性能或内存目标（例如大响应流式、连接复用率）？上线时间与团队规模？",
+        "why_it_matters": "需求里没有这些约束，而它们直接改变方案形状。若兼容性可破，__attrs__ 白名单与 packages.py 的 sys.modules 别名都可以去掉，支撑层的条件导入也能大幅收缩；若有内存目标，stream=False 时强制读尽 body 的行为就需要重新设计。当前所有「保留兼容」的决策都是在这个前提未知的情况下做的保守假设，必须在评审时先确认，否则等于把风险藏在假设里",
+        "blocking": true,
+        "evidence": [
+          "src/requests/sessions.py:427",
+          "src/requests/sessions.py:899",
+          "src/requests/packages.py:5"
+        ]
+      }
+    ]
+  },
+  "repo": "C:\\Users\\34442\\Desktop\\porject\\代码审查agent\\backend\\arch-cases\\e2-requests\\repo",
+  "model": "deepseek-flash（DeepSeek）",
+  "iterations": 16,
+  "stop_reason": "finished",
+  "elapsed": 150.791,
+  "usage": {
+    "prompt_tokens": 471648,
+    "completion_tokens": 28215,
+    "cached_tokens": 419968
+  },
+  "findings": [],
+  "warnings": [
+    "4 处证据不够精确（只有文件名，或指向空行/注释），建议补全完整路径。",
+    "证据核验：127/131 处可精确核实（96.9%）。",
+    "决策「用 TYPE_CHECKING 单向化 models ↔ adapters 的循」的备选像稻草人（只写缺点、没写它自己的优点）：把 Response 的构建下沉到独立的 result 模块，让 adapter；允许 adapters 在运行期 import models（现状之外的写法）： —— 真正的备选至少有它成立的理由",
+    "决策「重定向上移到会话层，适配层禁止自行跟随」的备选像稻草人（只写缺点、没写它自己的优点）：在适配层用 retry 机制模拟重定向：语义不等价，且无法在跨主机时按策略重建  —— 真正的备选至少有它成立的理由",
+    "决策「异常翻译收敛在适配层一处」的备选像稻草人（只写缺点、没写它自己的优点）：用异常链只包一层 RequestException：会丢掉 Timeout/Pr —— 真正的备选至少有它成立的理由",
+    "决策「配置合并在会话层完成，模型只承载结果」的 consequences 里没有任何负面信号（成本/风险/复杂度/迁移…）—— 只有好处没有代价，通常不是选择，而是还没想清楚",
+    "决策「配置合并在会话层完成，模型只承载结果」的备选像稻草人（只写缺点、没写它自己的优点）：把合并逻辑放进 PreparedRequest.prepare()：会让模型层反 —— 真正的备选至少有它成立的理由",
+    "决策「compat 作为零出边的依赖汇点，集中所有条件导入」的备选像稻草人（只写缺点、没写它自己的优点）：用 importlib.metadata 在每个使用点按需探测版本：无汇点依赖，；只支持 urllib3 v2 并在 import 期硬失败：代码大幅简化，但违反 —— 真正的备选至少有它成立的理由",
+    "决策「保留 __attrs__ 与 packages 别名，兼容负担显式留下」的备选像稻草人（只写缺点、没写它自己的优点）：在每个对象上增加显式的 __attrs__ 序列化白名单并移除 packages —— 真正的备选至少有它成立的理由"
+  ],
+  "compression_events": [],
+  "prefix": {
+    "fingerprint": "643a62483225ca97",
+    "tokens": 7816,
+    "tool_count": 12
+  },
+  "evidence_report": {
+    "total_refs": 131,
+    "ok": 127,
+    "weak": 4,
+    "bad": 0,
+    "items_without_evidence": 0,
+    "grounded_rate": 96.9,
+    "per_kind": {
+      "layer": {
+        "total": 21,
+        "ok": 21,
+        "weak": 0,
+        "bad": 0,
+        "no_evidence": 0
+      },
+      "component": {
+        "total": 60,
+        "ok": 59,
+        "weak": 1,
+        "bad": 0,
+        "no_evidence": 0
+      },
+      "decision": {
+        "total": 31,
+        "ok": 30,
+        "weak": 1,
+        "bad": 0,
+        "no_evidence": 0
+      },
+      "open_question": {
+        "total": 19,
+        "ok": 17,
+        "weak": 2,
+        "bad": 0,
+        "no_evidence": 0
+      }
+    },
+    "problems": [
+      {
+        "kind": "component",
+        "name": "compat",
+        "evidence": "src/requests/packages.py:5",
+        "status": "weak",
+        "why": "证据只指向注释：src/requests/packages.py:5"
+      },
+      {
+        "kind": "decision",
+        "name": "compat 作为零出边的依赖汇点，集中所有条件导入",
+        "evidence": "src/requests/packages.py:5",
+        "status": "weak",
+        "why": "证据只指向注释：src/requests/packages.py:5"
+      },
+      {
+        "kind": "open_question",
+        "name": "hook 机制是否要扩展？目前 HOOKS 只有 \"response\" 一个事件",
+        "evidence": "src/requests/hooks.py:29",
+        "status": "weak",
+        "why": "证据只指向注释：src/requests/hooks.py:29"
+      },
+      {
+        "kind": "open_question",
+        "name": "这次设计任务的验收约束没有给出：是否允许破坏公开 API/pickle 兼容？是",
+        "evidence": "src/requests/packages.py:5",
+        "status": "weak",
+        "why": "证据只指向注释：src/requests/packages.py:5"
+      }
+    ]
+  }
+}

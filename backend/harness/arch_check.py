@@ -206,22 +206,56 @@ def summary_lines(report: dict[str, Any]) -> list[str]:
 #    只有好处没有代价的选择，通常不是选择，而是还没想清楚。
 
 # 「代价」应当出现的负面信号
-# 覆盖「代价」的常见表达方式。刻意宽一点：实测漏掉「短暂不一致需要监控」
-# 这类真正的代价会造成假阳性，而假阳性会让这条检查被当成噪音忽略。
+# 覆盖「代价」的常见表达方式。
+#
+# 这一版是被真实产出打脸之后重写的：初版只给了「成本/风险/复杂度」等名词，
+# 结果在 E2 上把 4 条**写得很好的**决策全判成了「只写好处」。原文长这样：
+#   「依赖图里是假边：只在类型检查期存在，运行时不存在」
+#   「每次跳跃都是一个完整往返，意味着没有跨跳跃的连接复用优化」
+#   「必须穷举 urllib3 各版本的异常类型」「多线程共享同一 Session 时无锁保护」
+# 这些代价一个都没写「成本」二字，但都是实实在在的代价。
+#
+# 结论：判「有没有写代价」不能只查名词，要看**有没有实质内容 + 有没有转折/让步**。
 _COST_CUES = (
     "成本", "代价", "风险", "复杂度", "复杂", "延迟", "变慢", "性能下降",
     "迁移", "不兼容", "限制", "牺牲", "放弃", "运维负担", "人力",
-    # 「必须做某事」「会不一致」「需要监控」都是代价的常见说法
     "必须", "需要", "不一致", "监控", "额外", "增", "多一", "难",
+    # 真实产出里高频出现、但初版漏掉的表达
+    "假边", "只在", "运行时不存在", "没有", "无法", "不能", "丢失", "丢掉",
+    "穷举", "无锁", "驻留", "拆成", "散落", "回退", "失效", "违反", "边界",
+    "意味着", "但", "然而", "代价是", "只能", "仅",
     "trade-off", "tradeoff", "downside", "cost", "risk", "debt", "slow",
 )
 
-# 备选方案的「优点」信号：出现这些词说明它被认真对待过
+# 备选方案的「优点」信号。
+#
+# 同样被真实产出修正过：模型写的备选是这样的——
+#   「把 Response 构建下沉到独立模块：更干净，但…」
+#   「启用 urllib3 自带重定向：少一层状态机，但…」
+#   「用 importlib.metadata 按需探测：无汇点依赖，但…」
+# 前半句就是它自己的优点。所以除了「简单/成熟」这类形容，还要认
+# 「更干净 / 少一层 / 无…依赖 / 设计更」这类**比较级与减负表达**。
 _MERIT_CUES = (
     "简单", "直接", "成熟", "稳定", "快", "轻", "少", "省", "易", "明确",
     "已有", "现成", "内置", "标准", "生态", "性能好", "更合适", "优势",
+    # 比较级 / 减负表达（真实产出里最常见的形式）
+    "更干净", "更清", "更简单", "更明确", "更合理", "更强", "更小",
+    "少一层", "无汇点", "无需", "不用", "免去", "省掉", "降低", "减少",
+    "下沉", "集中", "统一", "隔离", "解耦", "边界更清",
     "simple", "mature", "fast", "cheap", "built-in", "standard",
 )
+
+# 转折词：备选里出现它，说明「优点 + 但是缺点」的结构在，这是认真考虑过的标志
+_CONTRAST_CUES = ("但", "不过", "然而", "只是", "代价", "会丢", "无法", "因为", "；", ";")
+
+# 只有好处没有代价的判断：既要**没有负面词**，也要**没有转折结构**，
+# 且整段短到不像认真写过（真正的代价往往需要一两句说明）。
+_MIN_CONSEQUENCE_LEN = 12
+
+
+def _has_any(text: str, cues: tuple[str, ...]) -> bool:
+    low = text.lower()
+    return any(cue in low for cue in cues)
 
 
 def check_decision_quality(decision: dict) -> list[str]:
@@ -236,10 +270,16 @@ def check_decision_quality(decision: dict) -> list[str]:
     consequences = str(decision.get("consequences") or "").strip()
     if not consequences:
         problems.append(f"决策「{title}」没有写 consequences（代价与后续影响）")
-    elif not any(cue in consequences.lower() for cue in _COST_CUES):
+    elif (
+        not _has_any(consequences, _COST_CUES)
+        and not _has_any(consequences, _CONTRAST_CUES)
+        and len(consequences) < _MIN_CONSEQUENCE_LEN
+    ):
+        # 三个条件同时成立才算「只写好处」：没有负面词、没有转折结构、还很短。
+        # 只凭「没有负面词」就判，会把大量真实代价误杀（E2 上误杀 4/7 条）。
         problems.append(
-            f"决策「{title}」的 consequences 里没有任何负面信号"
-            f"（成本/风险/复杂度/迁移…）—— 只有好处没有代价，通常不是选择，而是还没想清楚"
+            f"决策「{title}」的 consequences 只有一句好话、没有代价"
+            f"—— 只有好处没有代价，通常不是选择，而是还没想清楚"
         )
 
     alternatives = decision.get("alternatives") or []
@@ -248,17 +288,27 @@ def check_decision_quality(decision: dict) -> list[str]:
     if not alternatives:
         problems.append(f"决策「{title}」没有登记任何被放弃的备选 —— 评审要讨论的正是那条路")
     else:
-        straw = []
+        # 判据是**整条决策里至少有一个备选写出了它自己的优点**，不是每条都要。
+        #
+        # 这条也是被真实产出修正的：初版逐条判，于是「回滚方案：需要设计幂等撤销」
+        # 被判成稻草人 —— 但同一条决策的另一条备选明明写了「实现简单、一遍扫描」。
+        # 逐条判会把「认真考虑过多个方案、但其中一个确实没好话可写」误判成敷衍。
+        #
+        # 真正的稻草人特征是**所有备选都只有坏处**，那才说明没真考虑过。
+        with_merit = []
+        without = []
         for alt in alternatives:
             text = str(alt)
-            # 备选至少要有一点「它自己的好处」，否则就是稻草人
-            if not any(cue in text.lower() for cue in _MERIT_CUES):
-                straw.append(text[:40])
-        if straw:
+            if _has_any(text, _MERIT_CUES) or _has_any(text, _CONTRAST_CUES):
+                with_merit.append(text)
+            else:
+                without.append(text)
+
+        if not with_merit:
             problems.append(
-                f"决策「{title}」的备选像稻草人（只写缺点、没写它自己的优点）："
-                + "；".join(straw[:2])
-                + " —— 真正的备选至少有它成立的理由"
+                f"决策「{title}」的 {len(alternatives)} 条备选全都没写自己的优点"
+                f"（例如「{without[0][:36]}」）—— 只有缺点的备选不是真的考虑过，"
+                "是为了衬托而摆的"
             )
     return problems
 

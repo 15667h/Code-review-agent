@@ -1,0 +1,308 @@
+{
+  "case": "e2-requests",
+  "note": "参考蓝图。两类条目并存：**教科书事实**（Session 三合一、mount 可替换、重试在 urllib3）与**实现决策**（适配层收敛异常翻译、compat 依赖汇点、body 延迟读取）。架构蓝图既可以答在概念层，也可以答在实现层 —— 评分必须两都认，否则会把「读得更细」判成「没答上来」。照妖镜：画出重试层即判读错代码。",
+  "must_not_contain": {
+    "components": [
+      "重试层",
+      "retry",
+      "Retry 组件",
+      "重试中间件"
+    ],
+    "why": "requests 没有重试层：HTTPAdapter 把重试交给 urllib3 的 Retry 对象。把它画成本仓库的组件是典型的「背架构图」错误。"
+  },
+  "layers": [
+    {
+      "name": "用户接口层",
+      "aliases": [
+        "api",
+        "公开接口",
+        "用户 api",
+        "requests api"
+      ]
+    },
+    {
+      "name": "会话层",
+      "aliases": [
+        "session",
+        "会话管理",
+        "配置与状态"
+      ]
+    },
+    {
+      "name": "适配器层",
+      "aliases": [
+        "adapter",
+        "adapters",
+        "传输适配",
+        "适配器"
+      ]
+    },
+    {
+      "name": "模型层",
+      "aliases": [
+        "models",
+        "数据结构",
+        "消息模型",
+        "请求响应模型"
+      ]
+    },
+    {
+      "name": "工具支撑层",
+      "aliases": [
+        "utils",
+        "工具",
+        "基础设施",
+        "支撑"
+      ]
+    }
+  ],
+  "components": [
+    {
+      "name": "Session",
+      "aliases": [
+        "会话",
+        "session",
+        "会话对象"
+      ],
+      "layer": "会话层"
+    },
+    {
+      "name": "Request/PreparedRequest",
+      "aliases": [
+        "prepare",
+        "请求准备",
+        "PreparedRequest",
+        "Request 模型",
+        "prepared",
+        "请求构造"
+      ],
+      "layer": "模型层"
+    },
+    {
+      "name": "Response",
+      "aliases": [
+        "响应",
+        "response",
+        "响应对象"
+      ],
+      "layer": "模型层"
+    },
+    {
+      "name": "HTTPAdapter",
+      "aliases": [
+        "adapter",
+        "适配器",
+        "http adapter",
+        "传输适配器"
+      ],
+      "layer": "适配器层"
+    },
+    {
+      "name": "mount/适配器注册",
+      "aliases": [
+        "mount",
+        "适配器注册",
+        "挂载",
+        "前缀路由",
+        "adapter registry"
+      ],
+      "layer": "适配器层"
+    },
+    {
+      "name": "公开 API",
+      "aliases": [
+        "requests.api",
+        "api",
+        "get/post",
+        "顶层函数",
+        "便捷函数"
+      ],
+      "layer": "用户接口层"
+    },
+    {
+      "name": "auth 认证处理",
+      "aliases": [
+        "auth",
+        "认证",
+        "鉴权钩子",
+        "HTTPBasicAuth"
+      ],
+      "layer": "会话层"
+    },
+    {
+      "name": "cookie 管理",
+      "aliases": [
+        "cookies",
+        "cookie",
+        "CookieJar",
+        "会话 cookie"
+      ],
+      "layer": "会话层"
+    },
+    {
+      "name": "sessions/会话设置合并",
+      "aliases": [
+        "merge_setting",
+        "设置合并",
+        "配置合并",
+        "会话默认值"
+      ],
+      "layer": "会话层"
+    },
+    {
+      "name": "utils 工具",
+      "aliases": [
+        "utils",
+        "工具函数",
+        "辅助"
+      ],
+      "layer": "工具支撑层"
+    },
+    {
+      "name": "hooks 钩子",
+      "aliases": [
+        "hooks",
+        "钩子",
+        "event hooks",
+        "响应钩子"
+      ],
+      "layer": "用户接口层"
+    },
+    {
+      "name": "exceptions 异常体系",
+      "aliases": [
+        "exceptions",
+        "异常",
+        "错误类型"
+      ],
+      "layer": "工具支撑层"
+    }
+  ],
+  "edges": [
+    {
+      "from": "公开 API",
+      "to": "Session"
+    },
+    {
+      "from": "Session",
+      "to": "Request/PreparedRequest"
+    },
+    {
+      "from": "Session",
+      "to": "HTTPAdapter"
+    },
+    {
+      "from": "Session",
+      "to": "cookie 管理"
+    },
+    {
+      "from": "Session",
+      "to": "auth 认证处理"
+    },
+    {
+      "from": "Session",
+      "to": "sessions/会话设置合并"
+    },
+    {
+      "from": "HTTPAdapter",
+      "to": "Response"
+    },
+    {
+      "from": "Request/PreparedRequest",
+      "to": "utils 工具"
+    },
+    {
+      "from": "HTTPAdapter",
+      "to": "utils 工具"
+    },
+    {
+      "from": "mount/适配器注册",
+      "to": "HTTPAdapter"
+    }
+  ],
+  "decisions": [
+    {
+      "title": "Session 是配置+连接池+Cookie 三合一容器",
+      "aliases": [
+        "三合一",
+        "配置与连接池与 cookie",
+        "Session 复合",
+        "会话即容器",
+        "session 持有 adapter",
+        "session 持有 cookie"
+      ]
+    },
+    {
+      "title": "适配器可通过 mount 按前缀替换",
+      "aliases": [
+        "mount",
+        "可替换适配器",
+        "前缀挂载",
+        "adapter 可插拔",
+        "按前缀路由"
+      ]
+    },
+    {
+      "title": "重试交给 urllib3，requests 不实现重试",
+      "aliases": [
+        "重试在 urllib3",
+        "不实现重试",
+        "urllib3 Retry",
+        "retry 由底层"
+      ]
+    },
+    {
+      "title": "Request 与 PreparedRequest 双对象",
+      "aliases": [
+        "双对象",
+        "prepare 分离",
+        "PreparedRequest 分离",
+        "两段式构造"
+      ]
+    },
+    {
+      "title": "异常翻译收敛在适配层一处",
+      "aliases": [
+        "异常翻译",
+        "适配层收敛",
+        "统一异常",
+        "异常收敛"
+      ]
+    },
+    {
+      "title": "配置合并在会话层完成，模型只承载结果",
+      "aliases": [
+        "配置合并",
+        "会话层合并",
+        "设置合并",
+        "模型只承载"
+      ]
+    },
+    {
+      "title": "compat 作为零出边的依赖汇点",
+      "aliases": [
+        "compat",
+        "依赖汇点",
+        "条件导入集中",
+        "版本探测集中"
+      ]
+    },
+    {
+      "title": "body 延迟读取职责放在协议层",
+      "aliases": [
+        "延迟读取",
+        "body 延迟",
+        "流式读取",
+        "懒读取"
+      ]
+    },
+    {
+      "title": "重定向上移到会话层，适配层不自行跟随",
+      "aliases": [
+        "重定向",
+        "redirect",
+        "会话层跟随"
+      ]
+    }
+  ]
+}

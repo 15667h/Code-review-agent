@@ -218,11 +218,29 @@ def score_blueprint(
         + edges["f1"] * 0.15
     )
 
+    # ---- 照妖镜：不该出现的东西 ----
+    # 有些错误不是「漏了什么」，而是「多了一个不该有的东西」——比如把 requests
+    # 画出一个重试层（重试其实在 urllib3）。这类错误单靠 P/R 抓不到：
+    # 多报的组件只让精确率降一点，但它恰恰是「背架构图而不是读代码」的铁证。
+    forbidden = reference.get("must_not_contain") or {}
+    banned = [str(x) for x in (forbidden.get("components") or [])]
+    violations: list[str] = []
+    if banned:
+        produced_names = [str(d.get("name") or "") for d in comps]
+        for name in produced_names:
+            key = _norm(name)
+            for bad in banned:
+                if _norm(bad) and _norm(bad) in key:
+                    violations.append(name)
+                    break
+
     return {
         "layers": layers,
         "components": components,
         "decisions": decisions,
         "edges": edges,
+        "violations": sorted(set(violations)),
+        "violation_note": forbidden.get("why", ""),
         "overall": round(overall, 1),
     }
 
@@ -246,4 +264,11 @@ def format_score(result: dict[str, Any], case: str = "") -> str:
         )
     lines.append("-" * 50)
     lines.append(f"{'加权总分':10} {'':>4} {'':>4} {'':>4} {'':>7} {'':>7} {result['overall']:>5.0f}")
+
+    violations = result.get("violations") or []
+    if violations:
+        lines.append("")
+        lines.append(f"⚠ 照妖镜命中：{', '.join(violations)}")
+        if result.get("violation_note"):
+            lines.append(f"  {result['violation_note']}")
     return "\n".join(lines)

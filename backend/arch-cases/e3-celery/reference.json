@@ -1,0 +1,361 @@
+{
+  "case": "e3-celery",
+  "note": "参考蓝图（难档）。照妖镜：celery/app 与 worker 是同一个 app 对象的两个入口；五个环节必须齐全且顺序正确。",
+  "must_not_contain": {
+    "components": [
+      "单体应用层",
+      "controller 组件"
+    ],
+    "why": "celery 是分布式任务队列，不是分层单体。画成 controller/service 结构说明没理解 producer 与 worker 是分离进程。"
+  },
+  "layers": [
+    {
+      "name": "应用入口层",
+      "aliases": [
+        "app",
+        "celery app",
+        "应用层",
+        "客户端入口"
+      ]
+    },
+    {
+      "name": "任务定义层",
+      "aliases": [
+        "task",
+        "任务",
+        "任务模型",
+        "任务抽象"
+      ]
+    },
+    {
+      "name": "消息传输层",
+      "aliases": [
+        "broker",
+        "kombu",
+        "传输",
+        "消息层",
+        "mq"
+      ]
+    },
+    {
+      "name": "执行层",
+      "aliases": [
+        "worker",
+        "worker pool",
+        "执行池",
+        "消费者",
+        "consumer"
+      ]
+    },
+    {
+      "name": "结果存储层",
+      "aliases": [
+        "backend",
+        "result backend",
+        "结果后端",
+        "结果存储"
+      ]
+    },
+    {
+      "name": "调度与编排层",
+      "aliases": [
+        "beat",
+        "scheduler",
+        "调度",
+        "canvas",
+        "编排"
+      ]
+    }
+  ],
+  "components": [
+    {
+      "name": "Celery app",
+      "aliases": [
+        "app",
+        "celery app",
+        "Celery 实例",
+        "应用对象"
+      ],
+      "layer": "应用入口层"
+    },
+    {
+      "name": "Task 抽象",
+      "aliases": [
+        "task",
+        "任务类",
+        "task base",
+        "Task"
+      ],
+      "layer": "任务定义层"
+    },
+    {
+      "name": "kombu 消息层",
+      "aliases": [
+        "kombu",
+        "broker 连接",
+        "消息传输",
+        "transport"
+      ],
+      "layer": "消息传输层"
+    },
+    {
+      "name": "worker 消费者",
+      "aliases": [
+        "worker",
+        "consumer",
+        "消费者",
+        "worker 节点"
+      ],
+      "layer": "执行层"
+    },
+    {
+      "name": "worker pool",
+      "aliases": [
+        "pool",
+        "prefork",
+        "执行池",
+        "进程池",
+        "gevent pool",
+        "solo pool"
+      ],
+      "layer": "执行层"
+    },
+    {
+      "name": "billiard 进程模型",
+      "aliases": [
+        "billiard",
+        "进程池实现",
+        "子进程管理"
+      ],
+      "layer": "执行层"
+    },
+    {
+      "name": "result backend",
+      "aliases": [
+        "backend",
+        "结果后端",
+        "result backend",
+        "结果存储"
+      ],
+      "layer": "结果存储层"
+    },
+    {
+      "name": "canvas 流程编排",
+      "aliases": [
+        "canvas",
+        "chain",
+        "group",
+        "chord",
+        "编排原语",
+        "流程编排"
+      ],
+      "layer": "调度与编排层"
+    },
+    {
+      "name": "beat 定时调度",
+      "aliases": [
+        "beat",
+        "定时任务",
+        "scheduler",
+        "调度器"
+      ],
+      "layer": "调度与编排层"
+    },
+    {
+      "name": "app 配置与 registry",
+      "aliases": [
+        "registry",
+        "任务注册表",
+        "配置",
+        "app conf"
+      ],
+      "layer": "应用入口层"
+    },
+    {
+      "name": "signals 信号",
+      "aliases": [
+        "signal",
+        "信号",
+        "事件钩子"
+      ],
+      "layer": "应用入口层"
+    },
+    {
+      "name": "消息协议与序列化",
+      "aliases": [
+        "serializer",
+        "协议",
+        "协议序列化",
+        "message protocol",
+        "消息封装"
+      ],
+      "layer": "消息传输层"
+    }
+  ],
+  "edges": [
+    {
+      "from": "Celery app",
+      "to": "Task 抽象"
+    },
+    {
+      "from": "Celery app",
+      "to": "kombu 消息层"
+    },
+    {
+      "from": "Celery app",
+      "to": "result backend"
+    },
+    {
+      "from": "Celery app",
+      "to": "app 配置与 registry"
+    },
+    {
+      "from": "Task 抽象",
+      "to": "Celery app"
+    },
+    {
+      "from": "kombu 消息层",
+      "to": "消息协议与序列化"
+    },
+    {
+      "from": "worker 消费者",
+      "to": "kombu 消息层"
+    },
+    {
+      "from": "worker 消费者",
+      "to": "worker pool"
+    },
+    {
+      "from": "worker pool",
+      "to": "billiard 进程模型"
+    },
+    {
+      "from": "worker 消费者",
+      "to": "Task 抽象"
+    },
+    {
+      "from": "canvas 流程编排",
+      "to": "Task 抽象"
+    },
+    {
+      "from": "beat 定时调度",
+      "to": "Task 抽象"
+    },
+    {
+      "from": "worker 消费者",
+      "to": "result backend"
+    },
+    {
+      "from": "Celery app",
+      "to": "signals 信号"
+    }
+  ],
+  "decisions": [
+    {
+      "title": "任务默认至少一次投递（at-least-once）",
+      "aliases": [
+        "至少一次",
+        "at-least-once",
+        "不保证只执行一次",
+        "重复执行"
+      ]
+    },
+    {
+      "title": "prefork 是默认池（进程隔离代价换稳定）",
+      "aliases": [
+        "prefork",
+        "默认进程池",
+        "多进程默认",
+        "进程隔离"
+      ]
+    },
+    {
+      "title": "broker/backend 可替换（kombu 抽象 / 别名表 + entry points）",
+      "aliases": [
+        "可替换 broker",
+        "kombu 抽象",
+        "backend 可插拔",
+        "替换基础设施",
+        "别名表",
+        "entry points",
+        "选型"
+      ]
+    },
+    {
+      "title": "chord 依赖 result backend 回填",
+      "aliases": [
+        "chord",
+        "依赖 backend",
+        "回填",
+        "chord 实现依赖"
+      ]
+    },
+    {
+      "title": "同一 app 对象既是客户端也是 worker 容器",
+      "aliases": [
+        "同一 app",
+        "双入口",
+        "既是客户端也是 worker",
+        "app 与 worker 两入口",
+        "单例假设",
+        "一个进程一个 app"
+      ]
+    },
+    {
+      "title": "gevent/eventlet 下部分特性不可用（prefork 专属）",
+      "aliases": [
+        "gevent 限制",
+        "prefork 专属",
+        "池差异",
+        "泄漏点"
+      ]
+    },
+    {
+      "title": "worker 拓扑用 bootsteps DAG 动态装配",
+      "aliases": [
+        "bootsteps",
+        "DAG 装配",
+        "动态装配",
+        "启动蓝图",
+        "bootstep"
+      ]
+    },
+    {
+      "title": "任务编排在客户端展开，服务端不持有 DAG 引擎",
+      "aliases": [
+        "客户端展开",
+        "服务端无 DAG",
+        "canvas 客户端",
+        "编排在客户端"
+      ]
+    },
+    {
+      "title": "公共 API 走惰性模块代理（牺牲静态可分析性换导入速度）",
+      "aliases": [
+        "惰性模块",
+        "lazy module",
+        "模块代理",
+        "导入速度",
+        "延迟导入"
+      ]
+    },
+    {
+      "title": "worker 热路径保留 fast_trace_task 快路径",
+      "aliases": [
+        "fast_trace",
+        "快路径",
+        "热路径",
+        "trace 快路径"
+      ]
+    },
+    {
+      "title": "结果 payload 压缩类型用带内魔数标记",
+      "aliases": [
+        "魔数",
+        "带内标记",
+        "压缩标记",
+        "payload 压缩"
+      ]
+    }
+  ]
+}
