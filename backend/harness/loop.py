@@ -50,6 +50,8 @@ from .guardrails import (
     verify_citations,
     verify_finding_locations,
 )
+from .arch_check import check_blueprint_quality, summary_lines, verify_blueprint
+from .arch_check import summary_lines, verify_blueprint
 from .judge import judge_findings
 from .model import Model, ModelError
 from .sandbox import CommandRunner, Workspace
@@ -84,6 +86,9 @@ class AgentResult:
     tool_summary: str = ""
     # 产出形态标识，与 AgentSpec.outcome 一致；前端据此选渲染器
     outcome: str = ""
+    # 架构产出的证据核验报告（审查不用）。独立字段而不进 artifacts：
+    # 产出桶里只该有 agent 声明的那几种类型，否则「按声明渲染」的约定会被打破。
+    evidence_report: dict = field(default_factory=dict)
 
     @property
     def findings(self) -> list[Finding]:
@@ -440,6 +445,21 @@ def run_agent(
             ]
     elif finding_dicts:
         result.warnings.extend(verify_finding_locations(finding_dicts, workspace.root))
+
+    # ---- 架构产出的证据核验 ----
+    # 与审查的判定方式不同：架构说「这个层/组件存在于这里」，判据是
+    # 文件存在 + 行号在范围内 + 指向的是代码而非空行，不需要关键词族。
+    #
+    # 报告**不放进 artifacts**：产出桶里只该有 agent 声明的那几种类型
+    # （有测试守着这条约定）。放在 AgentResult 的独立字段上，
+    # 前端与评估脚本读 result.evidence_report 即可。
+    if spec.outcome == "blueprint":
+        report = verify_blueprint(result.artifacts, workspace.root)
+        result.evidence_report = report
+        result.warnings.extend(summary_lines(report))
+        # 权衡真实性：判别「这是好决策吗」需要人，但判别「它有没有写代价、
+        # 备选是不是稻草人」可以机械做。业界公认这是最难识别的失败模式。
+        result.warnings.extend(check_blueprint_quality(result.artifacts))
 
     if corrector.total_failures:
         result.warnings.append(

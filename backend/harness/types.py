@@ -259,6 +259,10 @@ class Layer:
     purpose: str = ""
     hint: str = ""
     order: int = 0
+    # 支撑「这一层确实存在」的代码位置，形如 ``src/pluggy/_manager.py:19``。
+    # 没有证据字段时，引用只能塞进 purpose/hint 的自由文本里 —— 实测 55 处引用
+    # 只有 9% 写全了路径，事后无法机械核验（见 docs/架构助手评估与调研-20261019.md）。
+    evidence: list[str] = field(default_factory=list)
     id: str = field(default_factory=lambda: _new_id("L"))
     fingerprint: str = ""
 
@@ -273,6 +277,7 @@ class Layer:
             "purpose": self.purpose,
             "hint": self.hint,
             "order": self.order,
+            "evidence": list(self.evidence),
         }
 
 
@@ -288,6 +293,8 @@ class Component:
     depends_on: list[str] = field(default_factory=list)
     failure_modes: list[str] = field(default_factory=list)
     rationale: str = ""
+    # 支撑「这个组件确实存在、确实这么切」的代码位置（完整相对路径:行号）
+    evidence: list[str] = field(default_factory=list)
     id: str = field(default_factory=lambda: _new_id("C"))
     fingerprint: str = ""
 
@@ -306,6 +313,7 @@ class Component:
             "depends_on": list(self.depends_on),
             "failure_modes": list(self.failure_modes),
             "rationale": self.rationale,
+            "evidence": list(self.evidence),
         }
 
 
@@ -318,6 +326,7 @@ class DecisionRecord:
     rationale: str = ""
     alternatives: list[str] = field(default_factory=list)
     consequences: str = ""
+    evidence: list[str] = field(default_factory=list)
     id: str = field(default_factory=lambda: _new_id("D"))
     fingerprint: str = ""
 
@@ -333,6 +342,7 @@ class DecisionRecord:
             "rationale": self.rationale,
             "alternatives": list(self.alternatives),
             "consequences": self.consequences,
+            "evidence": list(self.evidence),
         }
 
 
@@ -347,6 +357,8 @@ class OpenQuestion:
     question: str
     why_it_matters: str = ""
     blocking: bool = False
+    # 什么代码位置让你产生了这个疑问（「我读到 X，但没找到 Y」）
+    evidence: list[str] = field(default_factory=list)
     id: str = field(default_factory=lambda: _new_id("Q"))
     fingerprint: str = ""
 
@@ -360,6 +372,7 @@ class OpenQuestion:
             "question": self.question,
             "why_it_matters": self.why_it_matters,
             "blocking": self.blocking,
+            "evidence": list(self.evidence),
         }
 
 

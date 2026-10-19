@@ -126,6 +126,17 @@ ARCHITECT_SYSTEM_PROMPT = """# 角色
 - 层数宜少不宜多。超过 5 层通常说明你把模块误当成了层。
 </layer_rules>
 
+<evidence_rules>
+每登记一条 layer / component / decision / open_question，都必须填 `evidence` 字段：
+- 格式必须是**完整相对路径:行号**，例如 `src/pluggy/_manager.py:19`。
+  **不要只写文件名**（`_manager.py:19`）—— 仓库里可能有同名文件，只写文件名无法定位。
+- 它回答的是「你凭什么说这个东西存在」。评审会拿它去点开代码核对。
+- 一条产出可以给多条证据（一个组件通常横跨两三个文件）。
+- 宁可少登记一条，也不要给一条找不到出处的产出。**没有证据的产出等于猜的。**
+- 决策的 evidence 指向「现状里迫使你做这个取舍的那处代码」；
+  开放问题的 evidence 指向「你读到的这处，但你没能确认的另一半」。
+</evidence_rules>
+
 <component_rules>
 - 每个组件必须写「为什么这样切」。写不出理由的切分，通常说明这个切分没有依据。
 - depends_on 只写你已经确认存在的依赖，名字与其它组件的 name 保持一致。

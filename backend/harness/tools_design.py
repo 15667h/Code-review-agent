@@ -69,8 +69,17 @@ def _duplicate(
 
 
 def _tool_record_layer(state: RunState) -> Tool:
-    def handler(name: str, purpose: str = "", hint: str = "", order: int = 0) -> ToolResult:
-        layer = Layer(name=name, purpose=purpose, hint=hint, order=order)
+    def handler(
+        name: str,
+        purpose: str = "",
+        hint: str = "",
+        order: int = 0,
+        evidence: list[str] | None = None,
+    ) -> ToolResult:
+        layer = Layer(
+            name=name, purpose=purpose, hint=hint, order=order,
+            evidence=list(evidence or []),
+        )
         if not state.add_artifact("layer", layer):
             return _duplicate("layer", "分层", state, name)
         return _accepted("layer", "分层", state)
@@ -102,6 +111,15 @@ Returns: 确认文本，含当前已登记的分层数。""",
                 "purpose": {"type": "string", "description": "这一层负责什么，一句话"},
                 "hint": {"type": "string", "description": "这一层不负责什么，或当前的取舍与约束"},
                 "order": {"type": "integer", "description": "自上而下的层序，小的在上。默认 0", "minimum": 0, "maximum": 20},
+                "evidence": {
+                    "type": "array",
+                    "description": (
+                        "数组，每项是一个完整的 `相对路径:行号`，证明这一层确实存在。"
+                        "例如 [\"src/pluggy/_manager.py:19\", \"src/pluggy/_hooks.py:1\"]。"
+                        "必须写全路径（不要只写文件名）—— 只有文件名时无法核验。"
+                    ),
+                    "items": {"type": "string"},
+                },
             },
             "required": ["name"],
         },
@@ -138,6 +156,7 @@ def _tool_record_component(state: RunState) -> Tool:
         depends_on: list[str] | None = None,
         failure_modes: list[str] | None = None,
         rationale: str = "",
+        evidence: list[str] | None = None,
     ) -> ToolResult:
         # 依赖名对齐：实测模型会写 'Session' / 'session' 两种形式，前端按归一找节点，
         # 名字漂移的边就静默消失了。这里在后端一次性对齐到已登记组件的规范名。
@@ -168,6 +187,7 @@ def _tool_record_component(state: RunState) -> Tool:
             depends_on=aligned,
             failure_modes=list(failure_modes or []),
             rationale=rationale,
+            evidence=list(evidence or []),
         )
         if not state.add_artifact("component", component):
             return _duplicate("component", "组件", state, name, unit="个")
@@ -230,6 +250,11 @@ Returns: 确认文本，含当前组件数与未登记依赖的提醒。""",
                     "description": "数组，每项写一种失效后果，要具体到可观测。例如 ['Redis 不可用时读缓存降级为查库，写路径不受影响']",
                 },
                 "rationale": {"type": "string", "description": "为什么这样切：依据是什么、替代切法为什么不选"},
+                "evidence": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "数组，每项一个完整的 `相对路径:行号`，证明这个组件确实存在。例如 ['src/pluggy/_manager.py:19']。必须写全路径（不要只写文件名），否则事后无法核验",
+                },
             },
             "required": ["name"],
         },
@@ -263,6 +288,7 @@ def _tool_record_decision(state: RunState) -> Tool:
         rationale: str = "",
         alternatives: list[str] | None = None,
         consequences: str = "",
+        evidence: list[str] | None = None,
     ) -> ToolResult:
         record = DecisionRecord(
             title=title,
@@ -270,6 +296,7 @@ def _tool_record_decision(state: RunState) -> Tool:
             rationale=rationale,
             alternatives=list(alternatives or []),
             consequences=consequences,
+            evidence=list(evidence or []),
         )
         if not state.add_artifact("decision", record):
             return _duplicate("decision", "决策", state, title)
@@ -308,6 +335,11 @@ Returns: 确认文本，含当前决策数。""",
                     "只有一项也必须写成数组 ['...']，传字符串会被拒绝。没有备选就给空数组 []",
                 },
                 "consequences": {"type": "string", "description": "这个选择的代价与后续影响"},
+                "evidence": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "数组，每项一个完整的 `相对路径:行号`，证明这条决策有代码依据。必须写全路径（不要只写文件名），否则事后无法核验",
+                },
             },
             "required": ["title"],
         },
@@ -332,8 +364,18 @@ Returns: 确认文本，含当前决策数。""",
 
 
 def _tool_record_open_question(state: RunState) -> Tool:
-    def handler(question: str, why_it_matters: str = "", blocking: bool = False) -> ToolResult:
-        item = OpenQuestion(question=question, why_it_matters=why_it_matters, blocking=blocking)
+    def handler(
+        question: str,
+        why_it_matters: str = "",
+        blocking: bool = False,
+        evidence: list[str] | None = None,
+    ) -> ToolResult:
+        item = OpenQuestion(
+            question=question,
+            why_it_matters=why_it_matters,
+            blocking=blocking,
+            evidence=list(evidence or []),
+        )
         if not state.add_artifact("open_question", item):
             return _duplicate("open_question", "开放问题", state, question)
         return _accepted("open_question", "开放问题", state)
@@ -366,6 +408,11 @@ Returns: 确认文本，含当前开放问题数。""",
                 "question": {"type": "string", "description": "尚未确定的问题"},
                 "why_it_matters": {"type": "string", "description": "它会影响哪个结论、改变什么取舍"},
                 "blocking": {"type": "boolean", "description": "是否在方案落地前必须先定，默认 false"},
+                "evidence": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "数组，每项一个完整的 `相对路径:行号`，指向让你产生这个疑问的代码位置（读到什么、没找到什么）。必须写全路径",
+                },
             },
             "required": ["question"],
         },
