@@ -682,11 +682,6 @@
   border-radius: var(--r-xs);
 }
 
-/* 窄屏下的侧栏开关：只在窄屏出现 */
-.rail-toggle-btn {
-  display: none;
-}
-
 /* --- 上下文 --- */
 
 .context {
@@ -1795,10 +1790,6 @@
   .rail.is-open {
     transform: translateX(0);
     opacity: 1;
-  }
-
-  .rail-toggle-btn {
-    display: grid;
   }
 
   .stage {

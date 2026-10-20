@@ -930,20 +930,36 @@ def test_sample_roots_split_by_agent() -> None:
     assert server._sample_root("whoever") == server._sample_root("review")
 
 
-def test_repos_and_candidates_are_scoped_to_agent() -> None:
-    """review 只看到靶场，architect 只看到案例 —— 两边不串。"""
-    review = server.list_repos(agent="review")
-    arch = server.list_repos(agent="architect")
+def test_repos_and_candidates_are_scoped_to_agent(tmp_path: Path, monkeypatch) -> None:
+    """review 只看到靶场，architect 只看到案例 —— 两边不串。
 
-    review_names = {r["name"] for r in review}
-    arch_names = {r["name"] for r in arch}
-    assert "s1-obvious-danger" in review_names
-    assert not arch_names & {"s1-obvious-danger", "s2-resources-errors"}, arch_names
+    刻意用临时目录造两个样本根，而不是读真实的 ``examples/`` 与 ``arch-cases/``：
+    后者依赖「架构案例的上游仓库有没有克隆」，克隆被清掉时测试就会失败 ——
+    那是环境问题，不是代码问题，不该让 CI 飘。
+    """
+    review_root = tmp_path / "examples"
+    arch_root = tmp_path / "arch-cases"
+    for name in ("s1-obvious-danger", "m1-order-desk"):
+        repo = review_root / name / "repo"
+        repo.mkdir(parents=True)
+        (repo / "app.py").write_text("x = 1\n", encoding="utf-8")
+    for name in ("e1-pluggy", "e3-celery"):
+        repo = arch_root / name / "repo"
+        repo.mkdir(parents=True)
+        (repo / "app.py").write_text("x = 1\n", encoding="utf-8")
 
-    assert arch_names, "架构助手下应该列得出案例"
-    # 隔离要保证的是「审查靶场不出现在架构侧」；旧格式迁移来的手动目录
-    # 会两边都可见（有意的保护），所以这里不断言「只有案例」
-    assert not arch_names & {"s1-obvious-danger", "s2-resources-errors"}, arch_names
+    monkeypatch.setattr(
+        server,
+        "_sample_root",
+        lambda agent=None: arch_root if agent == "architect" else review_root,
+    )
+
+    review_names = {r["name"] for r in server.list_repos(agent="review")}
+    arch_names = {r["name"] for r in server.list_repos(agent="architect")}
+
+    assert review_names == {"s1-obvious-danger", "m1-order-desk"}
+    assert arch_names == {"e1-pluggy", "e3-celery"}
+    assert not arch_names & review_names, "两侧样本不能互相串"
 
     rc = {c["name"] for c in server.workspace_candidates("review")}
     ac = {c["name"] for c in server.workspace_candidates("architect")}

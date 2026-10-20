@@ -13,8 +13,6 @@
 
 from __future__ import annotations
 
-from typing import Any
-
 from .sandbox import CommandRunner, Workspace
 from .tools import Risk, Tool, ToolRegistry
 from .tools_common import (
@@ -33,10 +31,8 @@ from .types import Component, DecisionRecord, Layer, OpenQuestion, RunState, Too
 # 公共产出工具的返回文案
 # =============================================================================
 
-
 def _tally(state: RunState, kind: str) -> int:
     return len(state.artifacts_of(kind))
-
 
 def _accepted(
     kind: str, label: str, state: RunState, *, unit: str = "条", note: str = ""
@@ -51,7 +47,6 @@ def _accepted(
         f"已记录{label}。当前共 {_tally(state, kind)} {unit}{label}。{tail}".rstrip()
     )
 
-
 def _duplicate(
     kind: str, label: str, state: RunState, key: str, *, unit: str = "条"
 ) -> ToolResult:
@@ -62,11 +57,9 @@ def _duplicate(
         "如果你是想修正它的内容，请用不同的名字重新登记，并在 finish 的 summary 里说明。",
     )
 
-
 # =============================================================================
 # 分层
 # =============================================================================
-
 
 def _tool_record_layer(state: RunState) -> Tool:
     def handler(
@@ -131,11 +124,9 @@ Returns: 确认文本，含当前已登记的分层数。""",
         keywords=("layer", "tier", "architecture", "分层", "架构", "层次"),
     )
 
-
 # =============================================================================
 # 组件
 # =============================================================================
-
 
 def _norm(name: str) -> str:
     """组件名归一：与前端 blueprint.js 的 norm 同规则（trim + 小写）。
@@ -144,7 +135,6 @@ def _norm(name: str) -> str:
     两套规则必然对不上。
     """
     return str(name or "").strip().lower()
-
 
 def _tool_record_component(state: RunState) -> Tool:
     def handler(
@@ -275,11 +265,9 @@ Returns: 确认文本，含当前组件数与未登记依赖的提醒。""",
         keywords=("component", "service", "module", "组件", "服务", "模块", "依赖"),
     )
 
-
 # =============================================================================
 # 决策记录
 # =============================================================================
-
 
 def _tool_record_decision(state: RunState) -> Tool:
     def handler(
@@ -357,11 +345,9 @@ Returns: 确认文本，含当前决策数。""",
         keywords=("decision", "adr", "tradeoff", "决策", "取舍", "权衡", "方案"),
     )
 
-
 # =============================================================================
 # 开放问题
 # =============================================================================
-
 
 def _tool_record_open_question(state: RunState) -> Tool:
     def handler(
@@ -428,7 +414,6 @@ Returns: 确认文本，含当前开放问题数。""",
         keywords=("question", "unknown", "risk", "问题", "待定", "不确定", "风险"),
     )
 
-
 # =============================================================================
 # 组装
 # =============================================================================
@@ -446,7 +431,6 @@ CORE_TOOLS = (
     "finish",
     "discover_tools",
 )
-
 
 def build_design_toolbox(
     workspace: Workspace, state: RunState, runner: CommandRunner
@@ -488,13 +472,11 @@ def build_design_toolbox(
 
     return registry
 
-
 __all__ = ["CORE_TOOLS", "build_design_toolbox"]
 
 # =============================================================================
 # 架构速写（两阶段里的第一阶段：先拿结构，再判断）
 # =============================================================================
-
 
 def _tool_sketch(workspace: Workspace) -> Tool:
     def handler(path: str = ".") -> ToolResult:

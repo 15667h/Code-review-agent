@@ -94,11 +94,15 @@ python -m harness.server --port 8000
 # 打开 http://127.0.0.1:8000/ —— 服务同源托管前端，实时模式
 ```
 
-三种运行模式：
+两种运行模式：
 
-- **实时模式**（推荐）：上面这条命令，前端与 API 同源
-- **离线模式**：不配 API Key 也能跑，产出由确定性规则集给出
-- **演示模式**：直接双击 `index.html`（`file://`），走 `scripts/mock-data.js` 的演示数据
+- **实时模式**（默认，也是唯一有数据的模式）：上面那条命令，前端与 API 同源
+- **离线模式**：不配 API Key 也能跑，产出由确定性规则集给出（`--offline`）
+
+> 用 `file://` 直接双击 `index.html` **不会**显示任何样例数据 —— 界面会告诉你
+> 「后端没连上」并给出启动命令。这是有意的：一份看起来跑完了的审查，比一句
+> 「没连上」更容易让人误判系统能力。浏览器还会因跨域与 PNA 策略拦住 `file://`
+> 下的接口请求，这点改不了，只能起服务。
 
 ### 5. 测试账户
 
@@ -122,40 +126,59 @@ python -m harness.server --port 8000
 
 ```
 backend/
-  harness/          平台核心（零 web 框架，HTTP 层也是标准库）
-    agents.py       Agent 注册表：一份声明 = 一个助手
-    loop.py         主循环：Agent = Model + Harness
-    tools_common.py 两个助手共享的工具（唯一实现）
-    tools_audit.py  审查特有（record_finding / apply_patch …）
-    tools_design.py 架构特有（record_layer / component / decision …）
-    server.py       HTTP + SSE + 静态托管（同源，无 CORS）
-    auth.py         账号与会话（scrypt + 内存会话）
-    rules.py        确定性规则集（兼作 LLM 结果的交叉验证器）
-  arch-cases/       架构助手的三档难度实测（选题依据 + 结论，repo 自行克隆）
-  examples/         审查靶场（repo/ + labels.json，标注在审计根之外）
-  eval/             评估链路：run_bench → make_review → make_report
-  tests/            回归（当前 175 项）
-scripts/ styles/    前端（原生 JS + CSS，无构建）
-mockups/            前端原型（含设计依据 PLAN.md）
+  harness/           平台核心（零 web 框架，HTTP 层也是标准库）
+    agents.py        Agent 注册表：一份声明 = 一个助手
+    loop.py          主循环；收尾按「位置核验 → 判官复核 → 证据核验」依次做
+    model.py         OpenAI 兼容端点（不绑定厂商）
+    config.py        配置：接口地址 / API Key / 模型名
+    context.py       上下文构造与压缩（静态前缀恒定，以保缓存命中）
+    guardrails.py    确定性核验：引用位置、行号内容、完成声明自证
+    judge.py         独立判官：只删不加，逐条问「这段代码能证明这个结论吗」
+    arch_check.py    架构产出：证据核验 + 权衡真实性（稻草人备选 / 只写好处）
+    diffmode.py      增量审查：变更行 → 符号 → 反查改动之外的调用点
+    sketch.py        一次 ast 扫描产出仓库结构清单（分层前的中间制品）
+    pacing.py        轮次预算：按剩余比例提醒收尾
+    tools_common.py  两个助手共享的工具（唯一实现）
+    tools_audit.py   审查特有（record_finding / apply_patch …）
+    tools_design.py  架构特有（record_layer / component / decision …）
+    sandbox.py       路径围栏 + 命令白名单
+    auth.py          账号与会话（scrypt + 服务端内存会话）
+    server.py        HTTP + SSE + 静态托管（同源，无 CORS）
+  arch-cases/        架构助手三档难度实测；上游代码用 fetch-cases.sh 拉取
+  examples/          审查靶场（repo/ 是审计根，labels.json 在根之外）
+  eval/              评估链路：run_bench → make_review → make_report
+  tests/             回归（282 项）
+scripts/ styles/     前端（原生 JS + CSS，无构建步骤，无依赖）
+docs/                技术文档与调研报告
 ```
-
-## 竞赛提交材料
-
-| 材料 | 位置 | 状态 |
-|---|---|---|
-| 代码仓库 | 本仓库 | ✅ |
-| README（介绍 / 架构 / 运行指南 / 团队信息） | 本文件 | ✅ |
-| 环境配置（变量模板 + 依赖清单） | `backend/.env.example` · `backend/requirements*.txt` | ✅ |
-| 技术文档（PDF，≤30 页） | `docs/Margin-技术文档.pdf` | ✅ |
-| 演示视频（5–8 分钟） | `系统展示视频/final.mp4`（5:42 / 1920×1080 / 普通话） | 📦 已制作，不入库：127MiB 超 GitHub 单文件 100MiB 上限，单独渠道提交 |
-| 在线演示地址（可选加分） | — | 未提交 |
 
 ## 两条不能破的纪律
 
 1. **标注绝不能出现在被审计的代码里** —— 答案印在题目下面，指标就是假的。
    `test_audit_roots_do_not_leak_labels` 守着这条边界。
 2. **失败不能伪装成空结果** —— 「目录不存在」说成「没有匹配内容」会驱动假阴性结论。
-   工具层一律显式失败信封（类型 + 参数 + 建议）。
+   工具层一律显式失败信封（类型 + 参数 + 建议）；界面连不上后端时也会明说，
+   不降级到样例数据。
 
-更多约定（测量纪律、隔离模型、平台化契约）见 `.workbuddy/memory/MEMORY.md`。
-交付数字见 `backend/BENCHMARK.md`（由 `eval/make_report.py` 现算，不手抄）。
+## 关于数字
+
+交付指标见 `backend/BENCHMARK.md` 与 `backend/arch-cases/RESULTS-scored.md`，
+两者都**由脚本从原始结果现算**，不手抄：
+
+```bash
+cd backend
+python -m eval.make_report        # 审查侧
+python -m eval.make_arch_report   # 架构侧
+```
+
+指标对行号容差高度敏感，单次跑分不可引用。**引用任何数字前请先读这两份文档的
+「已知局限」一节**，那里写清了样本规模、口径与失效条件。
+
+---
+
+## 许可与参与
+
+MIT License —— 见 [LICENSE](LICENSE)。
+
+想改代码请先读 [CONTRIBUTING.md](CONTRIBUTING.md)。那一页不是模板，写的是这个项目
+真实踩过的坑（标注泄露、测量口径、玻璃层级、宽度测量等），照着做能省不少返工。

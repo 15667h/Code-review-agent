@@ -346,11 +346,6 @@ class ScanReport:
     hits: list[RuleHit] = field(default_factory=list)
     scanned_files: int = 0
     skipped_files: int = 0
-
-    def by_severity(self, severity: Severity) -> list[RuleHit]:
-        return [hit for hit in self.hits if hit.rule.severity == severity]
-
-
 def scan_source(path: str, source: str) -> list[RuleHit]:
     """对单个文件跑全部适用规则。"""
     suffix = Path(path).suffix

@@ -25,7 +25,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass, field
 
 from .budget import Budget, estimate_messages, estimate_tools
-from .types import Finding, Message, RunState, Todo
+from .types import Message, RunState
 
 # =============================================================================
 # 上下文构造
@@ -33,7 +33,6 @@ from .types import Finding, Message, RunState, Todo
 #
 # 系统提示词不在本文件。它属于 agent 自己的声明（见 ``agents.AgentSpec``），
 # 因为「怎么想」和「能做什么」「产出什么」是一件事的三面，拆开就必然对不上。
-
 
 @dataclass
 class ContextBuilder:
@@ -89,7 +88,6 @@ class ContextBuilder:
     def over_budget(self, trajectory: Sequence[Message]) -> bool:
         return self.budget.should_compress(self.prefix_tokens(), list(trajectory))
 
-
 # =============================================================================
 # 状态栏
 # =============================================================================
@@ -102,7 +100,6 @@ _KEY_LINE = re.compile(
     r"错误|异常|失败|超时|拒绝|不存在|无法)",
     re.IGNORECASE,
 )
-
 
 def render_status(
     state: RunState,
@@ -162,7 +159,6 @@ def render_status(
     lines.append(STATUS_CLOSE)
     return "\n".join(lines)
 
-
 def status_message(
     state: RunState,
     *,
@@ -175,7 +171,6 @@ def status_message(
     """
     return Message(role="user", content=render_status(state, note=note, extra_lines=extra_lines))
 
-
 def goal_message(goal: str, context: str = "", heading: str = "审计目标") -> Message:
     """首条 user 消息：任务目标。属于轨迹，不属于静态前缀。
 
@@ -186,13 +181,11 @@ def goal_message(goal: str, context: str = "", heading: str = "审计目标") ->
         body += f"\n\n# 补充信息\n\n{context.strip()}"
     return Message(role="user", content=body)
 
-
 # =============================================================================
 # 压缩
 # =============================================================================
 
 COMPRESSED_TAG = "[COMPRESSED]"
-
 
 def summarize_tool_output(text: str, *, head: int = 4, tail: int = 4, max_chars: int = 1500) -> str:
     """把一段工具输出压成「头 + 关键行 + 尾」。
@@ -220,7 +213,6 @@ def summarize_tool_output(text: str, *, head: int = 4, tail: int = 4, max_chars:
         body = body[:max_chars]
     return f"{body}\n{COMPRESSED_TAG} 原文 {len(text)} 字符，已保留头尾与错误行"
 
-
 def _is_noise(message: Message) -> bool:
     """噪声：几乎不携带信息的工具结果。直接丢弃，不做摘要。"""
     if message.role != "tool":
@@ -229,7 +221,6 @@ def _is_noise(message: Message) -> bool:
     if not stripped:
         return True
     return len(stripped) < 24 and not _KEY_LINE.search(stripped)
-
 
 def compress_trajectory(
     trajectory: Sequence[Message],
@@ -286,17 +277,14 @@ def compress_trajectory(
 
     return result, stats
 
-
 def _has_failure_signal(message: Message) -> bool:
     """失败证据要保留原样：错误细节被压缩掉，模型就失去了纠正的依据。"""
     head = message.content[:600]
     return bool(_KEY_LINE.search(head))
 
-
 # =============================================================================
 # 动态加载工具（渐进披露的落地形式）
 # =============================================================================
-
 
 def loaded_tools_message(payload: str) -> Message:
     """把 discover_tools 返回的工具 schema 追加到轨迹末尾。
@@ -315,7 +303,6 @@ def loaded_tools_message(payload: str) -> Message:
             "无需再次检索：\n\n" + payload
         ),
     )
-
 
 def validate_protocol(messages: Sequence[Message]) -> list[str]:
     """本地校验消息序列是否合法，返回问题描述（空列表 = 合法）。
@@ -363,5 +350,4 @@ def validate_protocol(messages: Sequence[Message]) -> list[str]:
         index += 1
 
     return problems
-
 

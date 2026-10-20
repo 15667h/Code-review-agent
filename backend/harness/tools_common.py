@@ -19,16 +19,13 @@ from __future__ import annotations
 import ast
 import re
 from pathlib import Path
-from typing import Any
-
 from .sandbox import CommandRunner, PathEscape, Workspace
-from .tools import Risk, Tool, ToolRegistry, truncate_output
+from .tools import Risk, Tool, truncate_output
 from .types import RunState, ToolResult
 
 # =============================================================================
 # 文件类工具
 # =============================================================================
-
 
 def _tool_list_files(workspace: Workspace) -> Tool:
     def handler(
@@ -104,7 +101,6 @@ Returns: 每行一个 `相对路径 (字节数)`。""",
         keywords=("list", "files", "directory", "目录", "文件", "列出"),
     )
 
-
 def _tool_read_file(workspace: Workspace) -> Tool:
     def handler(path: str, offset: int = 1, limit: int = 400) -> ToolResult:
         try:
@@ -179,7 +175,6 @@ Returns: 首行是 `路径 · 第 a-b 行 / 共 n 行`，其后是带行号的�
         examples=[{"path": "src/middleware/rate_limit.py"}, {"path": "README.md", "offset": 1, "limit": 60}],
         keywords=("read", "file", "open", "读取", "文件", "查看"),
     )
-
 
 def _tool_grep(workspace: Workspace) -> Tool:
     def handler(
@@ -294,7 +289,6 @@ Returns: 每行 `相对路径:行号: 该行内容（截断到 220 字符）`。
         keywords=("grep", "search", "regex", "find", "搜索", "查找", "匹配"),
     )
 
-
 def _tool_git_diff(workspace: Workspace, runner: CommandRunner) -> Tool:
     def handler(rev_range: str = "HEAD", staged: bool = False, path: str = "") -> ToolResult:
         argv = ["git", "diff", "--no-color"]
@@ -351,7 +345,6 @@ Returns: 标准 unified diff 文本（可能被截断）。""",
         examples=[{}, {"staged": True}, {"rev_range": "origin/main...HEAD", "path": "src"}],
         keywords=("git", "diff", "change", "patch", "变更", "差异", "改动"),
     )
-
 
 def _tool_read_symbols(workspace: Workspace) -> Tool:
     def handler(path: str) -> ToolResult:
@@ -428,7 +421,6 @@ Returns: 每行 `L行号  def 名称(参数…)`，类的方法多缩进两格�
         keywords=("symbol", "ast", "function", "class", "signature", "符号", "函数", "类", "结构"),
     )
 
-
 def _signature(node: ast.AST) -> str:
     if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
         return "()"
@@ -444,7 +436,6 @@ def _signature(node: ast.AST) -> str:
         parts.append("**" + args.kwarg.arg)
     return f"({', '.join(parts)})"
 
-
 def _name_of(node: ast.AST) -> str:
     if isinstance(node, ast.Name):
         return node.id
@@ -452,11 +443,9 @@ def _name_of(node: ast.AST) -> str:
         return f"{_name_of(node.value)}.{node.attr}"
     return "?"
 
-
 # =============================================================================
 # 执行类工具
 # =============================================================================
-
 
 def _tool_run_command(workspace: Workspace, runner: CommandRunner) -> Tool:
     def handler(argv: list[str], cwd: str = "") -> ToolResult:
@@ -510,11 +499,9 @@ Returns: `$ 命令 (exit=N)` 加标准输出/错误。""",
         keywords=("command", "exec", "shell", "cli", "命令", "执行", "运行"),
     )
 
-
 # =============================================================================
 # 记录与协作类工具
 # =============================================================================
-
 
 def _tool_update_todo(state: RunState) -> Tool:
     def handler(todos: list[dict], summary: str = "") -> ToolResult:
@@ -609,7 +596,6 @@ Returns: 更新后的完整列表与完成计数。""",
         keywords=("todo", "plan", "task", "计划", "任务", "进度"),
     )
 
-
 #: 每种产出形态收尾时该报什么。审查报严重级别，其余报各类型的登记条数。
 #: 写死成「共 N 条发现」会让架构助手在收尾时看到一句与自己无关的统计。
 _COUNT_UNITS = {
@@ -618,7 +604,6 @@ _COUNT_UNITS = {
     "decision": "条决策",
     "open_question": "个开放问题",
 }
-
 
 def _tool_finish(state: RunState, outcome: str = "findings") -> Tool:
     def tally() -> str:
@@ -673,7 +658,6 @@ Returns: 收尾确认与产出统计。""",
         examples=[{"summary": "已审查 PR #482 的 7 个文件，发现 1 个阻断项（连接泄漏）与 2 个警告，未覆盖并发压测。"}],
         keywords=("finish", "done", "complete", "end", "结束", "完成", "收尾"),
     )
-
 
 def _tool_read_skill(workspace: Workspace) -> Tool:
     skills_root = Path(__file__).parent / "skills"

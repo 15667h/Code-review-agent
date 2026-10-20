@@ -597,6 +597,19 @@
      左侧空间栏：空间 → 审查记录
      ========================================================================== */
 
+  /* 空仓库列表的提示：按当前助手的产出形态给对应的目录。
+     审查读 examples/，架构读 arch-cases/ —— 后者需要先跑 fetch-cases.sh。 */
+  function emptyHint() {
+    var outcome =
+      window.MARGIN_AGENTS && window.MARGIN_AGENTS.outcome
+        ? window.MARGIN_AGENTS.outcome()
+        : 'findings';
+    if (outcome === 'blueprint') {
+      return '架构分析的案例在上游仓库里，先运行 backend/arch-cases/fetch-cases.sh 拉取，或从「添加仓库」挂一个本地目录。';
+    }
+    return '把仓库放到 backend/examples/ 下，或用输入坞左侧的回形针「添加仓库」。';
+  }
+
   function renderRail() {
     var spaces = SPACES;
     spaceCount.textContent = String(spaces.length);
@@ -604,10 +617,10 @@
 
     if (!spaces.length) {
       var empty = el('li', 'space-empty');
-      empty.appendChild(el('p', null, '还没有可审查的仓库。'));
-      empty.appendChild(
-        el('p', 'space-empty__hint', '把仓库放到 backend/examples/ 下，或重启服务时用 --repo 指定。')
-      );
+      empty.appendChild(el('p', null, '还没有可用的仓库。'));
+      /* 空态提示必须按助手给 —— 审查看 examples/，架构看 arch-cases/。
+         写死 examples 会让架构助手的使用者去翻一个与它无关的目录。 */
+      empty.appendChild(el('p', 'space-empty__hint', emptyHint()));
       spaceList.appendChild(empty);
       updateRailNote();
       return;
@@ -1822,9 +1835,6 @@
     applyContext: applyContext,
     setSpaces: function (list) {
       SPACES = list || [];
-    },
-    getSpaces: function () {
-      return SPACES;
     },
     setModels: function (list) {
       MODELS = list || [];

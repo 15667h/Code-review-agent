@@ -18,7 +18,7 @@ import re
 from collections.abc import Sequence
 from typing import Any
 
-from .rules import RULES, scan_source
+from .rules import scan_source
 from .types import Decision, Message, ToolCall
 
 _LINE_PREFIX = re.compile(r"^\s*\d+\s\|\s?(.*)$")
@@ -29,13 +29,11 @@ _IMPORT_RE = re.compile(r"^\s*(?:from\s+([A-Za-z_][\w.]*)\s+import|import\s+([A-
 AUDIT_AGENT = "review"
 DESIGN_AGENT = "architect"
 
-
 def _last_tool_output(messages: Sequence[Message]) -> str:
     for message in reversed(messages):
         if message.role == "tool":
             return message.content
     return ""
-
 
 def _parse_file_list(text: str) -> list[str]:
     files: list[str] = []
@@ -44,7 +42,6 @@ def _parse_file_list(text: str) -> list[str]:
         if match:
             files.append(match.group(1).strip())
     return files
-
 
 def _strip_line_numbers(text: str) -> tuple[list[str], str]:
     """把 read_file 的带行号输出还原成源码行。
@@ -60,7 +57,6 @@ def _strip_line_numbers(text: str) -> tuple[list[str], str]:
         elif not lines and not header:
             header = line
     return lines, header
-
 
 class HeuristicModel:
     """用规则驱动工具链的离线模型。
@@ -89,11 +85,6 @@ class HeuristicModel:
         self._todos_closed = False
 
     # ------------------------------------------------------------------ #
-
-    @property
-    def usage_tokens(self) -> dict[str, int]:
-        """离线模型不消耗真实 token；返回零值以便统计口径统一。"""
-        return {"prompt_tokens": 0, "completion_tokens": 0, "cached_tokens": 0, "total_tokens": 0}
 
     def complete(
         self,
@@ -438,7 +429,6 @@ class HeuristicModel:
             reasoning="结构盘点完成，收尾。",
         )
 
-
 # --------------------------------------------------------------------------- #
 # 架构模式的辅助
 # --------------------------------------------------------------------------- #
@@ -458,12 +448,10 @@ _LAYER_PURPOSE = {
     "支撑层": "不属于以上各层的辅助代码",
 }
 
-
 def _component_of(path: str) -> str:
     """文件 → 模块名：有顶层目录就用目录名，否则用文件名。"""
     head = path.replace("\\", "/").split("/")[0]
     return head.rsplit(".", 1)[0] if head.endswith(".py") else head
-
 
 def _classify_layer(name: str) -> str:
     """按目录名启发式归类。这是推断，不是事实 —— 所以要写进 hint 里。"""
@@ -473,14 +461,12 @@ def _classify_layer(name: str) -> str:
             return layer
     return "支撑层"
 
-
 def _design_todos(stage: str, layers: int, read: int) -> list[dict[str, str]]:
     return [
         {"text": f"盘点现有结构（{layers} 层）", "status": "completed"},
         {"text": f"读取模块依赖（{read}）", "status": "in_progress"},
         {"text": f"登记组件与开放问题（当前阶段：{stage}）", "status": "pending"},
     ]
-
 
 def _todos(files: list[str], done: int, findings: int) -> list[dict[str, str]]:
     return [
@@ -495,8 +481,6 @@ def _todos(files: list[str], done: int, findings: int) -> list[dict[str, str]]:
         },
     ]
 
-
 def _call(call: ToolCall, *, reasoning: str = "") -> Decision:
     return Decision(tool_calls=[call], content="", reasoning=reasoning)
-
 

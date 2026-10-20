@@ -18,7 +18,6 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass, field
-from itertools import combinations
 
 
 # =============================================================================
@@ -52,19 +51,6 @@ def confidence_interval(p: float, n: int, z: float = 1.96) -> tuple[float, float
     """正态近似的置信区间（默认 95%）。"""
     se = standard_error(p, n)
     return max(0.0, p - z * se), min(1.0, p + z * se)
-
-
-def min_sample_size(target_margin: float, p: float = 0.5, z: float = 1.96) -> int:
-    """要在 95% 置信度下分辨 ``target_margin`` 的差异，至少需要多少样本。
-
-    书中的口径：n=100、p=70% 时 95% 区间约为 ±9 个百分点；
-    若预期收益只有 2~3 个百分点，必须先扩大样本。
-    """
-    if target_margin <= 0:
-        raise ValueError("target_margin 必须为正")
-    return math.ceil((z**2) * p * (1 - p) / (target_margin**2))
-
-
 # =============================================================================
 # 配对比较
 # =============================================================================
@@ -168,10 +154,6 @@ class RunMatrix:
         if not eligible:
             return 0.0
         return sum(1 for row in eligible if any(row[:k])) / len(eligible)
-
-    def total_cost(self) -> float:
-        return sum(sum(row) for row in self.costs if row)
-
     def summary(self) -> dict[str, float]:
         p = self.pass_at_1()
         n = len(self.runs)
@@ -209,25 +191,3 @@ def format_summary(summary: dict[str, float]) -> str:
 # =============================================================================
 # 抽样组合（用于重复采样校正）
 # =============================================================================
-
-
-def at_least_one_estimate(successes: int, total: int, k: int) -> float:
-    """从 n 次观测里估计「k 次至少一次成功」的无偏概率（超几何组合法）。
-
-    仅在 ``total <= successes`` 或样本很小时使用更精确的组合估计，
-    避免直接用 ``1-(1-p)^k`` 在小样本上偏乐观。
-    """
-    if total <= 0 or k > total:
-        return 0.0
-    if successes <= 0:
-        return 0.0
-    if total - successes < k:
-        return 1.0
-    all_fail = 1.0
-    for i in range(k):
-        all_fail *= (total - successes - i) / (total - i)
-    return 1.0 - all_fail
-
-
-def combinations_count(n: int, k: int) -> int:
-    return len(list(combinations(range(n), k))) if n >= k else 0

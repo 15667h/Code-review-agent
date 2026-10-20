@@ -29,7 +29,7 @@ import re
 import secrets
 import threading
 import time
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass
 from pathlib import Path
 
 BACKEND_ROOT = Path(__file__).resolve().parent.parent
@@ -54,11 +54,9 @@ EMAIL_RE = re.compile(r"^[^\s@]+@[^\s@]+\.[^\s@]+$")
 MIN_PASSWORD = 8
 MAX_PASSWORD = 200  # 防「超长密码」把 scrypt 拖成 DoS
 
-
 # =============================================================================
 # 错误码：前端按码给文案，不解析中文句子
 # =============================================================================
-
 
 class AuthError(Exception):
     """带机器可读 code 的认证错误。code 是给前端判断的契约。"""
@@ -69,11 +67,9 @@ class AuthError(Exception):
         self.message = message
         self.status = status
 
-
 # =============================================================================
 # 密码哈希
 # =============================================================================
-
 
 def hash_password(password: str, *, salt: bytes | None = None) -> str:
     """返回 ``scrypt$n$r$p$salt$hash``（base64url，无填充）。"""
@@ -83,7 +79,6 @@ def hash_password(password: str, *, salt: bytes | None = None) -> str:
     )
     b64 = lambda raw: base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")  # noqa: E731
     return f"scrypt${_SCRYPT_N}${_SCRYPT_R}${_SCRYPT_P}${b64(salt)}${b64(digest)}"
-
 
 def verify_password(password: str, stored: str) -> bool:
     """校验密码。格式不认识就当失败，绝不抛给调用方（避免把栈信息带进响应）。"""
@@ -106,11 +101,9 @@ def verify_password(password: str, stored: str) -> bool:
         return False
     return hmac.compare_digest(actual, expected)
 
-
 # =============================================================================
 # 账号
 # =============================================================================
-
 
 @dataclass(slots=True)
 class User:
@@ -123,10 +116,8 @@ class User:
         """对外表示：**永不包含 password_hash**。"""
         return {"email": self.email, "name": self.name, "created_at": self.created_at}
 
-
 def _norm_email(email: str) -> str:
     return (email or "").strip().lower()
-
 
 def _check_email(email: str) -> str:
     clean = _norm_email(email)
@@ -136,7 +127,6 @@ def _check_email(email: str) -> str:
         raise AuthError("email_invalid", "邮箱格式不对，检查一下 @ 前后是否完整。")
     return clean
 
-
 def _check_password(password: str, *, for_register: bool) -> str:
     if not password:
         raise AuthError("password_empty", "请输入密码。")
@@ -145,7 +135,6 @@ def _check_password(password: str, *, for_register: bool) -> str:
     if for_register and len(password) < MIN_PASSWORD:
         raise AuthError("password_short", f"密码至少 {MIN_PASSWORD} 位，现在还不够。")
     return password
-
 
 class AuthStore:
     """账号表。所有写操作串行化（``_lock``），并且原子落盘。"""
@@ -269,11 +258,9 @@ class AuthStore:
         count, _ = self._attempts.get(email, (0, 0.0))
         self._attempts[email] = (count + 1, time.time())
 
-
 # =============================================================================
 # 会话
 # =============================================================================
-
 
 @dataclass(slots=True)
 class Session:
@@ -281,7 +268,6 @@ class Session:
     email: str
     issued_at: float
     expires_at: float
-
 
 class SessionStore:
     """会话只存在内存里：进程重启即全部失效。
@@ -325,7 +311,6 @@ class SessionStore:
         with self._lock:
             self._sessions.clear()
 
-
 # =============================================================================
 # 测试账户
 # =============================================================================
@@ -335,7 +320,6 @@ DEMO_ACCOUNTS: tuple[dict[str, str], ...] = (
     {"email": "demo@margin.dev", "name": "演示账号", "password": "Margin-demo-2026"},
     {"email": "reviewer@margin.dev", "name": "林哲", "password": "Margin-review-2026"},
 )
-
 
 def seed_demo_accounts(store: AuthStore) -> list[dict[str, str]]:
     """账号表为空时写入测试账户，返回创建明细供启动日志打印。
@@ -352,7 +336,6 @@ def seed_demo_accounts(store: AuthStore) -> list[dict[str, str]]:
             continue
         created.append(dict(spec))
     return created
-
 
 #: 进程级单例。server 与测试都从这里取（测试用 monkeypatch 换成临时路径）。
 STORE = AuthStore()

@@ -44,27 +44,12 @@ class ExpectedFinding:
     @property
     def rule_id(self) -> str:
         return self.code.split("-", 1)[0]
-
-    @property
-    def severity_hint(self) -> str:
-        prefix = self.rule_id[:3]
-        if prefix in {"SEC"} and self.rule_id in {"SEC001", "SEC002"}:
-            return "blocker"
-        if prefix in {"ERR", "RES", "PY"} and self.rule_id in {"ERR001", "ERR002", "RES001", "PY001", "SEC003"}:
-            return "warn"
-        return "note"
-
-
 @dataclass
 class EvalCase:
     id: str
     repo: Path
     goal: str
     expected: list[ExpectedFinding] = field(default_factory=list)
-
-    def expected_in(self, file_suffix: str) -> list[ExpectedFinding]:
-        return [item for item in self.expected if item.file.endswith(file_suffix)]
-
     def describe(self) -> str:
         by_file: dict[str, int] = {}
         for item in self.expected:

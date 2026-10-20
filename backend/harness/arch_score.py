@@ -243,32 +243,3 @@ def score_blueprint(
         "violation_note": forbidden.get("why", ""),
         "overall": round(overall, 1),
     }
-
-
-def format_score(result: dict[str, Any], case: str = "") -> str:
-    """把分数排版成人读的表格。"""
-    head = f"架构蓝图评分{f'（{case}）' if case else ''}"
-    lines = [head, ""]
-    lines.append(f"{'维度':10} {'产出':>4} {'参考':>4} {'命中':>4} {'精确':>7} {'召回':>7} {'F1':>6}")
-    lines.append("-" * 50)
-    for key, label in (
-        ("layers", "分层"),
-        ("components", "组件"),
-        ("decisions", "决策"),
-        ("edges", "依赖边"),
-    ):
-        d = result[key]
-        lines.append(
-            f"{label:10} {d['produced']:>4} {d['expected']:>4} {d['matched']:>4} "
-            f"{d['precision']:>6.0f}% {d['recall']:>6.0f}% {d['f1']:>5.0f}"
-        )
-    lines.append("-" * 50)
-    lines.append(f"{'加权总分':10} {'':>4} {'':>4} {'':>4} {'':>7} {'':>7} {result['overall']:>5.0f}")
-
-    violations = result.get("violations") or []
-    if violations:
-        lines.append("")
-        lines.append(f"⚠ 照妖镜命中：{', '.join(violations)}")
-        if result.get("violation_note"):
-            lines.append(f"  {result['violation_note']}")
-    return "\n".join(lines)

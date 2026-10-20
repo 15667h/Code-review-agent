@@ -60,14 +60,12 @@ from .agents import (
     get as get_agent,
     manifests,
 )
-from .config import Config, load_config, normalize_base_url, parse_env_file
+from .config import Config, load_config, normalize_base_url
 from .loop import resolve_workspace, run_agent
 from .model import OpenAIModel, ModelError
 from .offline import HeuristicModel
 from .report import render_markdown
 from .sandbox import DEFAULT_SKIP_DIRS, PathEscape, Workspace, is_secret_path
-from .types import Message
-
 # --------------------------------------------------------------------------- #
 # 路径
 # --------------------------------------------------------------------------- #
@@ -98,11 +96,9 @@ DENY_PARTS = {
 
 MAX_STATIC_BYTES = 8 * 1024 * 1024
 
-
 # --------------------------------------------------------------------------- #
 # 运行记录
 # --------------------------------------------------------------------------- #
-
 
 @dataclass
 class RunRecord:
@@ -188,7 +184,6 @@ class RunRecord:
             if self.final:
                 payload["result"] = self.final
         return payload
-
 
 class RunRegistry:
     """运行记录的内存注册表 + 磁盘归档。"""
@@ -283,14 +278,11 @@ class RunRegistry:
             loaded += 1
         return loaded
 
-
 REGISTRY = RunRegistry()
-
 
 # --------------------------------------------------------------------------- #
 # 事件序列化（harness 事件 → 前端契约）
 # --------------------------------------------------------------------------- #
-
 
 def _tool_arg(call: Any) -> str:
     """挑一个最像「这次调用在做什么」的参数，给工具卡片当副标题。"""
@@ -306,14 +298,12 @@ def _tool_arg(call: Any) -> str:
         return ""
     return json.dumps(args, ensure_ascii=False)[:72]
 
-
 def _first_line(text: str, limit: int = 76) -> str:
     for line in text.strip().splitlines():
         line = line.strip()
         if line:
             return line[:limit]
     return "（无输出）"
-
 
 class EventBridge:
     """把 ``run_agent`` 的事件钩子翻译成前端契约。
@@ -421,11 +411,9 @@ class EventBridge:
             },
         )
 
-
 # --------------------------------------------------------------------------- #
 # 执行线程
 # --------------------------------------------------------------------------- #
-
 
 def _finish(record: RunRecord, *, status: str, final: dict[str, Any] | None, error: str = "") -> None:
     record.status = status
@@ -453,7 +441,6 @@ def _finish(record: RunRecord, *, status: str, final: dict[str, Any] | None, err
     elif error:
         record.emit("error", {"message": error})
     REGISTRY.persist(record)
-
 
 def _worker(record: RunRecord, options: dict[str, Any]) -> None:
     record.status = "running"
@@ -545,7 +532,6 @@ def _worker(record: RunRecord, options: dict[str, Any]) -> None:
     status = "stopped" if result.stop_reason == "stopped" else "finished"
     _finish(record, status=status, final=final)
 
-
 def start_run(options: dict[str, Any]) -> RunRecord:
     """建记录、起线程，立刻返回 —— 调用方拿 run_id 去订阅事件流。
 
@@ -572,11 +558,9 @@ def start_run(options: dict[str, Any]) -> RunRecord:
     thread.start()
     return record
 
-
 # --------------------------------------------------------------------------- #
 # 仓库与模型探测
 # --------------------------------------------------------------------------- #
-
 
 def _looks_like_repo(path: Path) -> bool:
     if not path.is_dir():
@@ -603,7 +587,6 @@ def _looks_like_repo(path: Path) -> bool:
             return True
     return False
 
-
 # 每个助手有各自的样本目录 —— 工作空间按助手隔离：
 # 审查助手看审查靶场，架构助手看架构案例，两边的空间列表互不干扰。
 # 接第三个助手时在这里加一行，list_repos / candidates / 浏览器都会跟着走。
@@ -612,11 +595,9 @@ SAMPLE_ROOTS: dict[str, Path] = {
     "architect": BACKEND_ROOT / "arch-cases",
 }
 
-
 def _sample_root(agent: str | None) -> Path:
     """该助手的样本目录。未登记的助手回落到 examples（宁可少隔离，不可无样本）。"""
     return SAMPLE_ROOTS.get(agent or "", SAMPLE_ROOTS["review"])
-
 
 def _load_registered_groups() -> dict[str, list[Path]]:
     """读 ``.runs/workspace.json``，按助手分组返回。
@@ -660,7 +641,6 @@ def _load_registered_groups() -> dict[str, list[Path]]:
             groups[name] = list(legacy)
     return groups
 
-
 def _load_registered(agent: str | None = None) -> list[Path]:
     """该助手「已加入工作区」的目录。agent 为空时取全部（去重，供计数与迁移用）。"""
     groups = _load_registered_groups()
@@ -673,7 +653,6 @@ def _load_registered(agent: str | None = None) -> list[Path]:
                 seen.append(item)
     return seen
 
-
 def _save_registered_groups(groups: dict[str, list[Path]]) -> None:
     WORKSPACE_FILE.parent.mkdir(parents=True, exist_ok=True)
     WORKSPACE_FILE.write_text(
@@ -684,7 +663,6 @@ def _save_registered_groups(groups: dict[str, list[Path]]) -> None:
         ),
         encoding="utf-8",
     )
-
 
 def _register_path(target: Path, agent: str | None) -> None:
     """把一个目录加进**该助手**的工作区。路径比较用 normcase，避免同一目录记两份。"""
@@ -697,7 +675,6 @@ def _register_path(target: Path, agent: str | None) -> None:
         return
     groups[name].append(target)
     _save_registered_groups(groups)
-
 
 def _unregister_path(target: Path, agent: str | None) -> bool:
     """从**该助手**的工作区移出。返回是否真的移掉了。"""
@@ -713,7 +690,6 @@ def _unregister_path(target: Path, agent: str | None) -> bool:
     _save_registered_groups(groups)
     return True
 
-
 def _resolve_user_path(raw: str) -> Path:
     """把用户给出的路径归一化：相对路径按**项目根**解析，然后 resolve。"""
     text = (raw or "").strip().strip('"').strip("'")
@@ -723,7 +699,6 @@ def _resolve_user_path(raw: str) -> Path:
     if not candidate.is_absolute():
         candidate = PROJECT_ROOT / candidate
     return candidate.resolve()
-
 
 def add_repo(raw_path: str, agent: str | None = None) -> tuple[dict[str, Any] | None, str]:
     """把一个目录加入**该助手**的工作区。返回 ``(条目, 错误信息)``，二者必有其一为空。"""
@@ -749,7 +724,6 @@ def add_repo(raw_path: str, agent: str | None = None) -> tuple[dict[str, Any] | 
     _register_path(target, agent)
     return _repo_entry(target.name, target, source="added", agent=agent), ""
 
-
 def remove_repo(raw_path: str, agent: str | None = None) -> tuple[bool, str]:
     """把目录移出**该助手**的工作区。只能移出「手动加入」的，样本目录不能移。"""
     try:
@@ -760,7 +734,6 @@ def remove_repo(raw_path: str, agent: str | None = None) -> tuple[bool, str]:
     if not _unregister_path(target, agent):
         return False, "该目录不在这个助手手动加入的清单里（样本目录不能移除）。"
     return True, ""
-
 
 def fs_shortcuts() -> list[dict[str, str]]:
     """文件浏览器的起点：常用位置 + 可用盘符。
@@ -786,7 +759,6 @@ def fs_shortcuts() -> list[dict[str, str]]:
     else:
         spots.append({"name": "根目录", "path": "/"})
     return spots
-
 
 def fs_list(raw_path: str = "", agent: str | None = None) -> tuple[dict[str, Any] | None, str]:
     """列出一个目录下的条目（**只一层**），供前端浏览并选目录加入工作区。
@@ -852,7 +824,6 @@ def fs_list(raw_path: str = "", agent: str | None = None) -> tuple[dict[str, Any
         "entries": entries,
     }, ""
 
-
 def list_repo_files(repo_path: str, *, limit: int = 300) -> tuple[list[str], str]:
     """列出某仓库内的可审文件（相对路径），供「审查范围」勾选。
 
@@ -869,7 +840,6 @@ def list_repo_files(repo_path: str, *, limit: int = 300) -> tuple[list[str], str
     workspace = Workspace(target, max_read_bytes=64)
     files, _truncated = workspace.iter_files(limit=limit)
     return [workspace.relative(p) for p in files], ""
-
 
 def workspace_candidates(agent: str | None = None) -> list[dict[str, Any]]:
     """列出该助手「可以加入工作区」的候选目录，供前端选择器使用。
@@ -911,7 +881,6 @@ def workspace_candidates(agent: str | None = None) -> list[dict[str, Any]]:
             )
     return candidates
 
-
 def list_repos(root: Path | None = None, agent: str | None = None) -> list[dict[str, Any]]:
     """列出可审计的仓库。
 
@@ -945,7 +914,6 @@ def list_repos(root: Path | None = None, agent: str | None = None) -> list[dict[
 
     return repos
 
-
 def _count_files(root: Path, cap: int = 20000) -> int:
     """数可审文件。规则必须与 ``Workspace.iter_files`` 一致。
 
@@ -974,7 +942,6 @@ def _count_files(root: Path, cap: int = 20000) -> int:
             break
     return total
 
-
 def _repo_entry(
     name: str,
     audit_root: Path,
@@ -992,7 +959,6 @@ def _repo_entry(
         "source": source,
         "removable": source == "added",
     }
-
 
 def _probe_models(config: Config) -> tuple[bool, list[dict[str, Any]], str]:
     """向 provider 要一次模型列表。返回 (ok, models, error)。"""
@@ -1027,9 +993,7 @@ def _probe_models(config: Config) -> tuple[bool, list[dict[str, Any]], str]:
         )
     return True, models, ""
 
-
 _MODELS_CACHE: dict[str, Any] = {"at": 0.0, "payload": None, "key": ""}
-
 
 def models_cached(config: Config, *, ttl: float = 300.0) -> dict[str, Any]:
     key = f"{config.base_url}|{config.api_key[:6]}"
@@ -1045,7 +1009,6 @@ def models_cached(config: Config, *, ttl: float = 300.0) -> dict[str, Any]:
     if ok:
         _MODELS_CACHE.update(at=now, payload=payload, key=key)
     return payload
-
 
 # --------------------------------------------------------------------------- #
 # 配置读写
@@ -1071,7 +1034,6 @@ WRITABLE_KEYS = {
 
 ENV_PATH = BACKEND_ROOT / ".env"
 
-
 def format_env_value(value: Any) -> str:
     """把配置值格式化成适合写进 ``.env`` 的字符串。
 
@@ -1081,7 +1043,6 @@ def format_env_value(value: Any) -> str:
     if isinstance(value, float) and value.is_integer():
         return str(int(value))
     return str(value)
-
 
 def _write_env(updates: dict[str, str]) -> None:
     """就地更新 ``.env``，保留注释与未涉及的键。"""
@@ -1100,7 +1061,6 @@ def _write_env(updates: dict[str, str]) -> None:
         output.append(f"{key}={value}")
     ENV_PATH.write_text("\n".join(output) + "\n", encoding="utf-8")
 
-
 def mask_key(key: str) -> str:
     """密钥只回显首尾各 4 位。中间用省略号，长度不泄漏真实位数。"""
     if not key:
@@ -1108,7 +1068,6 @@ def mask_key(key: str) -> str:
     if len(key) <= 10:
         return "…" + key[-2:]
     return f"{key[:4]}…{key[-4:]}"
-
 
 def config_payload(config: Config) -> dict[str, Any]:
     """配置中心的载荷。
@@ -1142,7 +1101,6 @@ def config_payload(config: Config) -> dict[str, Any]:
         "max_iterations": config.max_iterations,
     }
 
-
 def _detect_provider(base_url: str) -> str:
     host = urlparse(base_url).hostname or ""
     if "deepseek" in host:
@@ -1153,11 +1111,9 @@ def _detect_provider(base_url: str) -> str:
         return "本地"
     return host or "自定义"
 
-
 # --------------------------------------------------------------------------- #
 # HTTP 处理器
 # --------------------------------------------------------------------------- #
-
 
 class Handler(BaseHTTPRequestHandler):
     server_version = "MarginHarness"
@@ -1926,7 +1882,6 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
-
 def _render_report(record: RunRecord) -> str:
     """从终态数据重放出一份 Markdown 报告。
 
@@ -1971,11 +1926,9 @@ def _render_report(record: RunRecord) -> str:
     )
     return render_markdown(result, repo=record.repo, model=label)
 
-
 # --------------------------------------------------------------------------- #
 # 启动
 # --------------------------------------------------------------------------- #
-
 
 def main(argv: list[str] | None = None) -> int:
     import argparse
@@ -2027,7 +1980,6 @@ def main(argv: list[str] | None = None) -> int:
     finally:
         httpd.server_close()
     return 0
-
 
 if __name__ == "__main__":
     raise SystemExit(main())

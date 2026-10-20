@@ -872,16 +872,37 @@
   z-index: 0;
 }
 
-.bp__wires path {
+/* 连线：同层走实线、跨层走虚线 —— 这是读图时区分「同一层内部依赖」与
+   「跨层调用」的唯一线索，丢了它，整张图的层间方向就读不出来。
+
+   类名是 bp-wire / bp-wire--same / bp-wire--jump，由 blueprint.js 直接写在
+   path 上（不是 .bp__wires path 的后代选择器）—— 所以这里必须按类选择，
+   否则会漏掉那条虚线规则。 */
+.bp-wire {
   fill: none;
   stroke: var(--ink-3);
   stroke-width: 1.2;
-  opacity: 0.6;
+  opacity: 0.55;
+  transition-property: opacity, stroke, stroke-width;
+  transition-duration: var(--dur-fast);
+  transition-timing-function: var(--ease-out);
 }
 
-.bp__wires path.is-jump {
+.bp-wire--jump {
   stroke-dasharray: 4 3;
   opacity: 0.45;
+}
+
+/* 选中某个组件时，与它相连的线提亮、其余压暗。
+   没有这两条，点选节点只是节点变色，读者看不出「它连到谁」。 */
+.bp-wire.is-active {
+  stroke: var(--agent);
+  stroke-width: 1.6;
+  opacity: 0.95;
+}
+
+.bp-wire.is-dim {
+  opacity: 0.14;
 }
 
 .bp__tip {

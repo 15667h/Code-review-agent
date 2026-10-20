@@ -334,16 +334,18 @@ time,
 }
 
 /* 标题与短文本：避免难看的断行 */
+/* 标题与短文本：避免难看的断行。
+   只挂在语义元素上，不额外约定 .heading / .body-text 这类别名 ——
+   别名没人用，却让人以为需要同时维护两套。 */
 h1,
 h2,
-h3,
-.heading {
+h3 {
   text-wrap: balance;
 }
 
 p,
 li,
-.body-text {
+dd {
   text-wrap: pretty;
 }
 

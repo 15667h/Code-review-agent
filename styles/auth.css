@@ -500,14 +500,6 @@
   font-weight: 500;
 }
 
-.auth__legal {
-  color: var(--ink-3);
-  font-size: 12px;
-  line-height: 1.6;
-  text-align: center;
-  text-wrap: pretty;
-}
-
 /* 表单级提示（成功 / 失败汇总） */
 .form-note {
   display: flex;

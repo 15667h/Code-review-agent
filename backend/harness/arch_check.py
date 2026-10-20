@@ -24,11 +24,10 @@ from __future__ import annotations
 
 import re
 from pathlib import Path
-from typing import Any, Sequence
+from typing import Any
 
 # `path/to/file.py:12` 或 `path/to/file.py:12-20`
 _LOCATION = re.compile(r"^(?P<file>[^\s:]+\.\w+):(?P<line>\d+)(?:-(?P<end>\d+))?$")
-
 
 def parse_location(raw: str) -> tuple[str, int, int] | None:
     """解析 ``相对路径:行号`` 形式的证据。失败返回 None。"""
@@ -39,16 +38,6 @@ def parse_location(raw: str) -> tuple[str, int, int] | None:
     start = int(match.group("line"))
     end = int(match.group("end") or start)
     return match.group("file"), start, end
-
-
-def _is_bare_filename(raw: str) -> bool:
-    """只有文件名、没有目录 —— 这种引用无法定位（实测占 87%）。"""
-    parsed = parse_location(raw)
-    if not parsed:
-        return False
-    return "/" not in parsed[0] and "\\" not in parsed[0]
-
-
 def check_evidence(
     raw: str,
     workspace_root: Path,
@@ -96,7 +85,6 @@ def check_evidence(
         return "weak", f"证据只指向注释：{rel}:{start}"
 
     return "ok", ""
-
 
 def verify_blueprint(
     artifacts: dict[str, list[Any]],
@@ -165,7 +153,6 @@ def verify_blueprint(
         "problems": problems,
     }
 
-
 def summary_lines(report: dict[str, Any]) -> list[str]:
     """把报告转成给模型看的警告 —— 语气要具体，指出是哪一条哪一处。"""
     lines: list[str] = []
@@ -190,7 +177,6 @@ def summary_lines(report: dict[str, Any]) -> list[str]:
             f"证据核验：{report['ok']}/{report['total_refs']} 处可精确核实（{report['grounded_rate']}%）。"
         )
     return lines
-
 
 # --------------------------------------------------------------------------- #
 # 权衡真实性核验（P1）
@@ -252,11 +238,9 @@ _CONTRAST_CUES = ("但", "不过", "然而", "只是", "代价", "会丢", "无�
 # 且整段短到不像认真写过（真正的代价往往需要一两句说明）。
 _MIN_CONSEQUENCE_LEN = 12
 
-
 def _has_any(text: str, cues: tuple[str, ...]) -> bool:
     low = text.lower()
     return any(cue in low for cue in cues)
-
 
 def check_decision_quality(decision: dict) -> list[str]:
     """检查一条决策是否「真的在权衡」，返回问题列表（空表示通过）。
@@ -311,7 +295,6 @@ def check_decision_quality(decision: dict) -> list[str]:
                 "是为了衬托而摆的"
             )
     return problems
-
 
 def check_blueprint_quality(artifacts: dict[str, list[Any]]) -> list[str]:
     """批量检查决策质量，返回问题清单。"""

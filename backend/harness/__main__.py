@@ -30,11 +30,9 @@ from .model import OpenAIModel, ModelError
 from .offline import HeuristicModel
 from .report import render_markdown, render_terminal
 from .rules import cross_check, scan_tree, to_findings
-from .tools_audit import build_toolbox
 from .types import RunState
 
 DEFAULT_GOAL = get_agent(default_id()).default_goal
-
 
 # =============================================================================
 # 输出辅助
@@ -47,14 +45,11 @@ _YELLOW = "\033[33m"
 _RED = "\033[31m"
 _RESET = "\033[0m"
 
-
 def _supports_color() -> bool:
     return sys.stdout.isatty()
 
-
 def _paint(text: str, code: str) -> str:
     return f"{code}{text}{_RESET}" if _supports_color() else text
-
 
 def _ensure_utf8_stdout() -> None:
     for stream in (sys.stdout, sys.stderr):
@@ -64,7 +59,6 @@ def _ensure_utf8_stdout() -> None:
                 reconfigure(encoding="utf-8")
             except (ValueError, OSError):
                 pass
-
 
 def _write_output(path: str, content: str) -> Path:
     """写文件并自动创建父目录。
@@ -77,7 +71,6 @@ def _write_output(path: str, content: str) -> Path:
         target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(content, encoding="utf-8")
     return target
-
 
 def make_event_printer(verbose: bool):
     def printer(event: str, payload: dict[str, Any]) -> None:
@@ -127,11 +120,9 @@ def make_event_printer(verbose: bool):
 
     return printer
 
-
 # =============================================================================
 # 参数
 # =============================================================================
-
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
@@ -171,11 +162,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--no-judge", action="store_true", help="关闭收尾复核（仅用于 A/B 对比）")
     return parser
 
-
 # =============================================================================
 # 主流程
 # =============================================================================
-
 
 def _compose_context(repo: Path, args: argparse.Namespace) -> str:
     """把 --context 与 --diff 生成的审查简报合成一段给模型的背景说明。
@@ -206,7 +195,6 @@ def _compose_context(repo: Path, args: argparse.Namespace) -> str:
 
     return "\n\n".join(parts)
 
-
 def main(argv: list[str] | None = None) -> int:
     _ensure_utf8_stdout()
     parser = build_parser()
@@ -234,7 +222,6 @@ def main(argv: list[str] | None = None) -> int:
 
     return _run_agent(repo, args, config)
 
-
 def _build_config(args: argparse.Namespace, repo: Path) -> Config:
     config = load_config()
     if args.model:
@@ -244,7 +231,6 @@ def _build_config(args: argparse.Namespace, repo: Path) -> Config:
     if config.workspace_root is None:
         config.workspace_root = repo
     return config
-
 
 def _print_tools(repo: Path, args: argparse.Namespace, config: Config) -> int:
     from .sandbox import CommandRunner
@@ -260,7 +246,6 @@ def _print_tools(repo: Path, args: argparse.Namespace, config: Config) -> int:
     print("")
     print(f"允许的命令：{', '.join(sorted(config.allow_commands))}")
     return 0
-
 
 def _run_scan_only(repo: Path, args: argparse.Namespace) -> int:
     print(_paint(f"规则扫描：{repo}", _BOLD))
@@ -286,7 +271,6 @@ def _run_scan_only(repo: Path, args: argparse.Namespace) -> int:
 
     blockers = sum(1 for hit in report.hits if hit.rule.severity == "blocker")
     return 1 if blockers else 0
-
 
 def _run_agent(repo: Path, args: argparse.Namespace, config: Config) -> int:
     workspace = resolve_workspace(repo)
@@ -390,7 +374,6 @@ def _run_agent(repo: Path, args: argparse.Namespace, config: Config) -> int:
         print(f"JSON 结果已写入：{args.json}")
 
     return 1 if result.severity_counts["blocker"] else 0
-
 
 if __name__ == "__main__":
     raise SystemExit(main())

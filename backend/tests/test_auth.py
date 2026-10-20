@@ -9,7 +9,6 @@ from __future__ import annotations
 import json
 import sys
 import threading
-import time
 import urllib.error
 import urllib.request
 from http.server import ThreadingHTTPServer
@@ -23,16 +22,13 @@ if str(BACKEND) not in sys.path:
 
 from harness import auth, server  # noqa: E402
 
-
 @pytest.fixture
 def store(tmp_path: Path) -> auth.AuthStore:
     return auth.AuthStore(path=tmp_path / "users.json")
 
-
 # =============================================================================
 # 密码哈希
 # =============================================================================
-
 
 def test_password_is_never_stored_in_clear(store: auth.AuthStore) -> None:
     """落盘的东西里不能出现明文密码 —— 这是这一层的底线。"""
@@ -44,7 +40,6 @@ def test_password_is_never_stored_in_clear(store: auth.AuthStore) -> None:
     assert "S3cret-pass" not in json.dumps(user.public()), "public() 泄漏了哈希/密码"
     assert "password_hash" not in user.public()
 
-
 def test_same_password_gets_different_hashes(store: auth.AuthStore) -> None:
     """salt 要随机：两个用户用同一个密码，哈希也必须不同。"""
     store.register("a@b.dev", "甲", "same-password-1")
@@ -52,7 +47,6 @@ def test_same_password_gets_different_hashes(store: auth.AuthStore) -> None:
     first = store.get("a@b.dev").password_hash
     second = store.get("c@d.dev").password_hash
     assert first != second
-
 
 def test_verify_password_accepts_correct_and_rejects_everything_else() -> None:
     stored = auth.hash_password("correct-horse")
@@ -62,11 +56,9 @@ def test_verify_password_accepts_correct_and_rejects_everything_else() -> None:
     for broken in ("", "not-a-hash", "scrypt$bad", "bcrypt$1$2$3$4$5"):
         assert auth.verify_password("correct-horse", broken) is False
 
-
 # =============================================================================
 # 注册
 # =============================================================================
-
 
 def test_register_validates_every_field(store: auth.AuthStore) -> None:
     cases = [
@@ -82,7 +74,6 @@ def test_register_validates_every_field(store: auth.AuthStore) -> None:
             store.register(*args)
         assert exc.value.code == expected, args
 
-
 def test_register_rejects_duplicate_email(store: auth.AuthStore) -> None:
     store.register("a@b.dev", "甲", "longenough1")
     with pytest.raises(auth.AuthError) as exc:
@@ -90,17 +81,14 @@ def test_register_rejects_duplicate_email(store: auth.AuthStore) -> None:
     assert exc.value.code == "email_taken"
     assert exc.value.status == 409
 
-
 def test_register_normalises_email(store: auth.AuthStore) -> None:
     user = store.register("  Mixed@Case.DEV ", "甲", "longenough1")
     assert user.email == "mixed@case.dev"
     assert store.get("MIXED@case.dev") is not None
 
-
 # =============================================================================
 # 登录
 # =============================================================================
-
 
 def test_login_does_not_reveal_whether_account_exists(store: auth.AuthStore) -> None:
     """用户不存在与密码错误必须是同一个错误码，否则接口变成账号枚举器。"""
@@ -114,11 +102,9 @@ def test_login_does_not_reveal_whether_account_exists(store: auth.AuthStore) -> 
     assert wrong_password.value.code == no_such_user.value.code == "bad_credentials"
     assert wrong_password.value.status == 401
 
-
 def test_login_succeeds_with_correct_password(store: auth.AuthStore) -> None:
     store.register("a@b.dev", "甲", "longenough1")
     assert store.authenticate("A@B.dev", "longenough1").email == "a@b.dev"
-
 
 def test_login_locks_out_after_repeated_failures(store: auth.AuthStore) -> None:
     """连续失败要限流：本机工具也不能把「监听端口」当成免死金牌。"""
@@ -132,7 +118,6 @@ def test_login_locks_out_after_repeated_failures(store: auth.AuthStore) -> None:
     assert exc.value.code == "too_many_attempts"
     assert exc.value.status == 429
 
-
 def test_successful_login_resets_failure_counter(store: auth.AuthStore) -> None:
     store.register("a@b.dev", "甲", "longenough1")
     for _ in range(auth.MAX_ATTEMPTS - 1):
@@ -145,11 +130,9 @@ def test_successful_login_resets_failure_counter(store: auth.AuthStore) -> None:
             store.authenticate("a@b.dev", "wrong")
         assert exc.value.code == "bad_credentials"
 
-
 # =============================================================================
 # 存储健壮性与会话
 # =============================================================================
-
 
 def test_accounts_survive_a_reload(tmp_path: Path) -> None:
     path = tmp_path / "users.json"
@@ -160,7 +143,6 @@ def test_accounts_survive_a_reload(tmp_path: Path) -> None:
     assert second.count() == 1
     assert second.authenticate("a@b.dev", "longenough1").name == "甲"
 
-
 def test_broken_file_is_preserved_not_silently_dropped(tmp_path: Path) -> None:
     """文件坏了要留档：直接当空表会让用户的账号无声消失。"""
     path = tmp_path / "users.json"
@@ -169,7 +151,6 @@ def test_broken_file_is_preserved_not_silently_dropped(tmp_path: Path) -> None:
     store = auth.AuthStore(path=path)
     assert store.count() == 0
     assert (tmp_path / "users.broken.json").is_file(), "坏文件没有被留档"
-
 
 def test_session_lifecycle() -> None:
     sessions = auth.SessionStore(ttl=60)
@@ -182,12 +163,10 @@ def test_session_lifecycle() -> None:
     assert sessions.get(token) is None, "吊销后不能再用"
     assert sessions.revoke(token) is False
 
-
 def test_expired_session_is_rejected() -> None:
     sessions = auth.SessionStore(ttl=-1)  # 立即过期
     token = sessions.issue("a@b.dev").token
     assert sessions.get(token) is None
-
 
 def test_seed_only_runs_on_an_empty_store(store: auth.AuthStore) -> None:
     created = auth.seed_demo_accounts(store)
@@ -198,11 +177,9 @@ def test_seed_only_runs_on_an_empty_store(store: auth.AuthStore) -> None:
     # 已有账号时不能再动 —— 否则会把用户改过的密码重置回演示值
     assert auth.seed_demo_accounts(store) == []
 
-
 # =============================================================================
 # HTTP 集成
 # =============================================================================
-
 
 @pytest.fixture
 def auth_server(tmp_path: Path):
@@ -225,7 +202,6 @@ def auth_server(tmp_path: Path):
         httpd.server_close()
         auth.STORE, auth.SESSIONS, server.REGISTRY.runs_dir = original
 
-
 def _request(base, path, *, method="GET", body=None, cookie=None):
     data = json.dumps(body).encode("utf-8") if body is not None else None
     headers = {"Content-Type": "application/json"} if data else {}
@@ -242,7 +218,6 @@ def _request(base, path, *, method="GET", body=None, cookie=None):
         except json.JSONDecodeError:
             payload = {"raw": raw}
         return exc.code, payload, exc.headers
-
 
 def test_http_login_me_logout_round_trip(auth_server: str) -> None:
     status, payload, headers = _request(
@@ -268,7 +243,6 @@ def test_http_login_me_logout_round_trip(auth_server: str) -> None:
     status, payload, _ = _request(auth_server, "/api/auth/me", cookie=token)
     assert payload["user"] is None, "吊销后的会话不能再认"
 
-
 def test_http_wrong_password_is_401_without_leaking(auth_server: str) -> None:
     status, payload, _ = _request(
         auth_server, "/api/auth/login", method="POST",
@@ -277,7 +251,6 @@ def test_http_wrong_password_is_401_without_leaking(auth_server: str) -> None:
     assert status == 401
     assert payload["code"] == "bad_credentials"
     assert "demo@margin.dev" in payload["error"] or "邮箱或密码" in payload["error"]
-
 
 def test_http_register_then_use_the_new_account(auth_server: str) -> None:
     status, payload, headers = _request(
@@ -298,7 +271,6 @@ def test_http_register_then_use_the_new_account(auth_server: str) -> None:
     )
     assert status == 409 and payload["code"] == "email_taken"
 
-
 def test_anonymous_access_is_allowed_by_default(auth_server: str) -> None:
     """默认开关是关的：本机工具直开即用，登录只用来「知道自己是谁」。"""
     status, payload, _ = _request(auth_server, "/api/auth/me")
@@ -306,7 +278,6 @@ def test_anonymous_access_is_allowed_by_default(auth_server: str) -> None:
 
     status, _, _ = _request(auth_server, "/api/runs")
     assert status == 200, "默认不该拦业务接口"
-
 
 def test_require_auth_blocks_business_endpoints(auth_server: str, monkeypatch) -> None:
     """打开 MARGIN_REQUIRE_AUTH 后：业务接口 401，公开接口照常。"""
@@ -332,7 +303,6 @@ def test_require_auth_blocks_business_endpoints(auth_server: str, monkeypatch) -
     status, _, _ = _request(auth_server, "/api/runs", cookie=token)
     assert status == 200, "登录后应能正常访问"
 
-
 def test_set_cookie_does_not_leak_across_requests(auth_server: str) -> None:
     """keep-alive 下 Handler 实例会复用 —— 排队头必须每请求重置。"""
     _, _, login_headers = _request(
@@ -346,7 +316,6 @@ def test_set_cookie_does_not_leak_across_requests(auth_server: str) -> None:
     assert status == 200
     assert not headers.get("Set-Cookie"), "上一个请求的 Set-Cookie 漏到了下一个响应"
 
-
 def test_login_response_never_includes_the_password_hash(auth_server: str) -> None:
     status, payload, _ = _request(
         auth_server, "/api/auth/login", method="POST",
@@ -355,7 +324,6 @@ def test_login_response_never_includes_the_password_hash(auth_server: str) -> No
     assert status == 200
     blob = json.dumps(payload)
     assert "scrypt" not in blob and "password" not in blob
-
 
 def test_frontend_demo_credentials_match_backend_seed() -> None:
     """前端一键登录用的密码必须与后端 seed 的完全一致。
@@ -378,7 +346,6 @@ def test_frontend_demo_credentials_match_backend_seed() -> None:
         f"  前端 {frontend}\n  后端 {backend}"
     )
     assert frontend, "没有解析到前端常量，检查 auth.js 的写法是否变了"
-
 
 def test_seeded_accounts_are_actually_loginable(store: auth.AuthStore) -> None:
     """seed 出来的账号必须真能登录 —— 「提供测试账户」的意义就在这里。"""

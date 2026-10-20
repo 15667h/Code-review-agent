@@ -12,11 +12,7 @@ from __future__ import annotations
 
 import ast
 import difflib
-import re
 from dataclasses import dataclass
-from pathlib import Path
-from typing import Any
-
 from .sandbox import CommandRunner, PathEscape, Workspace
 from .tools import Risk, Tool, ToolRegistry, truncate_output
 from .types import RunState, ToolResult
@@ -35,7 +31,6 @@ from .tools_common import (
 # =============================================================================
 # 执行工具（审查特有）
 # =============================================================================
-
 
 def _tool_run_tests(workspace: Workspace, runner: CommandRunner) -> Tool:
     def handler(target: str = "", keyword: str = "", max_failures: int = 5) -> ToolResult:
@@ -85,7 +80,6 @@ Returns: pytest 的原始输出（含 exit code）。""",
         examples=[{"keyword": "rate_limit"}, {"target": "tests", "max_failures": 3}],
         keywords=("test", "pytest", "verify", "测试", "验证", "用例"),
     )
-
 
 def _tool_lint_file(workspace: Workspace, runner: CommandRunner) -> Tool:
     def handler(path: str, tool: str = "auto") -> ToolResult:
@@ -159,7 +153,6 @@ Returns: 问题列表；没有问题则明确说「未发现」。""",
         examples=[{"path": "src/middleware/rate_limit.py"}],
         keywords=("lint", "syntax", "check", "ruff", "检查", "语法", "静态"),
     )
-
 
 def _tool_apply_patch(workspace: Workspace) -> Tool:
     def handler(path: str, old_string: str, new_string: str, expected_count: int = 1) -> ToolResult:
@@ -258,7 +251,6 @@ Returns: 成功时返回 unified diff 与后续建议；失败时说明匹配了
         keywords=("patch", "edit", "modify", "fix", "write", "修改", "补丁", "修复", "改写"),
     )
 
-
 def _tool_record_finding(state: RunState) -> Tool:
     def handler(
         severity: str,
@@ -334,7 +326,6 @@ Returns: 记录结果与当前累计条数。""",
         keywords=("finding", "record", "report", "bug", "记录", "发现", "问题", "上报"),
     )
 
-
 # =============================================================================
 # 组装
 # =============================================================================
@@ -350,18 +341,11 @@ CORE_TOOLS = (
     "discover_tools",
 )
 
-
 @dataclass
 class AuditToolbox:
     registry: ToolRegistry
     workspace: Workspace
     runner: CommandRunner
-
-    @property
-    def core_names(self) -> tuple[str, ...]:
-        return CORE_TOOLS
-
-
 def build_toolbox(workspace: Workspace, state: RunState, runner: CommandRunner) -> AuditToolbox:
     """构建审计工具箱。核心工具进静态前缀，其余按需检索。"""
     from .tools import bind_discovery
@@ -386,10 +370,8 @@ def build_toolbox(workspace: Workspace, state: RunState, runner: CommandRunner) 
 
     return AuditToolbox(registry=registry, workspace=workspace, runner=runner)
 
-
 def risk_of(registry: ToolRegistry, name: str) -> Risk:
     tool = registry.get(name)
     return tool.risk if tool else Risk.HIGH
-
 
 __all__ = ["AuditToolbox", "build_toolbox", "risk_of", "CORE_TOOLS"]

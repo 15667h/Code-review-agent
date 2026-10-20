@@ -23,11 +23,9 @@ BACKEND = Path(__file__).resolve().parent.parent
 if str(BACKEND) not in sys.path:
     sys.path.insert(0, str(BACKEND))
 
-from harness.agents import get as get_agent  # noqa: E402
 from harness.sandbox import CommandRunner, Workspace  # noqa: E402
 from harness.tools_design import build_design_toolbox  # noqa: E402
 from harness.types import RunState  # noqa: E402
-
 
 @pytest.fixture
 def repo(tmp_path: Path) -> Path:
@@ -39,7 +37,6 @@ def repo(tmp_path: Path) -> Path:
     (tmp_path / ".env").write_text("DEEPSEEK_API_KEY=sk-test-not-real\n", encoding="utf-8")
     return tmp_path
 
-
 @pytest.fixture
 def registry(repo: Path):
     """用架构工具箱当载体：它持有全部 9 个公共工具 + 4 个产出工具，
@@ -48,15 +45,12 @@ def registry(repo: Path):
     runner = CommandRunner(workspace=workspace, allow=(), timeout=5)
     return build_design_toolbox(workspace, RunState(goal="g"), runner)
 
-
 def _call(registry, tool: str, **kwargs):
     return registry.get(tool).handler(**kwargs).render()
-
 
 # =============================================================================
 # list_files
 # =============================================================================
-
 
 def test_list_files_reports_missing_directory_instead_of_empty(registry) -> None:
     """目录不存在必须显式失败，不能伪装成「没有匹配内容」。
@@ -68,70 +62,57 @@ def test_list_files_reports_missing_directory_instead_of_empty(registry) -> None
     assert "目录不存在" in out
     assert "list_files" in out  # 错误信封带修复指引
 
-
 def test_list_files_rejects_escape(registry) -> None:
     out = _call(registry, "list_files", path="../outside")
     assert "PathEscape" in out or "工作区" in out
-
 
 def test_list_files_lists_real_files(registry) -> None:
     out = _call(registry, "list_files", path="pkg", pattern="*.py")
     assert "app.py" in out
 
-
 # =============================================================================
 # read_file
 # =============================================================================
-
 
 def test_read_file_blocks_secret_files_at_the_tool_layer(registry) -> None:
     """密钥文件的护栏在工具层，不在 HTTP 层 —— Agent 的读结果会进模型上下文。"""
     out = _call(registry, "read_file", path=".env")
     assert "SecretFileBlocked" in out or "密钥" in out or "sk-" not in out
 
-
 def test_read_file_paginates_with_offset_and_limit(registry) -> None:
     out = _call(registry, "read_file", path="pkg/app.py", offset=1, limit=2)
     assert "import os" in out
     assert "return eval" not in out, "limit=2 时不应出现第 5 行"
-
 
 def test_read_file_flags_offset_past_end(registry) -> None:
     """offset 超过文件行数时要明说，不能返回「第 9999-76 行」这种自相矛盾的文本。"""
     out = _call(registry, "read_file", path="pkg/app.py", offset=9999)
     assert "超出" in out or "不存在" in out
 
-
 # =============================================================================
 # grep
 # =============================================================================
-
 
 def test_grep_rejects_broken_regex_with_actionable_message(registry) -> None:
     out = _call(registry, "grep", pattern="eval(")
     assert "InvalidRegex" in out
     assert "转义" in out  # 修复指引
 
-
 def test_grep_reports_missing_directory(registry) -> None:
     out = _call(registry, "grep", pattern="x", path="nope")
     assert "目录不存在" in out
-
 
 def test_grep_finds_content(registry) -> None:
     out = _call(registry, "grep", pattern=r"eval\(", path="pkg")
     assert "app.py:5" in out
 
-
 # =============================================================================
 # update_todo
 # =============================================================================
 
-
 def test_update_todo_rejects_unknown_status(registry) -> None:
     out = _call(registry, "update_todo", todos=[{"text": "读变更", "status": "done"}])
     assert "status" in out and ("pending" in out or "completed" in out)
-
 
 def test_update_todo_replaces_the_list(registry) -> None:
     _call(registry, "update_todo", todos=[{"text": "第一步", "status": "completed"}])
@@ -139,11 +120,9 @@ def test_update_todo_replaces_the_list(registry) -> None:
     assert "第二步" in out
     assert "第一步" not in out, "整个列表替换，旧条目不该残留"
 
-
 # =============================================================================
 # run_command
 # =============================================================================
-
 
 def test_run_command_rejects_non_argv(repo) -> None:
     """架构工具箱刻意不含 run_command（只读助手），这里用审查工具箱验证行为。"""
@@ -155,7 +134,6 @@ def test_run_command_rejects_non_argv(repo) -> None:
     out = _call(audit, "run_command", argv="git status")
     assert "argv" in out and "数组" in out
 
-
 def test_run_command_rejects_commands_outside_the_allowlist(repo) -> None:
     """白名单外的命令必须失败；allow=() 时连 git 都不放行。"""
     from harness.tools_audit import build_toolbox
@@ -166,16 +144,13 @@ def test_run_command_rejects_commands_outside_the_allowlist(repo) -> None:
     out = _call(audit, "run_command", argv=["git", "status"])
     assert "白名单" in out or "不允许" in out
 
-
 # =============================================================================
 # read_skill
 # =============================================================================
 
-
 def test_read_skill_reports_available_docs(registry) -> None:
     out = _call(registry, "read_skill", name="definitely-not-a-skill")
     assert "SkillNotFound" in out
-
 
 def test_read_skill_rejects_absolute_paths(registry) -> None:
     """技能名以 / 开头时 pathlib 会顶掉 skills_root —— POSIX 下可读任意文件。"""
@@ -183,11 +158,9 @@ def test_read_skill_rejects_absolute_paths(registry) -> None:
     assert "SkillNotFound" in out
     assert "root:" not in out
 
-
 # =============================================================================
 # 两个 agent 共享同一实现
 # =============================================================================
-
 
 def test_both_agents_get_the_same_common_tools() -> None:
     """公共工具只有一处实现：两个 agent 的工厂返回同一批工具对象。"""
@@ -205,11 +178,9 @@ def test_both_agents_get_the_same_common_tools() -> None:
         # （schema 含 name/description/parameters，任一边悄悄改描述都会被抓住）。
         assert audit.get(name).schema() == design.get(name).schema(), f"{name} 的定义分叉了"
 
-
 # =============================================================================
 # revive_artifacts：重放终态的全桶还原
 # =============================================================================
-
 
 def test_revive_artifacts_round_trips_every_bucket() -> None:
     """「重放丢一半产出」的唯一防线：每个桶都要能还原，未知类型原样返回。"""
@@ -254,11 +225,9 @@ def test_revive_artifacts_round_trips_every_bucket() -> None:
     assert set(restored) == {"finding", "component"}
     assert len(restored["finding"]) == 1 and len(restored["component"]) == 1
 
-
 # =============================================================================
 # SSE 流端点：实时模式的主干路径
 # =============================================================================
-
 
 def _read_stream(base: str, path: str, stop_after: str = "close") -> list[str]:
     """读 SSE 流直到收到指定事件类型，返回原始帧文本列表。"""
@@ -277,7 +246,6 @@ def _read_stream(base: str, path: str, stop_after: str = "close") -> list[str]:
                 if f"event: {stop_after}" in text:
                     return frames
     return frames
-
 
 @pytest.fixture(scope="module")
 def sse_server(tmp_path_factory):
@@ -299,7 +267,6 @@ def sse_server(tmp_path_factory):
         httpd.server_close()
         server.REGISTRY.runs_dir = original
 
-
 def _start_offline_run(base: str) -> str:
     body = {
         "repo": "backend/examples/s1-obvious-danger/repo",
@@ -313,7 +280,6 @@ def _start_offline_run(base: str) -> str:
     )
     with urllib.request.urlopen(req, timeout=30) as resp:
         return json.loads(resp.read().decode("utf-8"))["run_id"]
-
 
 def test_sse_stream_replays_history_then_closes(sse_server: str) -> None:
     """SSE 必须先补发历史事件，终态后再推实时帧，最后发 close。
@@ -347,7 +313,6 @@ def test_sse_stream_replays_history_then_closes(sse_server: str) -> None:
         "数据帧都要带 seq 供断线补发"
     )
 
-
 def test_sse_stream_supports_since_resume(sse_server: str) -> None:
     """since 参数只补发之后的帧 —— 断线重连的契约。"""
     run_id = _start_offline_run(sse_server)
@@ -362,11 +327,9 @@ def test_sse_stream_supports_since_resume(sse_server: str) -> None:
     assert frames, "since 大于已有事件数时应直接进终态分支，仍要有关流帧"
     assert any("event: close" in f for f in frames)
 
-
 # =============================================================================
 # lint_file 的 import 完整性
 # =============================================================================
-
 
 def test_lint_file_runs_without_nameerror(tmp_path) -> None:
     """lint_file 里用了 ast.parse，但曾经漏了 `import ast`。
