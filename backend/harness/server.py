@@ -535,6 +535,10 @@ def _worker(record: RunRecord, options: dict[str, Any]) -> None:
         "findings": [item.to_dict() for item in result.findings],
         "warnings": list(result.warnings),
         "summary": result.summary,
+        # 证据核验报告：架构助手的每条产出凭什么说自己存在。
+        # 之前只写进了 CLI 的 --json，HTTP 层漏了 —— 于是界面拿不到这个字段，
+        # 「可精确定位率」只能靠翻 warnings 的数句子看。
+        "evidence_report": result.evidence_report or {},
         "prefix": result.prefix_trace,
         "compression_events": list(result.compression_events),
     }
@@ -1713,6 +1717,33 @@ class Handler(BaseHTTPRequestHandler):
                 )
 
         context_note = str(body.get("context") or "").strip()
+
+        # 增量审查：把 BASE..工作树 的改动简报拼进背景说明。
+        # 失败（不是 git 仓库 / base 不存在）直接 400，不静默退化成全仓审查 ——
+        # 用户以为自己在审增量，实际审了全仓，这种偏差比报错难发现得多。
+        diff_base = str(body.get("diff") or "").strip()
+        if diff_base:
+            from .diffmode import collect_diff
+
+            report = collect_diff(repo, diff_base)
+            if not report.ok:
+                self._send_json(
+                    {"error": report.error, "code": "diff_unavailable"},
+                    400,
+                )
+                return
+            brief = report.brief()
+            if not brief:
+                self._send_json(
+                    {
+                        "error": f"{diff_base} 与工作树之间没有差异，没有可审的改动。",
+                        "code": "diff_empty",
+                    },
+                    400,
+                )
+                return
+            context_note = (brief + "\n\n" + context_note).strip()
+
         if scope_note:
             context_note = (context_note + "\n\n" + scope_note).strip()
 
@@ -1727,6 +1758,7 @@ class Handler(BaseHTTPRequestHandler):
                 # 可以再告诉你，缺了它渲染层只能猜。
                 "outcome": spec.outcome,
                 "context_note": context_note,
+            "diff": diff_base,
                 "scope": [str(s) for s in (raw_scope or [])][:200] if isinstance(raw_scope, list) else [],
                 "config": config,
             }

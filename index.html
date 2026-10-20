@@ -8,22 +8,36 @@
       rel="icon"
       href='data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16"><rect width="16" height="16" rx="3.5" fill="%230f6b5c"/><path d="M4.4 11.6V4.4l3.6 4.4 3.6-4.4v7.2" fill="none" stroke="%23ffffff" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg>'
     />
-    <meta name="theme-color" content="#f4f6f5" />
+    <meta name="theme-color" content="#080b0c" />
     <meta
       name="description"
       content="Margin 是一个工作台，多个研发辅助 Agent：按空间组织仓库，运行可追溯的助手计划，产出形态由助手自己声明。"
     />
     <title>Margin · 研发助手工作台</title>
 
+    <!-- 主题在首帧之前决定，避免深色页面闪一下白再变黑。
+         令牌默认是深色（:root），data-theme="light" 才覆盖。 -->
+    <script>
+      (function () {
+        try {
+          var saved = window.localStorage.getItem('margin.theme');
+          document.documentElement.setAttribute('data-theme', saved === 'light' ? 'light' : 'dark');
+        } catch (error) {
+          document.documentElement.setAttribute('data-theme', 'dark');
+        }
+      })();
+    </script>
+
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link
       rel="stylesheet"
-      href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400..700&family=Instrument+Sans:wght@400;500;600&family=JetBrains+Mono:wght@400;500;600&display=swap"
+      href="https://fonts.googleapis.com/css2?family=Sora:wght@400;500;600&family=Instrument+Sans:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap"
     />
 
     <link rel="stylesheet" href="styles/tokens.css" />
     <link rel="stylesheet" href="styles/app.css" />
+    <link rel="stylesheet" href="styles/views.css" />
   </head>
 
   <body>
@@ -172,9 +186,38 @@
           </div>
 
           <div class="topbar__right">
-            <span class="conn" id="conn" data-state="demo" hidden>
+            <button
+              class="icon-btn"
+              type="button"
+              id="themeBtn"
+              aria-label="切换明暗主题"
+              aria-pressed="false"
+              title="切换明暗主题"
+            >
+              <svg
+                id="themeIcon"
+                width="16"
+                height="16"
+                viewBox="0 0 16 16"
+                aria-hidden="true"
+                focusable="false"
+              >
+                <path
+                  d="M13.2 9.6A5.6 5.6 0 0 1 6.4 2.8a5.6 5.6 0 1 0 6.8 6.8Z"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="1.4"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                />
+              </svg>
+            </button>
+
+            <!-- 连接状态由 scripts/live.js 写入。初始 hidden 且不带任何
+                 假状态：后端没探通之前，界面不该先声称自己连上了。 -->
+            <span class="conn" id="conn" data-state="pending" hidden>
               <span class="conn__dot" aria-hidden="true"></span>
-              <span class="conn__text" id="connText">演示数据</span>
+              <span class="conn__text" id="connText"></span>
             </span>
 
             <div class="context__meta" id="wsMeta">
@@ -247,16 +290,6 @@
         </main>
 
         <div class="dock">
-          <div class="runbar" id="runbar" role="status" aria-live="polite" hidden>
-            <span class="runbar__pulse" aria-hidden="true"></span>
-            <!-- 文案由 scripts/app.js 按当前助手的方言写入。
-                 这里刻意留一个中性的占位：静态写死「审查计划」会让架构助手
-                 在启动的一瞬间显示成审查。 -->
-            <span class="runbar__label" id="runbarLabel" role="status">正在运行…</span>
-            <span class="runbar__step num" id="runbarStep"></span>
-            <button class="runbar__stop" type="button" id="runbarStop">停止</button>
-          </div>
-
           <form class="composer" id="composer" autocomplete="off">
             <label class="sr-only" for="prompt">审查指令</label>
             <div class="composer__context">
@@ -319,6 +352,19 @@
                       </svg>
                     </button>
                   </div>
+
+                  <!-- 增量审查：只有声明了 capabilities.diff 的助手才显示。
+                       默认隐藏，避免给架构助手一个「审 diff」的假承诺。 -->
+                  <button
+                    class="pop__chip"
+                    type="button"
+                    id="diffBtn"
+                    aria-pressed="false"
+                    title="只审 BASE 到工作树的改动"
+                    hidden
+                  >
+                    增量
+                  </button>
                 </div>
 
                 <div class="composer__submit">
@@ -329,6 +375,7 @@
                       id="modelBtn"
                       aria-haspopup="listbox"
                       aria-expanded="false"
+                      hidden
                     >
                       <svg
                         class="model-btn__mark"
@@ -348,7 +395,7 @@
                         />
                         <circle cx="7.5" cy="10.5" r="1" fill="currentColor" />
                       </svg>
-                      <span class="model-btn__name" id="modelBtnName">DeepSeek V4.1 Flash</span>
+                      <span class="model-btn__name" id="modelBtnName"></span>
                       <svg
                         class="model-btn__chev"
                         width="11"
@@ -372,7 +419,7 @@
 
                   <button class="stop-btn" type="button" id="stopBtn" hidden>停止</button>
                   <button class="send-btn" type="submit" id="sendBtn">
-                    <span>开始审查</span>
+                    <span id="sendLabel">开始审查</span>
                     <svg width="14" height="14" viewBox="0 0 16 16" aria-hidden="true">
                       <path
                         d="M3 8h9.2M8.6 4.2 12.4 8l-3.8 3.8"
@@ -422,7 +469,8 @@
       <div class="scrim" id="scrim" hidden></div>
     </div>
 
-    <script src="scripts/mock-data.js"></script>
+    <!-- mock-data.js 已移除：界面不再有演示数据。
+         后端不可达时，app.js 会渲染一个「未连接」面板说明怎么起服务。 -->
     <script src="scripts/api.js"></script>
     <script src="scripts/agents.js"></script>
     <script src="scripts/blueprint.js"></script>

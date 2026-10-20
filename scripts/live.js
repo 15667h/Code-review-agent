@@ -4,7 +4,8 @@
    空间/会话/审计事件流全部来自真实后端。
 
    只在 http(s) 且后端可达时启用；否则 tryBoot 返回 false，
-   由 app.js 继续走演示数据 —— 双击 index.html 看原型的路径不受影响。
+   由 app.js 渲染「未连接」面板。界面不降级到假数据：一份看起来像真结果的
+   审查，比一句「没连上」更容易误导人。
 
    SSE 事件到界面的映射：
      run / prefix  → 运行头部（仓库、模型、静态前缀指纹）
@@ -217,7 +218,7 @@
     ui.replaceThread(wrap);
   }
 
-  /* 顶栏连接指示：一眼看出当前数据是真实的还是演示的 */
+  /* 顶栏连接指示：一眼看出当前数据是真实的还是没连上 */
   function setConnection(state, detail) {
     var node = document.getElementById('conn');
     var text = document.getElementById('connText');
@@ -228,7 +229,7 @@
     if (text) {
       var labels = {
         live: '后端已连接',
-        demo: '演示数据',
+        demo: '未连接',
         busy: '运行中',
         error: '连接异常',
       };
@@ -500,6 +501,12 @@
       payload.scope = scope;
     }
 
+    /* 增量审查：只审 BASE..工作树。后端拿不到 diff 会直接 400（不静默退化成
+       全仓审查），所以这里要把它当成用户可见的错误处理，而不是忽略。 */
+    if (ui.isDiff && ui.isDiff()) {
+      payload.diff = 'HEAD';
+    }
+
     var handle = createView({
       repo_name: space.name,
       model: model ? model.id : '',
@@ -529,6 +536,11 @@
 
     if (!response || !response.run_id) {
       var message = (response && response.error) || '启动审计失败';
+      /* diff 相关的失败要单独说清：这是用户主动打开的模式，
+         不是后端随便报了个错。 */
+      if (response && (response.code === 'diff_unavailable' || response.code === 'diff_empty')) {
+        message = message + '（增量模式要求仓库是 git 仓库，且 BASE 到工作树之间确实有改动）';
+      }
       handle.note('启动失败：' + message);
       ui.setBusy(false);
       setConnection('error', message);
@@ -944,12 +956,136 @@
       turn.appendChild(warn);
     }
 
+    /* 证据核验面板：只有架构助手会产生这个报告。
+       放在摘要之后、统计之前 —— 它回答的是「这份方案有多少说法站得住」，
+       比 token 与耗时更该被先看到。 */
+    var evidence = buildEvidence(payload.evidence_report);
+    if (evidence) {
+      turn.appendChild(evidence);
+    }
+
     if (!replay) {
       turn.appendChild(buildStats(handle, payload));
       turn.appendChild(buildFollowUps(handle));
     } else if (handle.runId) {
       turn.appendChild(buildStats(handle, payload, handle.runId));
     }
+  }
+
+  /* ==========================================================================
+     证据核验（后端 evidence_report）
+     --------------------------------------------------------------------------
+     后端逐条核验「这条产出凭什么说自己存在」，输出 ok / weak / bad 三档计数。
+     这里把它画成一条可读的进度条 + 分类型明细 + 问题清单。
+     没有报告（审查助手、或旧归档）就返回 null，不占位置。
+     ========================================================================== */
+
+  var KIND_LABEL = {
+    layer: '分层',
+    component: '组件',
+    decision: '决策',
+    open_question: '开放问题',
+  };
+
+  function buildEvidence(report) {
+    if (!report || !report.total_refs) {
+      return null;
+    }
+
+    var box = el('section', 'evidence is-animated');
+    box.setAttribute('aria-label', '证据核验');
+
+    var head = el('header', 'evidence__head');
+    head.appendChild(el('h3', 'evidence__title', '证据核验'));
+
+    var rate = el('p', 'evidence__rate');
+    rate.appendChild(document.createTextNode(String(report.grounded_rate)));
+    var pct = el('small', null, '%');
+    rate.appendChild(pct);
+    head.appendChild(rate);
+    box.appendChild(head);
+
+    /* 进度条：ok 用强调色，weak 用同色淡化，bad 用阻断色。
+       三者加起来正好是 100%，所以宽度直接按比例给。 */
+    var total = report.total_refs || 1;
+    var bar = el('div', 'evidence__bar');
+    bar.setAttribute('role', 'img');
+    bar.setAttribute(
+      'aria-label',
+      '可精确核实 ' + report.ok + ' 处，不够精确 ' + report.weak + ' 处，无法核实 ' + report.bad + ' 处'
+    );
+    [
+      [report.ok, ''],
+      [report.weak, 'is-weak'],
+      [report.bad, 'is-bad'],
+    ].forEach(function (pair) {
+      if (!pair[0]) {
+        return;
+      }
+      var seg = el('i', pair[1]);
+      seg.style.width = (pair[0] / total) * 100 + '%';
+      bar.appendChild(seg);
+    });
+    box.appendChild(bar);
+
+    var legend = el('div', 'evidence__legend');
+    [
+      ['可精确核实', report.ok],
+      ['不够精确', report.weak],
+      ['无法核实', report.bad],
+      ['缺证据条目', report.items_without_evidence || 0],
+    ].forEach(function (pair) {
+      var item = el('span');
+      item.appendChild(document.createTextNode(pair[0]));
+      item.appendChild(el('b', null, String(pair[1])));
+      legend.appendChild(item);
+    });
+    box.appendChild(legend);
+
+    /* 分类型明细 */
+    var kinds = report.per_kind || {};
+    var names = Object.keys(kinds);
+    if (names.length) {
+      var grid = el('dl', 'evidence__kinds');
+      names.forEach(function (name) {
+        var stat = kinds[name];
+        var cell = el('div', 'evidence__kind');
+        cell.appendChild(el('dt', null, KIND_LABEL[name] || name));
+        var value = stat.total
+          ? stat.ok + ' / ' + stat.total
+          : '缺 ' + stat.no_evidence + ' 条';
+        cell.appendChild(el('dd', null, value));
+        grid.appendChild(cell);
+      });
+      box.appendChild(grid);
+    }
+
+    /* 问题清单：只列 bad 与缺证据，weak 不逐条列（它只是「不够精确」） */
+    var problems = (report.problems || []).filter(function (item) {
+      return item.status === 'bad';
+    });
+    if (problems.length) {
+      var list = el('div', 'evidence__problems');
+      problems.slice(0, 6).forEach(function (item) {
+        var row = el('div', 'evidence__problem');
+        row.appendChild(el('b', null, (KIND_LABEL[item.kind] || item.kind) + '：' + (item.name || '未命名')));
+        var ref = el('code', null, item.evidence);
+        ref.setAttribute('translate', 'no');
+        row.appendChild(ref);
+        list.appendChild(row);
+      });
+      box.appendChild(list);
+    } else if (report.items_without_evidence) {
+      box.appendChild(
+        el(
+          'p',
+          'evidence__none',
+          '有 ' + report.items_without_evidence + ' 条产出没有登记证据 —— 它们可能成立，但评审无法直接核对。'
+        )
+      );
+    }
+
+    return box;
   }
 
   function buildStats(handle, payload, replayRunId) {

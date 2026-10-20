@@ -1,60 +1,87 @@
 /* ==========================================================================
    Margin · 设计令牌
-   方向：编辑部校样台（proofing desk）
-   审查即校样 —— 冷纸底、墨色文字、批注式标记、有据可查的结构。
+   --------------------------------------------------------------------------
+   方向：**玻璃仪表台**（glass instrument panel）
+
+   这一版与上一版（编辑部校样台）的差别是结构性的，不是换色：
+   上一版把「纸张」当基底，所有分隔靠界线；这一版把「深色石墨」当基底，
+   让**浮层是玻璃、内容是实体**。
+
+   为什么只用玻璃做浮层：毛玻璃一旦铺满每个卡片，层级就全平了 ——
+   屏幕上所有东西都在发虚光，眼睛找不到落点。所以：
+
+     · 玻璃 = 顶栏、输入坞、浮层、模型菜单、运行条（这些是「浮在内容之上」的）
+     · 实体 = 发现卡、工具步、计划项、蓝图节点（这些是「内容本身」）
+
+   品牌色沿用深青（favicon 与既有材料一致），深色下提亮到薄荷青以保证对比度；
+   强调色仍由每个 Agent 自己声明（--agent），组件不感知具体助手。
    ========================================================================== */
 
 :root {
-  color-scheme: light;
+  color-scheme: dark;
 
-  /* --- 纸张与表面 ------------------------------------------------------ */
-  --paper: #f4f6f5;          /* 页面底色：偏冷的灰白，不是米白 */
-  --surface: #ffffff;        /* 卡片 / 输入区 */
-  --surface-sunk: #e9edeb;   /* 内凹区域：代码块、行号列 */
-  --surface-quiet: #f8faf9;  /* 次级卡片 */
+  /* --- 基底：不用纯黑。偏蓝绿的石墨，才托得住玻璃 ---------------------- */
+  --canvas: #080b0c;
+  --canvas-deep: #050708;
+  --paper: var(--canvas); /* 兼容旧页面（auth / settings）的变量名 */
+  --substrate-1: rgba(47, 214, 173, 0.09); /* 左上冷光 */
+  --substrate-2: rgba(96, 128, 255, 0.07); /* 右下冷光 */
 
-  /* --- 墨色：偏青的中性，避免纯黑 -------------------------------------- */
-  --ink: #0e1a18;
-  --ink-2: #4b5956;          /* 正文次级 */
-  --ink-3: #788683;          /* 元信息 */
+  /* --- 实体表面：内容落在这上面，必须够实，不能透 ---------------------- */
+  --surface: #0f1415;
+  --surface-quiet: #12181a;
+  --surface-sunk: #0a0e0f;
 
-  /* --- 界线 ------------------------------------------------------------ */
-  --rule: #dbe1de;
-  --rule-strong: #c2cbc7;
+  /* --- 玻璃：只给浮层用 -------------------------------------------------- */
+  --glass-fill: rgba(255, 255, 255, 0.045);
+  --glass-fill-strong: rgba(255, 255, 255, 0.075);
+  --glass-fill-quiet: rgba(255, 255, 255, 0.028);
+  --glass-highlight: rgba(255, 255, 255, 0.09); /* 上缘内高光 */
+  --glass-blur: 22px;
+  --glass-sat: 150%;
 
-  /* --- 品牌：深青。刻意避开 AI 紫，也避开四个语义色相 ------------------ */
-  --accent: #0f6b5c;
-  --accent-deep: #0a5548;
-  --accent-soft: #e2efeb;
-  --on-accent: #ffffff;
+  /* --- 墨色：中性偏青，避免纯白刺眼 ------------------------------------ */
+  --ink: #e7edeb;
+  --ink-2: #9daba8;
+  --ink-3: #6b7976;
+  --ink-inv: #07120f;
 
-  /* --- 当前助手的强调色 -------------------------------------------------
-     默认就是品牌色；切到另一个助手时由 body[data-agent="…"] 覆盖 --agent，
-     深/浅两档用 color-mix 从这一个值派生 —— 接新助手只换一个色值，
-     组件样式一行都不用改。见 scripts/agents.js 的 injectAccents。 */
+  /* --- 界线：发丝级（1px 半透明），分隔靠它，不靠阴影 ------------------ */
+  --rule: rgba(255, 255, 255, 0.08);
+  --rule-strong: rgba(255, 255, 255, 0.15);
+  --rule-soft: rgba(255, 255, 255, 0.05);
+
+  /* --- 品牌：深青在深色底上不够亮，提亮到薄荷青 ------------------------ */
+  --accent: #35d3ab;
+  --accent-deep: #6ee7c4;
+  --accent-soft: rgba(53, 211, 171, 0.14);
+  --on-accent: #04120e;
+
+  /* --- 当前助手的强调色（由 body[data-agent] 注入）--------------------- */
   --agent: var(--accent);
   --agent-deep: var(--accent-deep);
   --agent-soft: var(--accent-soft);
-  --agent-line: color-mix(in oklab, var(--agent) 30%, #ffffff);
+  --agent-line: color-mix(in oklab, var(--agent) 38%, transparent);
+  --agent-glow: color-mix(in oklab, var(--agent) 22%, transparent);
 
-  /* --- 审查严重级别：与品牌色分离，语义独占色相 ------------------------- */
-  --blocker: #b3261e;
-  --blocker-soft: #fae9e7;
-  --warn: #96600a;
-  --warn-soft: #faf0dc;
-  --note: #5b4b8a;
-  --note-soft: #ece9f5;
-  --pass: #2f7d4f;
-  --pass-soft: #e5f1e9;
+  /* --- 严重级别：语义独占色相，与品牌色分开 ---------------------------- */
+  --blocker: #ff6f6b;
+  --blocker-soft: rgba(255, 111, 107, 0.13);
+  --warn: #f2b544;
+  --warn-soft: rgba(242, 181, 68, 0.13);
+  --note: #a78bfa;
+  --note-soft: rgba(167, 139, 250, 0.14);
+  --pass: #4ade80;
+  --pass-soft: rgba(74, 222, 128, 0.13);
 
-  /* --- 字体：避开 Inter / Roboto 这类默认脸 ---------------------------- */
-  --font-display: "Fraunces", "Songti SC", "Source Han Serif SC", Georgia, serif;
+  /* --- 字体：三族分工（展示 / 界面 / 等宽）----------------------------- */
+  --font-display: "Sora", "PingFang SC", "Microsoft YaHei", sans-serif;
   --font-ui: "Instrument Sans", -apple-system, BlinkMacSystemFont, "Segoe UI",
     "PingFang SC", "Microsoft YaHei", sans-serif;
-  --font-mono: "JetBrains Mono", ui-monospace, "Cascadia Mono", Consolas,
-    "SF Mono", "Menlo", monospace;
+  --font-mono: "JetBrains Mono", ui-monospace, "SF Mono", "Cascadia Mono",
+    Consolas, monospace;
 
-  /* --- 空间节奏：4px 基准，故意不等距，制造层次 ------------------------- */
+  /* --- 空间：4px 基准 --------------------------------------------------- */
   --sp-1: 4px;
   --sp-2: 8px;
   --sp-3: 12px;
@@ -65,23 +92,87 @@
   --sp-8: 64px;
 
   /* --- 圆角：同心体系 outer = inner + padding -------------------------- */
-  --r-sm: 4px;
-  --r-md: 6px;
-  --r-lg: 10px;
+  --r-xs: 5px;
+  --r-sm: 8px;
+  --r-md: 12px;
+  --r-lg: 16px;
+  --r-xl: 22px;
+  --r-pill: 999px;
 
-  /* --- 阴影：默认用边界分隔，只有浮层才用阴影加深度 -------------------- */
-  --shadow-pop: 0 1px 2px rgba(14, 26, 24, 0.06),
-    0 10px 28px -10px rgba(14, 26, 24, 0.16);
-  --lane-w: 46px; /* 发现卡片的行号列宽度 */
-  --rail-w: 268px; /* 左侧空间栏宽度 */
-  --tray-w: 56px; /* 最左侧助手轨道宽度 */
+  /* --- 阴影：实体用浅阴影，玻璃靠 blur + 内高光，不叠厚阴影 ------------ */
+  --elev-1: 0 1px 2px rgba(0, 0, 0, 0.4);
+  --elev-2: 0 2px 6px -2px rgba(0, 0, 0, 0.5), 0 12px 28px -18px rgba(0, 0, 0, 0.8);
+  --elev-3: 0 8px 24px -8px rgba(0, 0, 0, 0.6), 0 32px 64px -32px rgba(0, 0, 0, 0.9);
+  --shadow-pop: var(--elev-3);
+  --shadow-inset-top: inset 0 1px 0 var(--glass-highlight);
 
-  /* --- 动效：命名缓动，指数衰减手感 ------------------------------------- */
+  --lane-w: 46px;
+  --rail-w: 268px;
+  --tray-w: 60px;
+
+  /* --- 动效：指数衰减，只动 transform / opacity / color ----------------- */
   --ease-out: cubic-bezier(0.22, 0.61, 0.36, 1);
   --ease-out-quart: cubic-bezier(0.25, 1, 0.5, 1);
-  --dur-fast: 120ms;
-  --dur: 180ms;
-  --dur-slow: 280ms;
+  --ease-out-expo: cubic-bezier(0.16, 1, 0.3, 1);
+  --dur-fast: 130ms;
+  --dur: 200ms;
+  --dur-slow: 320ms;
+}
+
+/* ==========================================================================
+   浅色模式：同一套结构，把「石墨」换成「冷雾玻璃」
+   —— 不是去掉玻璃，而是让玻璃在浅底上靠白色高光与低饱和阴影成立。
+   ========================================================================== */
+
+[data-theme="light"] {
+  color-scheme: light;
+
+  --canvas: #e9edeb;
+  --canvas-deep: #e2e7e5;
+  --paper: var(--canvas);
+  --substrate-1: rgba(15, 107, 92, 0.1);
+  --substrate-2: rgba(74, 105, 190, 0.07);
+
+  --surface: #ffffff;
+  --surface-quiet: #f7f9f8;
+  --surface-sunk: #e6ebe9;
+
+  --glass-fill: rgba(255, 255, 255, 0.62);
+  --glass-fill-strong: rgba(255, 255, 255, 0.82);
+  --glass-fill-quiet: rgba(255, 255, 255, 0.45);
+  --glass-highlight: rgba(255, 255, 255, 0.9);
+  --glass-blur: 18px;
+  --glass-sat: 165%;
+
+  --ink: #0b1512;
+  --ink-2: #465552;
+  --ink-3: #73817e;
+  --ink-inv: #ffffff;
+
+  --rule: rgba(11, 34, 29, 0.1);
+  --rule-strong: rgba(11, 34, 29, 0.18);
+  --rule-soft: rgba(11, 34, 29, 0.06);
+
+  --accent: #0f6b5c;
+  --accent-deep: #0a5548;
+  --accent-soft: #e2efeb;
+  --on-accent: #ffffff;
+
+  --blocker: #b3261e;
+  --blocker-soft: #fae9e7;
+  --warn: #8a5a08;
+  --warn-soft: #faf0dc;
+  --note: #5b4b8a;
+  --note-soft: #ece9f5;
+  --pass: #2f7d4f;
+  --pass-soft: #e5f1e9;
+
+  --elev-1: 0 1px 2px rgba(11, 34, 29, 0.06);
+  --elev-2: 0 2px 6px -2px rgba(11, 34, 29, 0.1),
+    0 14px 30px -20px rgba(11, 34, 29, 0.28);
+  --elev-3: 0 10px 24px -10px rgba(11, 34, 29, 0.16),
+    0 32px 64px -34px rgba(11, 34, 29, 0.32);
+  --shadow-inset-top: inset 0 1px 0 #ffffff;
 }
 
 /* ==========================================================================
@@ -98,17 +189,34 @@ html {
   -webkit-text-size-adjust: 100%;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
 }
 
 body {
   margin: 0;
   min-height: 100dvh;
-  background: var(--paper);
+  background: var(--canvas);
   color: var(--ink);
   font-family: var(--font-ui);
-  font-size: 15px;
-  line-height: 1.6;
-  font-feature-settings: "cv05" 1;
+  font-size: 14.5px;
+  line-height: 1.58;
+  letter-spacing: -0.005em;
+  font-feature-settings: "cv05" 1, "ss01" 1;
+  overflow: hidden;
+}
+
+/* 基底的两团冷光：玻璃要「透出一点东西」才像玻璃。
+   固定定位、不参与布局、不拦截事件。 */
+body::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+  background:
+    radial-gradient(760px 520px at 8% -6%, var(--substrate-1), transparent 62%),
+    radial-gradient(900px 620px at 108% 108%, var(--substrate-2), transparent 60%),
+    var(--canvas);
 }
 
 h1,
@@ -118,7 +226,8 @@ h4,
 p,
 figure,
 ul,
-ol {
+ol,
+blockquote {
   margin: 0;
 }
 
@@ -134,6 +243,7 @@ textarea,
 select {
   font: inherit;
   color: inherit;
+  letter-spacing: inherit;
 }
 
 button {
@@ -145,8 +255,8 @@ button {
 }
 
 a {
-  color: var(--accent);
-  text-decoration-color: color-mix(in oklab, var(--accent) 35%, transparent);
+  color: var(--agent);
+  text-decoration-color: color-mix(in oklab, var(--agent) 40%, transparent);
   text-underline-offset: 2px;
 }
 
@@ -155,10 +265,52 @@ svg {
   flex: none;
 }
 
+img {
+  /* 图片描边用中性透明色，不用品牌色染色 */
+  outline: 1px solid rgba(0, 0, 0, 0.1);
+  outline-offset: -1px;
+}
+
+[data-theme="light"] img {
+  outline-color: rgba(0, 0, 0, 0.08);
+}
+
+::selection {
+  background: color-mix(in oklab, var(--agent) 28%, transparent);
+  color: var(--ink);
+}
+
 :focus-visible {
-  outline: 2px solid var(--accent);
+  outline: 2px solid var(--agent);
   outline-offset: 2px;
   border-radius: var(--r-sm);
+}
+
+/* 细滚动条：深色底上默认滚动条像一条白杠，很破坏玻璃感 */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--rule-strong) transparent;
+}
+
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--rule-strong);
+  border: 3px solid transparent;
+  border-radius: var(--r-pill);
+  background-clip: content-box;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: color-mix(in oklab, var(--ink-3) 70%, transparent);
+  background-clip: content-box;
 }
 
 /* 数字：计数器、耗时、行号、统计值都不许随位数跳动 */
@@ -166,6 +318,7 @@ svg {
 time,
 [data-num] {
   font-variant-numeric: tabular-nums;
+  font-feature-settings: "tnum" 1;
 }
 
 .sr-only {

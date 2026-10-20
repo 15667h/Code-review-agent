@@ -228,6 +228,12 @@ class AgentSpec:
             "outcome": self.outcome,
             "artifact_kinds": list(self.artifact_kinds),
             "can_edit": self.can_edit,
+            # 能力标记：前端据此决定显示哪些入口，而不是靠 agent id 硬编码判断。
+            # 接第三个助手时不用改前端。
+            "capabilities": {
+                "diff": bool(self.extra.get("supports_diff")),
+                "edit": self.can_edit,
+            },
         }
 
 
@@ -280,6 +286,7 @@ REVIEW_AGENT = AgentSpec(
     artifact_kinds=("finding",),
     build_tools=_review_tools,
     status_lines=_review_status,
+    extra={"supports_diff": True},
     can_edit=True,
 )
 

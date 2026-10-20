@@ -2,23 +2,20 @@
    Margin · 交互层
    纯原生 JS，无构建步骤。
 
-   数据有两个来源，由 scripts/live.js 在启动时决定走哪一个：
-   - **实时模式**：页面由 backend/harness/server.py 托管时，空间/会话/审计流
-     全部来自后端真实接口；
-   - **演示模式**：用 file:// 直接双击打开时，数据来自 scripts/mock-data.js。
-   两个模式共用下面这套渲染原语，所以视觉与交互不会有第二套实现。
+   **数据只有一处来源：后端接口。** 2026-10-19 移除了 mock-data.js 与整套演示
+   回放链路 —— 之前用 file:// 打开会看到一份「跑完的审查」，很容易被当成真结果。
+   现在后端不可达时，界面会明确说「未连接」并给出启动服务的命令，不再假装有数据。
    ========================================================================== */
 
 (function () {
   'use strict';
 
-  var DATA = window.MARGIN_DATA || {};
+  /* 可变的数据源：全部由 live.js 从后端灌入。启动时是空的，
+     渲染出来就是「还没有仓库」的空态，而不是一份假清单。 */
+  var SPACES = [];
+  var MODELS = [];
 
-  /* 可变的数据源：演示模式取 mock，实时模式由 live.js 灌入 */
-  var SPACES = (DATA.spaces || []).slice();
-  var MODELS = (DATA.models || []).slice();
-
-  /* 由 live.js 注入的实时模式钩子；为空即表示当前是演示模式 */
+  /* 由 live.js 注入的钩子；为空即表示后端还没接上 */
   var liveSend = null;
   var liveStop = null;
 
@@ -32,12 +29,21 @@
   var form = document.getElementById('composer');
   var input = document.getElementById('prompt');
   var sendBtn = document.getElementById('sendBtn');
-  var sendLabel = sendBtn.querySelector('span');
+  var sendLabel = document.getElementById('sendLabel');
   var stopBtn = document.getElementById('stopBtn');
-  var runbar = document.getElementById('runbar');
-  var runbarLabel = document.getElementById('runbarLabel');
-  var runbarStep = document.getElementById('runbarStep');
-  var runbarStop = document.getElementById('runbarStop');
+  var dock = document.querySelector('.dock');
+  var themeBtn = document.getElementById('themeBtn');
+  var themeIcon = document.getElementById('themeIcon');
+  var diffBtn = document.getElementById('diffBtn');
+
+  /* 运行条不再是 HTML 里的固定块，而是按需创建的浮层胶囊：
+     它只在真的有运行在跑的时候存在，静态 HTML 里留一个空壳只会让
+     aria-live 区域在页面加载时先念一句「正在运行」。 */
+  var runbar = null;
+  var runbarLabel = null;
+  var runbarStep = null;
+  var runbarStop = null;
+  var diffuse = false;
 
   /* 左侧空间栏 */
   var shell = document.getElementById('shell');
@@ -471,13 +477,55 @@
     sendBtn.disabled = state;
     sendBtn.hidden = state;
     stopBtn.hidden = !state;
-    runbar.hidden = !state;
+
     if (state) {
+      var bar = ensureRunbar();
+      bar.hidden = false;
       runbarLabel.textContent = words().running || '正在运行…';
+      runbarStep.textContent = '';
+    } else if (runbar) {
+      /* 收起来而不是删掉：删了会丢焦点（停止按钮刚被点过），
+         下一次运行还要重建一遍节点。 */
+      runbar.hidden = true;
+      runbarStep.textContent = '';
+      sendLabel.textContent = sentOnce ? words().follow : words().send;
     } else {
       sendLabel.textContent = sentOnce ? words().follow : words().send;
     }
   }
+
+  /* 方言刷新：切换助手后按钮文案、输入提示、页签标题都要跟着变。
+     之前这段逻辑散在启动流程里，切助手时漏刷新「开始审查」（有测试守着），
+     现在收拢成一个函数，任何地方改助手都调它。 */
+  function applyDialect() {
+    var d = words();
+    sendLabel.textContent = sentOnce ? d.follow || d.send : d.send;
+    if (d.placeholder) {
+      input.placeholder = d.placeholder;
+    }
+    var hint = document.getElementById('composerHintText');
+    if (hint && d.hint) {
+      hint.textContent = d.hint;
+    }
+    var label = document.querySelector('label[for="prompt"]');
+    if (label && d.inputLabel) {
+      label.textContent = d.inputLabel;
+    }
+    if (stateDirty()) {
+      /* 有正在跑的运行：只刷新文案，不动运行条 */
+      return;
+    }
+    if (d.noRepo) {
+      offlineReason = d.noRepo;
+    }
+  }
+
+  /* 当前是否已经有内容（决定 applyDialect 要不要覆盖正文） */
+  function stateDirty() {
+    return thread.childElementCount > 0;
+  }
+
+  var offlineReason = '';
 
   function finishTurn(turn) {
     if (cancelled) {
@@ -488,199 +536,6 @@
     setBusy(false);
     follow();
   }
-
-  async function playRun(run, options) {
-    var speed = (options && options.speed) || 1;
-    cancelled = false;
-    setBusy(true);
-    removeFollowUps();
-
-    var turn = el('article', 'turn turn--agent');
-    thread.appendChild(turn);
-
-    /* --- 开场白 --- */
-    if (run.intro) {
-      var intro = el('p', 'run__intro is-animated', run.intro);
-      turn.appendChild(intro);
-      runbarLabel.textContent = DATA.phases.reading;
-      runbarStep.textContent = '';
-      follow(true);
-      await sleep(380 * speed);
-      if (cancelled) {
-        finishTurn(turn);
-        return;
-      }
-    }
-
-    /* --- 计划：逐步推进 --- */
-    var plan = buildPlan(run.plan);
-    turn.appendChild(plan.root);
-    plan.total.textContent = run.plan.length + ' 步';
-    follow(true);
-    await sleep(260 * speed);
-
-    for (var i = 0; i < run.plan.length; i += 1) {
-      if (cancelled) {
-        finishTurn(turn);
-        return;
-      }
-      var item = plan.items[i];
-      setStepState(item, 'active');
-      runbarLabel.textContent = DATA.phases.running;
-      runbarStep.textContent = i + 1 + ' / ' + run.plan.length;
-      follow();
-
-      await sleep(340 * speed);
-      if (cancelled) {
-        finishTurn(turn);
-        return;
-      }
-
-      setStepState(item, 'done', run.plan[i].duration);
-      await sleep(110 * speed);
-    }
-
-    plan.total.textContent =
-      run.plan.length + ' 步 · ' + sumDurations(run.plan.map(function (s) { return s.duration; }));
-
-    /* --- 工具调用 --- */
-    if (run.tools && run.tools.length) {
-      var tools = el('div', 'tools');
-      turn.appendChild(tools);
-      for (var t = 0; t < run.tools.length; t += 1) {
-        if (cancelled) {
-          finishTurn(turn);
-          return;
-        }
-        var card = buildTool(run.tools[t]);
-        card.classList.add('is-animated');
-        tools.appendChild(card);
-        follow();
-        await sleep(400 * speed);
-      }
-    }
-
-    /* --- 发现：逐条列出 --- */
-    if (run.findings && run.findings.length) {
-      var section = buildFindings(run.findings);
-      turn.appendChild(section.root);
-      for (var f = 0; f < run.findings.length; f += 1) {
-        if (cancelled) {
-          finishTurn(turn);
-          return;
-        }
-        var finding = buildFinding(run.findings[f]);
-        finding.classList.add('is-animated');
-        section.list.appendChild(finding);
-        follow();
-        await sleep(460 * speed);
-      }
-    }
-
-    /* --- 架构产出：分层 → 组件 → 决策 → 开放问题 --- */
-    if (run.blueprint && window.MARGIN_BLUEPRINT) {
-      var bp = window.MARGIN_BLUEPRINT.create({ el: el, esc: esc });
-      turn.appendChild(bp.root);
-      follow(true);
-
-      var kinds = ['layer', 'component', 'decision', 'open_question'];
-      for (var k = 0; k < kinds.length; k += 1) {
-        var items = run.blueprint[kinds[k]] || [];
-        for (var m = 0; m < items.length; m += 1) {
-          if (cancelled) {
-            finishTurn(turn);
-            return;
-          }
-          bp.add(kinds[k], items[m]);
-          follow();
-          await sleep(280 * speed);
-        }
-      }
-      if (!cancelled) {
-        bp.redraw();
-        follow();
-        await sleep(160 * speed);
-      }
-    }
-
-    /* --- 结语 --- */
-    if (run.summary) {
-      if (cancelled) {
-        finishTurn(turn);
-        return;
-      }
-      var summary = el('p', 'run__summary is-animated', run.summary);
-      turn.appendChild(summary);
-      follow();
-      await sleep(200 * speed);
-    }
-
-    finishTurn(turn);
-  }
-
-  function sumDurations(list) {
-    var total = list.reduce(function (sum, item) {
-      return sum + (parseFloat(item) || 0);
-    }, 0);
-    return total.toFixed(1) + 's';
-  }
-
-  /* ==========================================================================
-     演示数据：按当前助手取一套
-     实时模式不走这里 —— 那里的数据全部来自后端。
-     ========================================================================== */
-
-  function demoPack() {
-    var key = 'review';
-    if (window.MARGIN_AGENTS) {
-      var agent = window.MARGIN_AGENTS.current();
-      if (agent && agent.outcome === 'blueprint') {
-        key = 'architect';
-      }
-    }
-    return (DATA.agents && DATA.agents[key]) || DATA;
-  }
-
-  function demoReplies() {
-    return demoPack().replies || DATA.replies || [];
-  }
-
-  /* ==========================================================================
-     追问快捷入口
-     ========================================================================== */
-
-  function renderFollowUps() {
-    var followUps = demoPack().followUps || DATA.followUps;
-    if (!followUps || thread.querySelector('.followups') || demoStubShown) {
-      return;
-    }
-    var wrap = el('div', 'followups is-animated');
-    wrap.setAttribute('aria-label', '继续追问');
-
-    followUps.forEach(function (item) {
-      var chip = el('button', 'followup');
-      chip.type = 'button';
-      chip.textContent = item.label;
-      chip.addEventListener('click', function () {
-        if (item.action === 'filter') {
-          var target = thread.querySelector('.findings');
-          if (target) {
-            applyFilter(target, item.value);
-            target.scrollIntoView({ behavior: 'smooth', block: 'start' });
-          }
-          return;
-        }
-        if (busy) {
-          return;
-        }
-        send(item.value);
-      });
-      wrap.appendChild(chip);
-    });
-
-    thread.appendChild(wrap);
-  }
-
   function removeFollowUps() {
     var node = thread.querySelector('.followups');
     if (node) {
@@ -693,23 +548,17 @@
      ========================================================================== */
 
   async function send(text) {
-    /* 实时模式：这句话就是一次真实运行的任务目标 */
+    /* 这句话就是一次真实运行的任务目标。没有 send 钩子说明后端没接上 ——
+       这时不能装作发出去了，要如实告诉用户去启动服务。 */
     if (liveSend) {
       await liveSend(text);
       return;
     }
-
-    renderUserTurn(text);
-    sentOnce = true;
-
-    var run = demoReplies()[replyIndex % demoReplies().length];
-    replyIndex += 1;
-
-    await playRun(run, { speed: 1 });
-    renderFollowUps();
+    renderOffline({
+      reason: '后端还没有连上，这句话没有发出去。',
+      retry: true,
+    });
   }
-
-  var replyIndex = 0;
 
   form.addEventListener('submit', function (event) {
     event.preventDefault();
@@ -723,7 +572,8 @@
   });
 
   stopBtn.addEventListener('click', stopAll);
-  runbarStop.addEventListener('click', stopAll);
+  /* 运行条里的停止按钮由 ensureRunbar() 创建时自己绑，这里不再绑 ——
+     它在首次创建前是 null，直接绑会抛。 */
 
   /* ---------- 输入框：自动增高 + Enter 发送 ---------- */
   var MAX_HEIGHT = 168;
@@ -861,51 +711,13 @@
 
   function selectSession(space, session) {
     draftSpace = null;
-    var wasCurrent = activeSession && activeSession.id === session.id;
     applyContext(space, session);
 
     if (onSessionSelect) {
-      // 只有「用户点击」这条路径才通知外部，程序化选中走 applyContext
+      // 用户点击才通知外部去回放；程序化选中走 applyContext
       onSessionSelect(space, session);
-    } else if (!wasCurrent) {
-      /* 演示模式：每套数据只有一条完整脚本。点了别的会话不能假装它有内容，
-         但也不能毫无反应 —— 那和「点坏了」看不出区别。 */
-      if (session.id === demoAuthoredKey) {
-        playDemo().catch(function (error) {
-          if (window.console && console.warn) {
-            console.warn('[margin] 演示数据回放失败：', error);
-          }
-        });
-      } else {
-        showDemoStub(session);
-      }
     }
     closeDrawer();
-  }
-
-  /* 演示数据里唯一有完整内容的那条会话：第一个空间的第一条记录 */
-  var demoAuthoredKey = null;
-  /* 正文当下是不是那条「没有完整记录」的占位。晚到的追问条要据此止步 ——
-     它们属于已经被替换掉的那份演示内容。 */
-  var demoStubShown = false;
-
-  function markDemoAuthored() {
-    var first = SPACES[0];
-    demoAuthoredKey = first && first.sessions[0] ? first.sessions[0].id : null;
-  }
-
-  function showDemoStub(session) {
-    var wrap = el('div', 'turn turn--agent');
-    wrap.appendChild(el('p', 'run__intro', '演示数据里「' + session.title + '」没有完整记录。'));
-
-    var note = el('p', 'run__note');
-    note.textContent =
-      '每一套演示数据只提供一个助手的一条完整示例；连上后端后，每一次真实运行都会各自归档，可以逐条回放。';
-    wrap.appendChild(note);
-
-    replaceThread(wrap);
-    demoStubShown = true;
-    removeFollowUps();
   }
 
   function replaceThread(node) {
@@ -1083,7 +895,7 @@
   /* 本次审查限定的路径（仓库内相对路径）。换仓库时清空。 */
   var scope = [];
   var scopeRepo = '';
-  /* 由 live.js 注入：仓库候选、加入/移出、文件清单。演示模式下为空。 */
+  /* 由 live.js 注入：仓库候选、加入/移出、文件清单。未连接时为空。 */
   var workspaceProvider = null;
 
   function renderComposerTarget() {
@@ -1525,7 +1337,7 @@
     }
     if (!workspaceProvider) {
       scopePop.appendChild(
-        popEmpty('当前是演示模式，没有后端可列文件。启动后端后可用。')
+        popEmpty('后端未连接，列不出文件。启动服务后重试。')
       );
       return;
     }
@@ -1763,10 +1575,10 @@
     }
 
     if (!api || !api.served) {
-      // 演示模式：没有后端也就没有账号，如实说明
+      // 没有后端也就没有账号，如实说明
       showGuest();
       if (nameNode) {
-        nameNode.textContent = '演示模式';
+        nameNode.textContent = '未连接';
         nameNode.removeAttribute('href');
       }
       return;
@@ -1992,6 +1804,11 @@
       sentOnce = true;
     },
     setStatus: function (label, step) {
+      /* 运行条是按需创建的：live.js 在收到 step 事件时先调 setStatus、
+         并不保证 setBusy(true) 已经先跑过（回放历史更是直接写状态）。
+         所以这里要自己保证节点存在，否则会对着 null 写 textContent。 */
+      var bar = ensureRunbar();
+      bar.hidden = false;
       runbarLabel.textContent = label;
       runbarStep.textContent = step || '';
     },
@@ -2038,6 +1855,11 @@
     getScope: function () {
       return scope.slice();
     },
+
+    /* 是否处于增量审查模式。live.js 据此给 /api/audit 加 diff 参数。 */
+    isDiff: function () {
+      return !!diffuse;
+    },
     clearScope: function () {
       scope = [];
       renderScopeChips();
@@ -2068,76 +1890,270 @@
   window.MARGIN_UI = MARGIN_UI;
 
   /* ==========================================================================
-     启动
+     运行条：按需创建的玻璃胶囊
+     --------------------------------------------------------------------------
+     之前它是 HTML 里的固定块，用 hidden 控制显隐。问题有两个：
+     ① 静态存在会让 aria-live 区域在加载时先播报一句「正在运行」；
+     ② 它被塞在输入坞里当一行，占掉 40px，窄屏下把输入框压得很矮。
+     现在改成浮在输入坞上方的胶囊：只有真的在跑才存在。
      ========================================================================== */
 
-  /* 演示模式下切换助手：整套数据都换 —— 空间、会话、开场与追问。
-     只换配色不改数据的话，会出现「助手是架构、侧栏里全是审查记录」。 */
-  async function playDemo() {
-    var pack = demoPack();
-    /* 先把旧循环的定时器真正清掉，再启动新的。只置 cancelled 标志不够 ——
-       新 playRun 一入口就把它重置为 false，旧循环里 >80ms 的 setTimeout
-       到期后会发现标志是 false 而继续跑完，末尾的 finishTurn 会提前解除
-       新运行的忙碌态（发送/停止按钮、runbar 全部错乱）。 */
-    stopAll();
-    await sleep(80);
-    replaceThread(null);
-    removeFollowUps();
-    sentOnce = false;
-    SPACES = (pack.spaces || DATA.spaces || []).slice();
-    markDemoAuthored();
-    demoStubShown = false;
-    renderRail();
-    var first = SPACES[0] || null;
-    applyContext(first, first && first.sessions[0]);
-    renderUserTurn(pack.user);
-    await playRun(pack, { speed: 0.5 });
-    renderFollowUps();
+  function ensureRunbar() {
+    if (runbar) {
+      return runbar;
+    }
+    runbar = el('div', 'runbar');
+    runbar.setAttribute('role', 'status');
+    runbar.setAttribute('aria-live', 'polite');
+
+    var pulse = el('span', 'runbar__pulse');
+    pulse.setAttribute('aria-hidden', 'true');
+    runbar.appendChild(pulse);
+
+    /* 文案由方言写入。这里刻意留中性占位：静态写死「审查计划」会让
+       架构助手在启动的一瞬间显示成审查。 */
+    runbarLabel = el('span', 'runbar__label', '正在运行…');
+    runbar.appendChild(runbarLabel);
+
+    runbarStep = el('span', 'runbar__step num');
+    runbar.appendChild(runbarStep);
+
+    runbarStop = el('button', 'runbar__stop', '停止');
+    runbarStop.type = 'button';
+    runbarStop.addEventListener('click', stopAll);
+    runbar.appendChild(runbarStop);
+
+    if (dock) {
+      dock.appendChild(runbar);
+    }
+    return runbar;
   }
 
-  /* 切换助手：两种模式各自把状态重来一遍，都带着「另一位助手有另一套历史」的前提。 */
-  async function onAgentChange() {
-    if (window.MARGIN_LIVE && window.MARGIN_LIVE.isLive && window.MARGIN_LIVE.isLive()) {
-      await window.MARGIN_LIVE.refocus();
+  /* ==========================================================================
+     未连接：唯一的「没有数据」状态
+     --------------------------------------------------------------------------
+     这一块替代了原来那套演示回放。区别很关键：
+     演示回放会渲染一份**看起来像真结果**的审查（15 条发现、5 层架构图），
+     而这里只说明「没连上、怎么连上」。后者不会让人误判系统能力。
+     ========================================================================== */
+
+  function renderOffline(options) {
+    var opts = options || {};
+    setBusy(false);
+    var wrap = el('div', 'turn turn--agent');
+    var box = el('section', 'offline');
+    box.setAttribute('aria-label', '后端未连接');
+
+    var mark = el('span', 'offline__mark');
+    mark.innerHTML =
+      '<svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true" focusable="false">' +
+      '<path d="M3.4 6.3a6.4 6.4 0 0 1 9.2 0M5.4 8.6a3.5 3.5 0 0 1 5.2 0" fill="none" ' +
+      'stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>' +
+      '<circle cx="8" cy="11.4" r="1.1" fill="currentColor"/>' +
+      '<path d="M2.4 2.4l11.2 11.2" fill="none" stroke="currentColor" ' +
+      'stroke-width="1.4" stroke-linecap="round"/></svg>';
+
+    box.appendChild(el('h2', 'offline__title', '后端没有连上'));
+
+    var reason = opts.reason ? ' ' + opts.reason : '';
+    box.appendChild(
+      el(
+        'p',
+        'offline__body',
+        'Margin 的仓库清单、运行记录和产出全部来自后端接口，界面本身不携带任何样例数据。' +
+          '所以连不上后端时，这里不会显示一份「已经跑完的审查」—— 那会让人误判系统能力。' +
+          reason
+      )
+    );
+
+    var steps = el('div', 'offline__steps');
+
+    var s1 = el('div', 'offline__step');
+    s1.appendChild(
+      spanWithCode('在项目根目录启动服务：', 'python -m harness.server --port 8765')
+    );
+    steps.appendChild(s1);
+
+    var s2 = el('div', 'offline__step');
+    var t2 = document.createElement('span');
+    t2.appendChild(document.createTextNode('用服务地址打开工作台：'));
+    var code2 = el('code', null, 'http://127.0.0.1:8765/');
+    t2.appendChild(code2);
+    t2.appendChild(
+      document.createTextNode('。用 file:// 双击打开会因跨域被浏览器拦住，这是设计如此。')
+    );
+    s2.appendChild(t2);
+    steps.appendChild(s2);
+
+    var s3 = el('div', 'offline__step');
+    s3.appendChild(
+      spanWithCode('在配置中心填入模型密钥：', 'DEEPSEEK_API_KEY')
+    );
+    steps.appendChild(s3);
+
+    box.appendChild(steps);
+
+    box.appendChild(
+      el(
+        'p',
+        'offline__note',
+        '已经启动了却还是连不上，看两点：端口是不是被别的进程占了；' +
+          '浏览器用的地址与终端里打印的地址是不是同一个（127.0.0.1 与 localhost 算两个源）。'
+      )
+    );
+
+    finishOfflineBox(box, opts);
+    wrap.appendChild(box);
+    replaceThread(wrap);
+  }
+
+  function spanWithCode(text, code) {
+    var node = document.createElement('span');
+    node.appendChild(document.createTextNode(text));
+    node.appendChild(el('code', 'offline__code', code));
+    return node;
+  }
+
+  function finishOfflineBox(box, opts) {
+    var actions = el('div', 'offline__actions');
+
+    if (opts.retry) {
+      var again = el('button', 'offline__btn offline__btn--primary', '重新连接');
+      again.type = 'button';
+      again.addEventListener('click', function () {
+        again.disabled = true;
+        again.textContent = '正在重连…';
+        boot().catch(function () {
+          again.disabled = false;
+          again.textContent = '重新连接';
+        });
+      });
+      actions.appendChild(again);
+    }
+
+    var cfg = el('a', 'offline__btn', '打开配置中心');
+    cfg.href = 'settings.html';
+    actions.appendChild(cfg);
+
+    box.appendChild(actions);
+  }
+
+  /* ==========================================================================
+     主题：深色为默认，浅色是同构覆盖
+     ========================================================================== */
+
+  function applyTheme(theme) {
+    var next = theme === 'light' ? 'light' : 'dark';
+    document.documentElement.setAttribute('data-theme', next);
+    try {
+      window.localStorage.setItem('margin.theme', next);
+    } catch (error) {
+      /* 隐私模式下写不进去，主题这次有效、刷新回默认，可接受 */
+    }
+    if (themeBtn) {
+      /* aria-pressed 表示「当前是否浅色」，与按钮图标一致 */
+      themeBtn.setAttribute('aria-pressed', String(next === 'light'));
+      themeBtn.setAttribute(
+        'aria-label',
+        next === 'light' ? '切换到深色主题' : '切换到浅色主题'
+      );
+    }
+    if (themeIcon) {
+      themeIcon.innerHTML =
+        next === 'light'
+          ? '<circle cx="8" cy="8" r="3" fill="none" stroke="currentColor" stroke-width="1.4"/>' +
+            '<path d="M8 1.6v1.6M8 12.8v1.6M1.6 8h1.6M12.8 8h1.6M3.5 3.5l1.1 1.1M11.4 11.4l1.1 1.1M12.5 3.5l-1.1 1.1M4.6 11.4l-1.1 1.1" ' +
+            'fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>'
+          : '<path d="M13.2 9.6A5.6 5.6 0 0 1 6.4 2.8a5.6 5.6 0 1 0 6.8 6.8Z" fill="none" ' +
+            'stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/>';
+    }
+    /* 蓝图连线是按像素测出来的（corridorX 读 DOM 宽度），主题切换改变的是
+       颜色不是尺寸，不需要重画；但字体加载完会变，所以顺手重画一次更稳。 */
+    if (window.MARGIN_BLUEPRINT && window.MARGIN_BLUEPRINT.redrawAll) {
+      window.MARGIN_BLUEPRINT.redrawAll();
+    }
+  }
+
+  if (themeBtn) {
+    themeBtn.addEventListener('click', function () {
+      var now = document.documentElement.getAttribute('data-theme');
+      applyTheme(now === 'light' ? 'dark' : 'light');
+    });
+  }
+
+  /* ==========================================================================
+     增量审查开关
+     --------------------------------------------------------------------------
+     只对声明了 capabilities.diff 的助手显示。这个值来自后端清单，
+     不在前端按 agent id 硬编码 —— 接第三个助手时不用改这里。
+     ========================================================================== */
+
+  function applyDiffCapability() {
+    if (!diffBtn) {
       return;
     }
-    await playDemo();
+    var agent =
+      window.MARGIN_AGENTS && window.MARGIN_AGENTS.current
+        ? window.MARGIN_AGENTS.current()
+        : null;
+    var caps = (agent && agent.capabilities) || {};
+    diffBtn.hidden = !caps.diff;
+    if (!caps.diff) {
+      diffuse = false;
+      diffBtn.setAttribute('aria-pressed', 'false');
+    }
   }
+
+  if (diffBtn) {
+    diffBtn.addEventListener('click', function () {
+      diffuse = !diffuse;
+      diffBtn.setAttribute('aria-pressed', String(diffuse));
+      diffBtn.title = diffuse
+        ? '只审 HEAD 到工作树的改动（点击关闭，回到全仓审查）'
+        : '只审 BASE 到工作树的改动';
+      diffBtn.textContent = diffuse ? '增量 · 开' : '增量';
+    });
+  }
+
+  /* ==========================================================================
+     启动
+     ========================================================================== */
 
   async function boot() {
     /* 账号态先填上：侧栏底部的用户名不该由静态 HTML 决定 */
     runAuth();
 
-    /* 助手清单：实时模式取 /api/agents，演示模式用内置声明。
-       必须在渲染之前拿到 —— 强调色与文案都跟着它走。 */
+    /* 助手清单：必须来自后端。拿不到就说明后端没连上，
+       这是唯一可信的判断依据（/api/agents 是公开接口，不需要登录）。 */
+    var agentsReady = false;
     if (window.MARGIN_AGENTS && typeof window.MARGIN_AGENTS.boot === 'function') {
       try {
         await window.MARGIN_AGENTS.boot();
+        agentsReady = true;
       } catch (error) {
-        if (window.console && console.warn) {
-          console.warn('[margin] 助手清单加载失败，沿用内置声明：', error);
-        }
+        agentsReady = false;
       }
     }
 
-    /* 演示数据的空间也跟着助手走：两个助手各有一份任务清单 */
-    SPACES = (demoPack().spaces || DATA.spaces || []).slice();
-    markDemoAuthored();
-
-    /* 实时模式与演示模式接到同一个回调上。
-       注册必须在 tryBoot 之前：实时模式会在 boot 成功后直接 return，
-       放在末尾的话这条回调永远不会被挂上。 */
+    /* 切换助手：实时模式重新取这一位助手的历史；没连上就只换外壳。 */
     if (window.MARGIN_AGENTS) {
       window.MARGIN_AGENTS.onChange(function () {
-        onAgentChange().catch(function (error) {
-          if (window.console && console.warn) {
-            console.warn('[margin] 切换助手失败：', error);
-          }
-        });
+        applyDiffCapability();
+        applyDialect();
+        if (window.MARGIN_LIVE && window.MARGIN_LIVE.isLive && window.MARGIN_LIVE.isLive()) {
+          window.MARGIN_LIVE.refocus().catch(function (error) {
+            if (window.console && console.warn) {
+              console.warn('[margin] 切换助手失败：', error);
+            }
+          });
+          return;
+        }
+        renderOffline({ reason: '切换助手时需要后端在线才能取到它的历史。', retry: true });
       });
     }
 
-    /* 优先尝试实时模式：页面由后端托管、且后端可达时才成立 */
+    applyDiffCapability();
+
     if (window.MARGIN_LIVE && typeof window.MARGIN_LIVE.tryBoot === 'function') {
       try {
         var tookOver = await window.MARGIN_LIVE.tryBoot(MARGIN_UI);
@@ -2145,73 +2161,26 @@
           return;
         }
       } catch (error) {
-        /* 后端不可用或中途出错：安静降级到演示数据，不把用户卡在白屏 */
         if (window.console && console.warn) {
-          console.warn('[margin] 实时模式启动失败，已降级到演示数据：', error);
+          console.warn('[margin] 实时模式启动失败：', error);
         }
       }
     }
 
+    /* 到这里说明后端不可达。不降级到假数据，直接如实说。 */
     renderRail();
-
-    /* 顶栏上下文一律由数据驱动：HTML 里不再留静态默认值，
-       所以两种模式都必须显式选中一条记录，否则顶栏是空的。 */
-    var bootSpace = SPACES[0];
-    if (bootSpace && bootSpace.sessions.length) {
-      var bootSession =
-        bootSpace.sessions.filter(function (item) {
-          return item.current;
-        })[0] || bootSpace.sessions[0];
-      applyContext(bootSpace, bootSession);
-    } else if (bootSpace) {
-      // 没有历史记录也要把顶栏和「目标仓库」填上，否则界面像坏了
-      applyContext(bootSpace, null);
-    }
-
-    // 配置中心里改过的模型选择，回到工作台继续沿用
-    try {
-      var savedModel = window.localStorage.getItem('margin.demo.model');
-      if (
-        savedModel &&
-        MODELS.some(function (model) {
-          return model.id === savedModel;
-        })
-      ) {
-        MODELS.forEach(function (model) {
-          model.current = model.id === savedModel;
-        });
-      }
-    } catch (error) {
-      /* file:// 下可能不可用，忽略 */
-    }
-
     renderModels();
-
-    if (NARROW.matches) {
-      railToggle.setAttribute('aria-expanded', 'false');
-    }
-
-    var opening = demoPack();
-
-    if (opening.reviewedAt) {
-      var fmt = new Intl.DateTimeFormat('zh-CN', {
-        hour: '2-digit',
-        minute: '2-digit',
-        hour12: false,
-      });
-      runbarStep.textContent = '';
-      input.placeholder =
-        '最近一次运行 ' + fmt.format(new Date(opening.reviewedAt)) + '，继续追问或描述新的重点…';
-    }
-
-    renderUserTurn(opening.user);
-    await sleep(160);
-    await playRun(opening, { speed: 0.42 });
-    renderFollowUps();
+    renderOffline({
+      reason: agentsReady
+        ? '助手清单读到了，但空间与运行记录没取到，可能是会话已过期或权限被拒。'
+        : '',
+      retry: true,
+    });
   }
 
   boot().catch(function (error) {
     setBusy(false);
-    thread.appendChild(el('p', 'blank__text', '演示数据加载失败：' + error.message));
+    replaceThread(null);
+    thread.appendChild(el('p', 'blank__text', '界面初始化失败：' + (error && error.message)));
   });
 })();
