@@ -75,3 +75,6 @@ backend/arch-cases/*/repo/
 
 # ---- 本机账号表：含密码哈希，绝不入库 ----
 backend/.auth/
+
+# 参赛演示视频成片（54MB，不入库；交付时单独打包）
+video/比赛视频.mp4

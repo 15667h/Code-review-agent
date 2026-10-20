@@ -1,7 +1,8 @@
 """配置加载。
 
 只读 ``.env`` 与进程环境变量，不引入额外依赖（自己解析，便于审计）。
-环境变量的优先级高于 ``.env``。
+同一变量名下 **``.env`` 优先于进程环境变量** —— 设置页面写的是 ``.env``，
+被环境变量盖掉的话，界面上的保存就「成功但不生效」。
 
 ## 模型配置只有三项
 
@@ -151,14 +152,18 @@ def _read_raw(values: dict[str, str], key: str) -> str | None:
     与 :func:`load_config` 里的 ``get`` 不同：``get`` 会把空值当成「没配」
     而回退默认；这里要区分两者 —— 用户显式写 ``LLM_MODEL=`` 是明确的意图，
     不该被悄悄换回默认模型。
+
+    ``.env`` 优先于进程环境变量：设置页面存的是 ``.env``，如果环境变量盖过去，
+    用户在界面上改的任何值都不会生效 —— 那看起来就是「保存了但没用」。
     """
     for name in (key, LEGACY_KEYS.get(key, "")):
         if not name:
             continue
-        if name in os.environ:
-            return os.environ[name]
+        # .env 里写了（哪怕写成空串）就以它为准
         if name in values:
             return values[name]
+        if name in os.environ:
+            return os.environ[name]
     return None
 
 
@@ -167,11 +172,16 @@ def load_config(env_file: Path | None = None) -> Config:
     values = parse_env_file(env_file or find_env_file() or Path(".env"))
 
     def get(key: str, default: str = "") -> str:
-        """先找新变量名，再找旧变量名。两者都空才用默认值。"""
+        """先找新变量名，再找旧变量名。两者都空才用默认值。
+
+        同一名字内部：``.env`` 优先于进程环境变量。设置页面写的是 ``.env``，
+        环境变量反过来盖掉它，用户在界面上保存的值就永远不生效 —— 这类
+        「保存成功但行为没变」的故障极难自查，所以顺序必须是 .env 在前。
+        """
         for name in (key, LEGACY_KEYS.get(key, "")):
             if not name:
                 continue
-            raw = os.environ.get(name) or values.get(name, "")
+            raw = values.get(name, "") or os.environ.get(name, "")
             if raw:
                 return raw
         return default

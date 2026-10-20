@@ -82,11 +82,29 @@ def test_new_name_wins_over_legacy(tmp_path: Path, monkeypatch) -> None:
     assert load_config(env).model == "new-model"
 
 
-def test_process_env_overrides_file(tmp_path: Path, monkeypatch) -> None:
+def test_file_wins_over_process_env(tmp_path: Path, monkeypatch) -> None:
+    """`.env` 优先于进程环境变量。
+
+    设置页面存的是 ``.env``。如果环境变量盖过去，用户在界面上保存的值永远
+    不生效 —— 「保存成功但行为没变」这类故障极难自查，所以顺序必须是
+    .env 在前。环境变量只在 .env 没写这一项时兜底。
+    """
     _clean(monkeypatch)
     env = _env(tmp_path, "LLM_MODEL=from-file\n")
     monkeypatch.setenv("LLM_MODEL", "from-env")
-    assert load_config(env).model == "from-env"
+    assert load_config(env).model == "from-file"
+
+
+def test_process_env_fills_gap(tmp_path: Path, monkeypatch) -> None:
+    """.env 没写的那一项，环境变量兜底（不破坏已有部署）。"""
+    _clean(monkeypatch)
+    env = _env(tmp_path, "LLM_API_KEY=k\n")
+    monkeypatch.setenv("LLM_MODEL", "from-env")
+    monkeypatch.setenv("LLM_BASE_URL", "https://env.example/v1")
+    config = load_config(env)
+    assert config.model == "from-env"
+    assert config.base_url == "https://env.example/v1"
+    assert config.api_key == "k"
 
 
 @pytest.mark.parametrize(
