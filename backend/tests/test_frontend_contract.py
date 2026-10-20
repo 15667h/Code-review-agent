@@ -160,3 +160,66 @@ def test_diff_mode_is_wired_through_http() -> None:
     assert "diff_unavailable" in server
     # 拿不到 diff 时必须报错，不能静默退化成全仓审查
     assert "collect_diff" in server
+
+
+# =============================================================================
+# 模型配置：只留三项
+# =============================================================================
+
+
+def test_settings_page_has_only_the_three_fields() -> None:
+    """配置中心只该有接模型真正需要的三项（外加可选运行参数）。
+
+    旧版有 6 张卡片、20 多个字段：组织 ID、Top P、seed、频率惩罚、停止序列、
+    自定义请求头…… 后端一个都不读。界面答应了一堆它做不到的事。
+    """
+    html = _read(FRONTEND / "settings.html")
+    ids = set(re.findall(r'id="([^"]+)"', html))
+
+    for required in ("baseUrl", "apiKey", "model"):
+        assert required in ids, f"缺少必需字段 #{required}"
+
+    # 这些字段后端不读，不该出现在界面上
+    for ghost in ("provider", "org", "topP", "seed", "frequency", "presence", "stop", "headers"):
+        assert ghost not in ids, f"#{ghost} 是个不落盘的装饰字段，不该留"
+
+    assert "本月用量" not in html, "用量卡片是假数据（写死的 token 数与进度条）"
+
+
+def test_settings_has_no_demo_branch() -> None:
+    """配置中心不许有「演示结果」。
+
+    旧版在 file:// 下点「测试连接」会给出「连接正常 · 3 个模型已启用（演示结果）」，
+    点保存会说「已保存（演示，未写入文件）」—— 两句话都在说谎。
+
+    判据是**字符串字面量**：注释里解释「为什么不给假成功」是应该保留的，
+    但任何会给用户看的文案都不能这么说。
+    """
+    script = _read(SCRIPTS / "settings.js")
+    literals = re.findall(r"'((?:[^'\\\n]|\\.)*)'", script)
+    offenders = [
+        text
+        for text in literals
+        if any(phrase in text for phrase in ("演示", "未发出真实请求", "未写入文件"))
+    ]
+    assert not offenders, "这些文案还在假装成功：\n  " + "\n  ".join(offenders)
+
+
+def test_settings_never_prefills_a_fake_api_key() -> None:
+    """输入框不许预填占位密钥 —— 用户会以为已经配好了。"""
+    html = _read(FRONTEND / "settings.html")
+    assert "sk-demo-placeholder" not in html
+    key_input = html.split('id="apiKey"', 1)[1].split("/>", 1)[0]
+    assert 'value=""' in key_input
+
+
+def test_no_deepseek_hardcoded_in_model_labels() -> None:
+    """模型标签不许硬编码厂商名：换服务后那句「（DeepSeek）」就是错的。
+
+    同样只查字符串字面量 —— 注释里说明这件事不算违规。
+    """
+    for name in ("__main__.py", "server.py"):
+        source = _read(FRONTEND / "backend" / "harness" / name)
+        literals = re.findall(r'"((?:[^"\\\n]|\\.)*)"', source)
+        offenders = [text for text in literals if "（DeepSeek）" in text]
+        assert not offenders, f"{name} 的文案里还硬编码了厂商名：{offenders}"

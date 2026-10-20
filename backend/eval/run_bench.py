@@ -23,7 +23,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from eval.dataset import DEFAULT_GOAL, load_case, match_findings  # noqa: E402
 from harness.config import load_config  # noqa: E402
 from harness.loop import resolve_workspace, run_audit  # noqa: E402
-from harness.model import DeepSeekModel  # noqa: E402
+from harness.model import OpenAIModel  # noqa: E402
 from harness.rules import scan_tree, to_findings  # noqa: E402
 
 EXAMPLES = Path(__file__).resolve().parent.parent / "examples"
@@ -182,7 +182,7 @@ def run_one(name: str, goal: str, config, repeats: int) -> dict:
 
     runs = []
     for index in range(repeats):
-        model = DeepSeekModel(config)
+        model = OpenAIModel(config)
         started = time.time()
         try:
             result = run_audit(
@@ -267,7 +267,7 @@ def main() -> int:
 
     config = load_config()
     if not config.ready:
-        print("错误：未配置 DEEPSEEK_API_KEY", file=sys.stderr)
+        print("错误：未配置 LLM_API_KEY（模型接口 / Key / 模型名三项不齐）", file=sys.stderr)
         return 2
     config.max_iterations = min(config.max_iterations, args.max_iterations)
 

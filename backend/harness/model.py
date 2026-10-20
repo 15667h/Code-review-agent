@@ -1,9 +1,11 @@
 """模型接入层。
 
-只依赖 httpx；请求体按 OpenAI 兼容协议构造，DeepSeek 官方端点即为此协议。
+只依赖 httpx；请求体按 **OpenAI 兼容协议**构造 —— 这是业界事实标准，
+DeepSeek / OpenAI / Qwen / Moonshot / 智谱 / vLLM / Ollama / 各类中转都实现它。
+所以模型层不绑定任何一家：给三个值（接口地址、Key、模型名）就能跑。
 
 两条实现：
-- ``DeepSeekModel`` 真实调用 API，带可重试错误的指数退避。
+- ``OpenAIModel`` 真实调用 API，带可重试错误的指数退避。
 - ``ScriptedModel`` 按预设脚本返回，用于离线测试与流程验证（无需 API Key）。
 
 注意一个容易踩的坑：DeepSeek 的思考内容走 ``reasoning_content`` 字段，
@@ -55,21 +57,21 @@ class Model(Protocol):
 
 
 # =============================================================================
-# DeepSeek
+# OpenAI 兼容端点
 # =============================================================================
 
 _RETRYABLE_STATUS = {408, 409, 425, 429, 500, 502, 503, 504}
 
 
-class DeepSeekModel:
-    """DeepSeek OpenAI 兼容端点。"""
+class OpenAIModel:
+    """任意 OpenAI 兼容端点（/chat/completions）。"""
 
     def __init__(self, config: Config, *, max_retries: int = 3) -> None:
         if not config.api_key:
             raise ModelError(
                 "MissingAPIKey",
-                "未配置 DEEPSEEK_API_KEY，无法调用真实模型。",
-                suggestion="在 backend/.env 里填入 DEEPSEEK_API_KEY，或使用 --offline 跑脚本化演示。",
+                "未配置 LLM_API_KEY，无法调用真实模型。",
+                suggestion="在 backend/.env 里填入 LLM_API_KEY，或在配置中心填写；想先验证链路可加 --offline。",
             )
         self.config = config
         self.name = config.model
@@ -137,10 +139,10 @@ class DeepSeekModel:
         body = response.text[:400]
         mapping = {
             400: ("BadRequest", "请求格式被拒绝。", "检查工具 schema 与消息结构是否合法。"),
-            401: ("AuthError", "API Key 无效。", "确认 DEEPSEEK_API_KEY 以 sk- 开头且无多余空格。"),
-            402: ("InsufficientBalance", "账户余额不足。", "在 DeepSeek 平台充值后重试。"),
+            401: ("AuthError", "API Key 无效或与接���不匹配。", "核对 LLM_API_KEY：多数服务要求 sk- 开头、且不能有首尾空格。"),
+            402: ("InsufficientBalance", "账户余额不足。", "到服务商控制台充值后重试。"),
             403: ("Forbidden", "该密钥无权访问此模型。", "确认模型名在账号可用列表内。"),
-            404: ("ModelNotFound", "模型不存在。", "核对 DEEPSEEK_MODEL 与官方模型列表。"),
+            404: ("ModelNotFound", "接口路径或模型名不存在。", "核对 LLM_BASE_URL 是否以 /v1 结尾、LLM_MODEL 是否是服务端确实提供的名字。"),
             422: ("UnprocessableEntity", "参数不被接受。", "检查 temperature 等参数取值范围。"),
             429: ("RateLimit", "触发限流。", "降低并发或稍后重试。"),
         }
@@ -168,7 +170,8 @@ class DeepSeekModel:
             calls.append(ToolCall.from_api(raw))
 
         usage_raw = data.get("usage") or {}
-        # DeepSeek 的缓存命中走 prompt_cache_hit_tokens；OpenAI 走 prompt_tokens_details.cached_tokens
+        # 缓存命中字段各家不同：DeepSeek 走 prompt_cache_hit_tokens，
+        # OpenAI 这类走 prompt_tokens_details.cached_tokens，两种都认。
         cached = usage_raw.get("prompt_cache_hit_tokens")
         if cached is None:
             cached = (usage_raw.get("prompt_tokens_details") or {}).get("cached_tokens", 0)

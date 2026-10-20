@@ -33,7 +33,7 @@ from pathlib import Path
 
 from harness.config import load_config
 from harness.loop import resolve_workspace, run_audit
-from harness.model import DeepSeekModel
+from harness.model import OpenAIModel
 from harness.offline import HeuristicModel
 
 from .dataset import (
@@ -104,7 +104,7 @@ def run_case(
     per_grouping: dict[str, list[MatchOutcome]] = {name: [] for name in GROUPINGS}
 
     for run_index in range(runs):
-        model = HeuristicModel() if offline else DeepSeekModel(config)
+        model = HeuristicModel() if offline else OpenAIModel(config)
         try:
             result = run_audit(
                 goal=case.goal,
@@ -159,7 +159,7 @@ def main(argv: list[str] | None = None) -> int:
 
     if not args.offline and not config.ready:
         print(
-            "错误：未配置 DEEPSEEK_API_KEY。加 --offline 可先跑离线基线。",
+            "错误：未配置 LLM_API_KEY（模型接口 / Key / 模型名三项不齐）。加 --offline 可先跑离线基线。",
             file=sys.stderr,
         )
         return 2

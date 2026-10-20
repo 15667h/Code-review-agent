@@ -48,25 +48,40 @@ pip install -r requirements-dev.txt      # 开发/测试：额外 pytest
 依赖刻意做到最小：**平台核心（`harness/`、`eval/`）只用 Python 标准库** ——
 这个服务本身也是要被审计的代码，依赖越少越好审。前端同理：零依赖、零构建。
 
-### 3. 配置环境变量
+### 3. 配置模型
 
-复制模板并填写：
+**只需要三项**，协议固定是 OpenAI 兼容，所以 DeepSeek、OpenAI、通义、Moonshot、
+智谱、vLLM、Ollama、LM Studio 与各类中转服务都能直接接：
 
 ```bash
 cp backend/.env.example backend/.env
 ```
 
+```dotenv
+LLM_BASE_URL=https://api.deepseek.com   # 接口地址（贴完整 /chat/completions 也能识别）
+LLM_API_KEY=sk-...                      # 密钥；留空则跑离线规则模式
+LLM_MODEL=deepseek-chat                 # 模型名，必须是服务端确实提供的
+```
+
+也可以不碰文件：启动后打开 **配置中心**（侧栏底部），三个输入框 + 「探测」
+（自动拉取可用模型名）+ 「测试连接」（真实请求一次 `/models`）。
+
 | 变量 | 必填 | 说明 |
 |---|---|---|
-| `DEEPSEEK_API_KEY` | 否 | 不填则跑离线规则模式（确定性规则 + 启发式模型），界面功能完整 |
-| `DEEPSEEK_BASE_URL` | 否 | 默认 `https://api.deepseek.com`（OpenAI 兼容端点） |
-| `DEEPSEEK_MODEL` | 否 | 默认 `deepseek-flash` |
+| `LLM_BASE_URL` | 否 | 接口地址，默认 `https://api.deepseek.com`。自动剥掉尾斜杠与误贴的 `/chat/completions` |
+| `LLM_API_KEY` | 否 | 不填则跑离线规则模式（确定性规则 + 启发式模型），界面功能完整。不要求 `sk-` 前缀 |
+| `LLM_MODEL` | 否 | 模型名，默认 `deepseek-chat` |
+| `AUDIT_TEMPERATURE` | 否 | 采样温度，默认 0.2（审查任务建议 0.1–0.3） |
+| `AUDIT_TIMEOUT` | 否 | 单次请求超时（秒），默认 120 |
 | `AUDIT_MAX_ITERATIONS` | 否 | 单次运行的最大迭代轮数（硬约束，防死循环），默认 40 |
 | `AUDIT_CONTEXT_WINDOW` | 否 | 上下文窗口，用于触发压缩（默认 80% 阈值），默认 131072 |
 | `AUDIT_REPEAT_LIMIT` | 否 | 连续相同工具调用 N 次即判定陷入循环，默认 3 |
 | `AUDIT_WORKSPACE_ROOT` | 否 | 允许 Agent 读写的根目录；留空则用命令行 `--repo` 指定的目录 |
 | `AUDIT_ALLOW_COMMANDS` | 否 | 可执行命令白名单（逗号分隔） |
 | `MARGIN_REQUIRE_AUTH` | 否 | 置 1 时未登录访问业务接口返回 401（默认不设，本机直开即用） |
+
+> 旧的 `DEEPSEEK_BASE_URL` / `DEEPSEEK_API_KEY` / `DEEPSEEK_MODEL` 仍然有效，
+> 已经配好的 `.env` 不用改（新变量名优先）。
 
 **`.env` 不入库**（`.gitignore` 已覆盖），仓库里只有 `.env.example` 模板。
 提交前可用 `git check-ignore -v backend/.env` 复核这条边界。

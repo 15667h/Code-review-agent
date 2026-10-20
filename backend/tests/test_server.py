@@ -135,15 +135,35 @@ def test_config_payload_masks_api_key() -> None:
     payload = server.config_payload(Config(api_key=key, base_url="https://api.deepseek.com"))
     assert key not in json.dumps(payload), "配置响应里绝不能出现完整密钥"
     assert payload["api_key_set"] is True
-    assert payload["api_key_masked"].startswith("sk-012")
-    assert payload["api_key_masked"].endswith("cdef")
+    # 只留首尾各 4 位：既能认出是哪把钥匙，又不暴露中间
+    assert payload["api_key_masked"] == key[:4] + "…" + key[-4:]
     assert payload["provider"] == "DeepSeek"
+
+
+def test_config_payload_exposes_the_three_fields() -> None:
+    """接模型只需要三项 —— 载荷顶层就应该是它们，不用让人去 details 里翻。"""
+    payload = server.config_payload(
+        Config(api_key="k", base_url="https://api.openai.com/v1", model="gpt-4o-mini")
+    )
+    assert payload["base_url"] == "https://api.openai.com/v1"
+    assert payload["model"] == "gpt-4o-mini"
+    assert payload["api_key_set"] is True
+    assert payload["ready"] is True
+    assert payload["missing"] == []
+
+
+def test_config_payload_reports_what_is_missing() -> None:
+    """缺项要能指名到变量级：只说「未配置」等于让用户猜。"""
+    payload = server.config_payload(Config(api_key="", base_url="https://x/v1", model="m"))
+    assert payload["ready"] is False
+    assert payload["missing"] == ["LLM_API_KEY"]
+    assert payload["api_key_masked"] == ""
 
 
 def test_config_payload_without_key() -> None:
     payload = server.config_payload(Config(api_key=""))
     assert payload["api_key_set"] is False
-    assert payload["api_key_masked"] == "(未设置)"
+    assert payload["api_key_masked"] == ""
     assert payload["ready"] is False
 
 
@@ -311,49 +331,82 @@ def test_save_config_updates_env_in_place_and_appends(
     status, body = post(
         live_server,
         "/api/config",
-        {"DEEPSEEK_MODEL": "deepseek-v4-pro", "AUDIT_TEMPERATURE": 0.7, "AUDIT_TIMEOUT": 120},
+        {"LLM_MODEL": "deepseek-v4-pro", "AUDIT_TEMPERATURE": 0.7, "AUDIT_TIMEOUT": 120},
     )
     assert status == 200, body
     assert set(json.loads(body)["updated"]) == {
-        "DEEPSEEK_MODEL",
+        "LLM_MODEL",
         "AUDIT_TEMPERATURE",
         "AUDIT_TIMEOUT",
     }
 
     text = env.read_text(encoding="utf-8")
     assert "# 顶部注释" in text, "注释必须保留"
-    assert "DEEPSEEK_API_KEY=sk-test-keep-me-intact" in text, "密钥不能被覆盖"
-    assert "DEEPSEEK_MODEL=deepseek-v4-pro" in text, "已有键应原地更新"
+    assert "DEEPSEEK_API_KEY=sk-test-keep-me-intact" in text, "旧变量名的密钥不能被覆盖"
+    assert "LLM_MODEL=deepseek-v4-pro" in text, "新键应追加"
     assert "AUDIT_MAX_ITERATIONS=40" in text, "未涉及的键不能丢"
     assert "AUDIT_TEMPERATURE=0.7" in text, "新键应追加"
     assert "AUDIT_TIMEOUT=120\n" in text, "整数值不该写成 120.0"
 
 
-def test_save_config_rejects_bad_api_key(
+def test_save_config_accepts_any_non_empty_api_key(
     live_server: str, tmp_path: Path, monkeypatch
 ) -> None:
+    """不再强求 sk- 前缀。
+
+    自建服务（vLLM / Ollama / 内网网关）的 Key 常常是任意字符串，
+    强求前缀会把合法配置挡在门外 —— 而前缀本身并不是任何协议的要求。
+    """
     env = tmp_path / ".env"
-    env.write_text("DEEPSEEK_API_KEY=sk-original\n", encoding="utf-8")
+    env.write_text("LLM_API_KEY=old\n", encoding="utf-8")
     monkeypatch.setattr(server, "ENV_PATH", env)
 
-    status, body = post(live_server, "/api/config", {"DEEPSEEK_API_KEY": "not-a-key"})
-    assert status == 400
-    assert "sk-" in body
-    assert env.read_text(encoding="utf-8") == "DEEPSEEK_API_KEY=sk-original\n", "拒绝时不应写盘"
+    status, body = post(live_server, "/api/config", {"LLM_API_KEY": "local-dev-token"})
+    assert status == 200, body
+    assert "LLM_API_KEY=local-dev-token" in env.read_text(encoding="utf-8")
+
+
+def test_save_config_normalizes_base_url(
+    live_server: str, tmp_path: Path, monkeypatch
+) -> None:
+    """用户贴完整请求地址是常见操作，落盘时要裁成根地址。
+
+    不裁就会请求 /chat/completions/chat/completions —— 一个很容易被误判成
+    「模型服务挂了」的 404。
+    """
+    env = tmp_path / ".env"
+    env.write_text("", encoding="utf-8")
+    monkeypatch.setattr(server, "ENV_PATH", env)
+
+    status, body = post(
+        live_server,
+        "/api/config",
+        {"LLM_BASE_URL": "https://api.openai.com/v1/chat/completions"},
+    )
+    assert status == 200, body
+    assert "LLM_BASE_URL=https://api.openai.com/v1" in env.read_text(encoding="utf-8")
 
 
 def test_save_config_ignores_empty_api_key(
     live_server: str, tmp_path: Path, monkeypatch
 ) -> None:
-    """留空表示「不改密钥」—— 前端就是这么用的，不能把密钥清成空。"""
+    """留空表示「不改密钥」—— 前端就是这么用的，不能把密钥清成空。
+
+    配置中心读到的是掩码，输入框保持空；如果空值被当成「清空」提交，
+    用户一保存就会把自己刚配好的 Key 抹掉。
+    """
     env = tmp_path / ".env"
-    env.write_text("DEEPSEEK_API_KEY=sk-keep\nDEEPSEEK_MODEL=deepseek-flash\n", encoding="utf-8")
+    env.write_text("LLM_API_KEY=keep-me\nLLM_MODEL=deepseek-chat\n", encoding="utf-8")
     monkeypatch.setattr(server, "ENV_PATH", env)
 
-    status, body = post(live_server, "/api/config", {"DEEPSEEK_API_KEY": "", "DEEPSEEK_MODEL": "deepseek-v4-pro"})
+    status, body = post(
+        live_server,
+        "/api/config",
+        {"LLM_API_KEY": "   ", "LLM_MODEL": "deepseek-v4-pro"},
+    )
     assert status == 200
-    assert "DEEPSEEK_API_KEY" not in json.loads(body)["updated"]
-    assert "DEEPSEEK_API_KEY=sk-keep" in env.read_text(encoding="utf-8")
+    assert "LLM_API_KEY" not in json.loads(body)["updated"]
+    assert "LLM_API_KEY=keep-me" in env.read_text(encoding="utf-8")
 
 
 def test_stop_is_idempotent_on_finished_run(live_server: str) -> None:

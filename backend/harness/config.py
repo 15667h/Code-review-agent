@@ -2,13 +2,42 @@
 
 只读 ``.env`` 与进程环境变量，不引入额外依赖（自己解析，便于审计）。
 环境变量的优先级高于 ``.env``。
+
+## 模型配置只有三项
+
+只要填 **接口地址 / API Key / 模型名称** 就能接任意 OpenAI 兼容服务
+（DeepSeek、OpenAI、Qwen、Moonshot、智谱、vLLM、Ollama、LM Studio、各类中转…）。
+协议是业界事实标准，其余的差异（鉴权头、路径、温度范围）都能从这三个值推出来，
+不需要再让用户选「提供商」之类的下拉框。
+
+    LLM_BASE_URL=https://api.deepseek.com
+    LLM_API_KEY=sk-...
+    LLM_MODEL=deepseek-chat
+
+## 旧变量名仍然认
+
+``DEEPSEEK_BASE_URL`` / ``DEEPSEEK_API_KEY`` / ``DEEPSEEK_MODEL`` 继续有效 ——
+已经配好的 ``.env`` 不该因为一次重命名就失效。新名字优先。
 """
 
 from __future__ import annotations
 
 import os
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
+
+#: 建一个全新 ``.env`` 时写进去的接口地址。
+#: DeepSeek 是项目一直验证的端点，作为默认值能省掉一次查文档；
+#: 换任何别的服务只要改这一个字段。
+DEFAULT_BASE_URL = "https://api.deepseek.com"
+
+#: 旧变量名 → 新变量名。读的时候按顺序找，写的时候只写新名字。
+LEGACY_KEYS = {
+    "LLM_BASE_URL": "DEEPSEEK_BASE_URL",
+    "LLM_API_KEY": "DEEPSEEK_API_KEY",
+    "LLM_MODEL": "DEEPSEEK_MODEL",
+}
 
 
 def parse_env_file(path: Path) -> dict[str, str]:
@@ -39,11 +68,36 @@ def find_env_file(start: Path | None = None) -> Path | None:
     return None
 
 
+def normalize_base_url(raw: str) -> str:
+    """把用户可能粘进来的各种写法收成可用的前缀。
+
+    用户会贴完整的 ``https://x/v1/chat/completions``，也会贴 ``https://x/v1/``。
+    这里统一剥掉尾斜杠与误贴的路径后缀 —— **在客户端拼路径之前**处理，
+    否则会请求 ``/chat/completions/chat/completions``。
+    """
+    url = (raw or "").strip().strip('"').strip("'")
+    if not url:
+        return ""
+    if "://" not in url:
+        # 只写了域名：默认 https。本机与内网地址走 http（自建服务通常没证书）。
+        host = url.split("/", 1)[0]
+        local = re.match(
+            r"^(localhost|127\.\d+\.\d+\.\d+|0\.0\.0\.0|\[::1\]|192\.168\.|10\.|172\.)",
+            host,
+        )
+        url = ("http://" if local else "https://") + url
+    url = url.rstrip("/")
+    for suffix in ("/chat/completions", "/completions", "/models"):
+        if url.endswith(suffix):
+            url = url[: -len(suffix)].rstrip("/")
+    return url
+
+
 @dataclass(slots=True)
 class Config:
     api_key: str = ""
-    base_url: str = "https://api.deepseek.com"
-    model: str = "deepseek-flash"
+    base_url: str = DEFAULT_BASE_URL
+    model: str = "deepseek-chat"
     max_iterations: int = 40
     context_window: int = 131_072
     repeat_limit: int = 3
@@ -70,8 +124,20 @@ class Config:
 
     @property
     def ready(self) -> bool:
-        """没有 api_key 时只能跑离线模式（脚本化模型）。"""
-        return bool(self.api_key)
+        """三项都齐了才能跑真实模型。少一项都会在首次请求时失败，不如提前判断。"""
+        return bool(self.api_key and self.base_url and self.model)
+
+    @property
+    def missing(self) -> list[str]:
+        """还缺哪几项 —— 直接把变量名给出去，用户不用猜。"""
+        gaps: list[str] = []
+        if not self.base_url:
+            gaps.append("LLM_BASE_URL")
+        if not self.api_key:
+            gaps.append("LLM_API_KEY")
+        if not self.model:
+            gaps.append("LLM_MODEL")
+        return gaps
 
 
 def _truthy(raw: str) -> bool:
@@ -79,11 +145,36 @@ def _truthy(raw: str) -> bool:
     return (raw or "").strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _read_raw(values: dict[str, str], key: str) -> str | None:
+    """取「显式写入」的值，没写返回 None。
+
+    与 :func:`load_config` 里的 ``get`` 不同：``get`` 会把空值当成「没配」
+    而回退默认；这里要区分两者 —— 用户显式写 ``LLM_MODEL=`` 是明确的意图，
+    不该被悄悄换回默认模型。
+    """
+    for name in (key, LEGACY_KEYS.get(key, "")):
+        if not name:
+            continue
+        if name in os.environ:
+            return os.environ[name]
+        if name in values:
+            return values[name]
+    return None
+
+
+
 def load_config(env_file: Path | None = None) -> Config:
     values = parse_env_file(env_file or find_env_file() or Path(".env"))
 
     def get(key: str, default: str = "") -> str:
-        return os.environ.get(key) or values.get(key, default)
+        """先找新变量名，再找旧变量名。两者都空才用默认值。"""
+        for name in (key, LEGACY_KEYS.get(key, "")):
+            if not name:
+                continue
+            raw = os.environ.get(name) or values.get(name, "")
+            if raw:
+                return raw
+        return default
 
     def get_int(key: str, default: int) -> int:
         raw = get(key)
@@ -107,10 +198,15 @@ def load_config(env_file: Path | None = None) -> Config:
     )
 
     workspace_raw = get("AUDIT_WORKSPACE_ROOT")
+    # 模型名与地址要区分「没写」与「显式写成空」：
+    # 没写 → 用默认值（开箱能跑）；写成空 → 尊重用户的空值，并在 missing 里报出来。
+    # 否则用户清空模型名想填自己的，却被悄悄换成默认模型，看起来像「配置没生效」。
+    base_raw = get("LLM_BASE_URL")
+    model_raw = _read_raw(values, "LLM_MODEL")
     config = Config(
-        api_key=get("DEEPSEEK_API_KEY"),
-        base_url=get("DEEPSEEK_BASE_URL", "https://api.deepseek.com"),
-        model=get("DEEPSEEK_MODEL", "deepseek-flash"),
+        api_key=get("LLM_API_KEY").strip(),
+        base_url=normalize_base_url(base_raw if base_raw else DEFAULT_BASE_URL),
+        model=(model_raw if model_raw is not None else "deepseek-chat").strip(),
         max_iterations=get_int("AUDIT_MAX_ITERATIONS", 40),
         context_window=get_int("AUDIT_CONTEXT_WINDOW", 131_072),
         repeat_limit=get_int("AUDIT_REPEAT_LIMIT", 3),

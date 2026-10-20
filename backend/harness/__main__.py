@@ -26,7 +26,7 @@ from .config import Config, load_config
 from . import agents
 from .agents import UnknownAgent, default_id, get as get_agent
 from .loop import AuditResult, resolve_workspace, run_agent
-from .model import DeepSeekModel, ModelError
+from .model import OpenAIModel, ModelError
 from .offline import HeuristicModel
 from .report import render_markdown, render_terminal
 from .rules import cross_check, scan_tree, to_findings
@@ -301,7 +301,7 @@ def _run_agent(repo: Path, args: argparse.Namespace, config: Config) -> int:
     else:
         if not config.ready:
             print(
-                "错误：未配置 DEEPSEEK_API_KEY。\n"
+                "错误：未配置 LLM_API_KEY（模型接口 / Key / 模型名三项不齐）。\n"
                 "  · 想验证完整链路但暂时没有 Key，请加 --offline；\n"
                 "  · 想只跑确定性规则，请加 --scan-only；\n"
                 "  · 想配 Key，请把 backend/.env.example 复制为 backend/.env 并填写。",
@@ -309,11 +309,11 @@ def _run_agent(repo: Path, args: argparse.Namespace, config: Config) -> int:
             )
             return 2
         try:
-            model = DeepSeekModel(config)
+            model = OpenAIModel(config)
         except ModelError as exc:
             print(f"错误：{exc}", file=sys.stderr)
             return 2
-        model_label = f"{config.model}（DeepSeek）"
+        model_label = f"{config.model} @ {config.base_url}（OpenAI 兼容）"
 
     print(f"仓库：{repo}")
     print(f"助手：{spec.name}（{spec.id}）")

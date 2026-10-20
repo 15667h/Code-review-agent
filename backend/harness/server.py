@@ -60,9 +60,9 @@ from .agents import (
     get as get_agent,
     manifests,
 )
-from .config import Config, load_config, parse_env_file
+from .config import Config, load_config, normalize_base_url, parse_env_file
 from .loop import resolve_workspace, run_agent
-from .model import DeepSeekModel, ModelError
+from .model import OpenAIModel, ModelError
 from .offline import HeuristicModel
 from .report import render_markdown
 from .sandbox import DEFAULT_SKIP_DIRS, PathEscape, Workspace, is_secret_path
@@ -476,7 +476,7 @@ def _worker(record: RunRecord, options: dict[str, Any]) -> None:
     config: Config = options["config"]
     try:
         workspace = resolve_workspace(record.repo)
-        model = HeuristicModel(agent=record.agent) if record.offline else DeepSeekModel(config)
+        model = HeuristicModel(agent=record.agent) if record.offline else OpenAIModel(config)
     except (ModelError, PathEscape, OSError) as exc:
         _finish(record, status="error", final=None, error=str(exc))
         return
@@ -1053,15 +1053,20 @@ def models_cached(config: Config, *, ttl: float = 300.0) -> dict[str, Any]:
 
 # 允许通过接口改写的键。白名单是刻意的：配置文件是可执行的部署面，
 # 不能让一个 HTTP 请求把任意键写进去。
+#: 可落盘的配置项。
+#:
+#: 模型相关只有三项 —— 接口地址、Key、模型名。协议是 OpenAI 兼容这一件事
+#: 已经写死在模型层里，不再需要用户选「提供商」；温度/超时这类运行参数留在这里，
+#: 但它们不是接模型所必需的。
 WRITABLE_KEYS = {
-    "DEEPSEEK_MODEL": str,
-    "DEEPSEEK_BASE_URL": str,
+    "LLM_BASE_URL": str,
+    "LLM_API_KEY": str,
+    "LLM_MODEL": str,
     "AUDIT_MAX_ITERATIONS": int,
     "AUDIT_CONTEXT_WINDOW": int,
     "AUDIT_REPEAT_LIMIT": int,
     "AUDIT_TEMPERATURE": float,
     "AUDIT_TIMEOUT": float,
-    "DEEPSEEK_API_KEY": str,
 }
 
 ENV_PATH = BACKEND_ROOT / ".env"
@@ -1096,23 +1101,45 @@ def _write_env(updates: dict[str, str]) -> None:
     ENV_PATH.write_text("\n".join(output) + "\n", encoding="utf-8")
 
 
+def mask_key(key: str) -> str:
+    """密钥只回显首尾各 4 位。中间用省略号，长度不泄漏真实位数。"""
+    if not key:
+        return ""
+    if len(key) <= 10:
+        return "…" + key[-2:]
+    return f"{key[:4]}…{key[-4:]}"
+
+
 def config_payload(config: Config) -> dict[str, Any]:
-    key = config.api_key
-    masked = f"{key[:6]}…{key[-4:]}" if len(key) > 12 else ("(未设置)" if not key else "…")
+    """配置中心的载荷。
+
+    顶部就是接模型需要的**三项**，前端照着这三项渲染即可；
+    运行参数放在 ``details`` 里（可选、有默认值），不占用户注意力。
+    """
     return {
-        "model": config.model,
+        # ---- 接模型只需要这三项 ----
         "base_url": config.base_url,
+        "model": config.model,
+        "api_key_masked": mask_key(config.api_key),
+        "api_key_set": bool(config.api_key),
+        # ---- 状态 ----
+        "ready": config.ready,
+        "missing": config.missing,
+        "provider": _detect_provider(config.base_url),
+        # ---- 可选运行参数 ----
+        "details": {
+            "temperature": config.temperature,
+            "timeout": config.timeout,
+            "max_iterations": config.max_iterations,
+            "context_window": config.context_window,
+            "repeat_limit": config.repeat_limit,
+            "allow_commands": sorted(config.allow_commands),
+            "workspace_root": str(config.workspace_root) if config.workspace_root else "",
+        },
+        # 兼容：旧前端从顶层读这几个值
         "temperature": config.temperature,
         "timeout": config.timeout,
         "max_iterations": config.max_iterations,
-        "context_window": config.context_window,
-        "repeat_limit": config.repeat_limit,
-        "allow_commands": sorted(config.allow_commands),
-        "workspace_root": str(config.workspace_root) if config.workspace_root else "",
-        "api_key_masked": masked,
-        "api_key_set": bool(key),
-        "ready": config.ready,
-        "provider": _detect_provider(config.base_url),
     }
 
 
@@ -1580,20 +1607,25 @@ class Handler(BaseHTTPRequestHandler):
                 continue
             raw = body[key]
             if raw in (None, ""):
-                if key == "DEEPSEEK_API_KEY":
-                    continue  # 空值不覆盖已存的密钥
-                continue
+                continue  # 空值不覆盖已存的值（尤其密钥：留空表示沿用）
             try:
                 value = caster(raw)
             except (TypeError, ValueError):
                 self._send_json({"error": f"{key} 的值不合法：{raw!r}"}, 400)
                 return
-            if key == "DEEPSEEK_API_KEY":
+            if key == "LLM_API_KEY":
                 value = str(raw).strip()
-                if not value.startswith("sk-"):
-                    self._send_json({"error": "API Key 应以 sk- 开头"}, 400)
-                    return
+                # 不再要求 sk- 开头：自建服务（vLLM / Ollama / 内网网关）的 Key
+                # 常常是任意字符串，强求前缀会把合法的配置挡在门外。
+                if not value:
+                    continue
                 updates[key] = value
+            elif key == "LLM_BASE_URL":
+                normalized = normalize_base_url(str(raw))
+                if not normalized:
+                    self._send_json({"error": "接口地址不能为空"}, 400)
+                    return
+                updates[key] = format_env_value(normalized)
             else:
                 updates[key] = format_env_value(value)
 
@@ -1608,18 +1640,26 @@ class Handler(BaseHTTPRequestHandler):
         if body.get("api_key"):
             config.api_key = str(body["api_key"]).strip()
         if body.get("base_url"):
-            config.base_url = str(body["base_url"]).strip()
+            config.base_url = normalize_base_url(str(body["base_url"]))
         if body.get("model"):
             config.model = str(body["model"]).strip()
 
         started = time.time()
         ok, models, error = _probe_models(config)
+        ids = [m["id"] for m in models]
+        # 模型名不在列表里是**常见但未必致命**的情况：有些服务不实现 /models，
+        # 或者列表只返回部分模型。所以它作为提示而不是失败原因。
+        hint = ""
+        if ok and ids and config.model not in ids:
+            hint = f"接口可达，但模型列表里没有 `{config.model}`；确认名字是否拼错（可用：{'、'.join(ids[:6])}）"
         self._send_json(
             {
                 "ok": ok,
                 "latency_ms": round((time.time() - started) * 1000),
                 "models": models,
-                "model_ids": [m["id"] for m in models],
+                "model_ids": ids,
+                "model_available": (config.model in ids) if (ok and ids) else None,
+                "hint": hint,
                 "error": error,
                 "provider": _detect_provider(config.base_url),
             }
@@ -1677,7 +1717,7 @@ class Handler(BaseHTTPRequestHandler):
         if not offline and not config.ready:
             self._send_json(
                 {
-                    "error": "未配置 DEEPSEEK_API_KEY。可以先用离线模式跑通链路，"
+                    "error": "未配置 LLM_API_KEY（模型接口 / Key / 模型名三项不齐）。可以先用离线模式跑通链路，"
                     "或在配置中心填入密钥。",
                     "code": "no_api_key",
                 },
@@ -1922,7 +1962,13 @@ def _render_report(record: RunRecord) -> str:
         warnings=list(final.get("warnings") or []),
         elapsed=final.get("elapsed") or 0.0,
     )
-    label = "heuristic-offline（规则驱动）" if record.offline else f"{record.model}（DeepSeek）"
+    # 报告抬头写实际用的模型与地址：接的不一定是 DeepSeek，
+    # 硬编码「（DeepSeek）」会让报告在换服务后说谎。
+    label = (
+        "heuristic-offline（规则驱动）"
+        if record.offline
+        else f"{record.model} @ {_detect_provider(load_config().base_url)}"
+    )
     return render_markdown(result, repo=record.repo, model=label)
 
 
