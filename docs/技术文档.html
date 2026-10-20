@@ -132,7 +132,10 @@
   .note b, .warnbox b, .keybox b { color: inherit; }
 
   /* ===== 图示（纯 CSS 分层图） ===== */
-  .fig { margin: 4mm 0 5mm; break-inside: avoid; page-break-inside: avoid; }
+  /* 图内允许断页：架构图有 5 条带，整块 avoid 会在它前面留一整页空白。
+     图题仍保持与图相邻（下面单独设 rule）。 */
+  .fig { margin: 4mm 0 5mm; }
+  .fig__cap { break-before: avoid; page-break-before: avoid; }
   .fig__cap { font-size: 9pt; color: var(--ink-3); text-align: center; margin-top: 2mm; }
 
   .arch { border: 1px solid var(--rule); border-radius: 2mm; overflow: hidden; }
@@ -210,7 +213,7 @@
   <ol>
     <li>项目概述
       <ul>
-        <li>1.1 一句话说明 · 1.2 要解决的问题 · 1.3 产品形态 · 1.4 与同类工具的差异</li>
+        <li>1.1 一句话说明 · 1.2 要解决的问题 · 1.3 产品形态 · 1.4 与同类工具的差异 · 1.5 交付规模</li>
       </ul>
     </li>
     <li>需求分析
@@ -220,26 +223,28 @@
     </li>
     <li>系统架构设计
       <ul>
-        <li>3.1 总体架构 · 3.2 Agent = Model + Harness · 3.3 前端工作台 · 3.4 事件流</li>
-        <li>3.5 关键架构决策 · 3.6 技术选型理由</li>
+        <li>3.1 总体架构 · 3.2 Agent = Model + Harness · 3.3 前端工作台</li>
+        <li>3.4 事件流 · 3.5 关键架构决策 · 3.6 技术选型理由</li>
       </ul>
     </li>
     <li>AI 技术方案
       <ul>
         <li>4.1 模型集成 · 4.2 Agent 循环 · 4.3 Prompt 工程 · 4.4 工具接口设计</li>
-        <li>4.5 上下文预算与压缩 · 4.6 缓存感知的上下文结构 · 4.7 安全与可控性</li>
-        <li>4.8 规则与模型的交叉验证 · 4.9 结构化产出</li>
+        <li>4.5 上下文预算与压缩 · 4.6 缓存感知的上下文结构</li>
+        <li>4.7 安全与可控性 · 4.8 规则与模型的交叉验证 · 4.9 结构化产出</li>
+        <li><b>4.10 三层质量约束：确定性核验 → 独立判官 → 证据审查</b></li>
       </ul>
     </li>
     <li>核心功能实现
       <ul>
-        <li>5.1 代码审查助手 · 5.2 架构设计助手 · 5.3 多助手隔离</li>
-        <li>5.4 账号与会话安全 · 5.5 前端设计系统</li>
+        <li>5.1 代码审查助手 · 5.2 架构设计助手 · 5.3 增量审查</li>
+        <li>5.4 多助手隔离 · 5.5 账号与会话安全 · 5.6 前端设计系统</li>
       </ul>
     </li>
     <li>测试与部署
       <ul>
-        <li>6.1 测试体系 · 6.2 评估体系 · 6.3 架构助手难度实测 · 6.4 部署与运行</li>
+        <li>6.1 测试体系 · 6.2 评估体系 · 6.3 架构助手难度实测</li>
+        <li>6.4 与业界水位对照 · 6.5 部署与运行</li>
       </ul>
     </li>
     <li>创新点说明
@@ -307,10 +312,10 @@ Margin 是一个面向研发流程的 AI 工作台：它把「读代码、找问
       <div class="arch__head"><span class="arch__tag arch__tag--ink">上下文栏</span><span class="arch__label">仓库 · 分支 · 变更 · 运行历史（按助手隔离）</span></div>
     </div>
     <div class="arch__band">
-      <div class="arch__head"><span class="arch__tag arch__tag--ink">工作台</span><span class="arch__label">对话与产出：发现列表 / 分层蓝图</span></div>
+      <div class="arch__head"><span class="arch__tag arch__tag--ink">工作台</span><span class="arch__label">对话与产出：发现列表 / 分层蓝图 / 证据核验</span></div>
     </div>
     <div class="arch__band">
-      <div class="arch__head"><span class="arch__tag arch__tag--ink">输入坞</span><span class="arch__label">目标 · 范围筛选 · 模型选择 · 发送</span></div>
+      <div class="arch__head"><span class="arch__tag arch__tag--ink">输入坞</span><span class="arch__label">目标 · 范围筛选 · 增量开关 · 模型选择 · 发送</span></div>
     </div>
   </div>
   <div class="fig__cap">图 1-1 工作台骨架：轨道 + 上下文栏 + 工作台 + 输入坞</div>
@@ -318,127 +323,96 @@ Margin 是一个面向研发流程的 AI 工作台：它把「读代码、找问
 
 <h2>1.4 与同类工具的差异</h2>
 <table>
-  <thead><tr><th style="width:30%">维度</th><th style="width:35%">常见的 AI 编程工具</th><th>Margin 的做法</th></tr></thead>
+  <thead><tr><th style="width:28%">维度</th><th style="width:34%">常见的 AI 编程工具</th><th>Margin 的做法</th></tr></thead>
   <tbody>
     <tr><td>定位</td><td>编辑器内的代码补全 / 对话</td><td>独立工作台，承载<b>完整的一次审查或设计任务</b>及其产出</td></tr>
     <tr><td>产出</td><td>自由文本回复，需人工再整理</td><td><b>结构化产出</b>：发现 / 组件 / 决策 / 开放问题各有 schema，前端按形态渲染</td></tr>
-    <tr><td>证据</td><td>可能给出不存在的行号</td><td>引用核验：结论中引用的位置若不在本次读过的文件里，会被标出待复核</td></tr>
+    <tr><td>证据</td><td>可能给出不存在的行号</td><td><b>三层核验</b>：位置真实性 → 独立判官复核 → 证据与权衡审查（详见 4.10）</td></tr>
     <tr><td>扩展</td><td>新能力需要改代码</td><td><b>助手是一份声明</b>（AgentSpec），接入新助手不改既有代码</td></tr>
-    <tr><td>可信度</td><td>难以评估效果</td><td>自带评估链路：8 个靶场 + 双口径指标 + 人工复核，数字由脚本现算</td></tr>
+    <tr><td>可信度</td><td>难以评估效果</td><td>自带评估链路：12 个靶场 / 134 条标注 / 双口径指标 / 人工复核，数字由脚本现算</td></tr>
+    <tr><td>模型接入</td><td>绑定特定厂商</td><td>只填<b>接口地址 / Key / 模型名</b>三项即可接任何 OpenAI 兼容服务</td></tr>
   </tbody>
 </table>
 
 <h2>1.5 交付规模</h2>
 <div class="kpi">
-  <div class="kpi__item"><div class="kpi__num">29,272</div><div class="kpi__label">行源码（前端 + 后端 + 测试 + 评估）</div></div>
-  <div class="kpi__item"><div class="kpi__num">175</div><div class="kpi__label">项回归测试（全绿）</div></div>
+  <div class="kpi__item"><div class="kpi__num">29,453</div><div class="kpi__label">行源码（前端 + 后端 + 测试 + 评估）</div></div>
+  <div class="kpi__item"><div class="kpi__num">282</div><div class="kpi__label">项回归测试（全绿）</div></div>
   <div class="kpi__item"><div class="kpi__num">2</div><div class="kpi__label">个内置 AI 助手（可插拔扩展）</div></div>
-  <div class="kpi__item"><div class="kpi__num">1</div><div class="kpi__label">个外部依赖（httpx）</div></div>
+  <div class="kpi__item"><div class="kpi__num">1</div><div class="kpi__label">个外部运行时依赖（httpx）</div></div>
 </div>
+
+<table>
+  <thead><tr><th style="width:30%">组成部分</th><th style="width:16%">文件</th><th style="width:16%">行数</th><th>说明</th></tr></thead>
+  <tbody>
+    <tr><td>Agent 运行时（harness）</td><td>26</td><td>10,609</td><td>主循环、上下文、工具、护栏、三层核验、HTTP 服务</td></tr>
+    <tr><td>回归测试</td><td>13</td><td>4,373</td><td>含前端契约测试与 SSE 集成测试</td></tr>
+    <tr><td>评估链路</td><td>8</td><td>2,253</td><td>靶场运行、指标计算、报告生成</td></tr>
+    <tr><td>前端脚本 / 样式 / 页面</td><td>16</td><td>12,052</td><td>原生 JS + CSS，零构建、零 npm 依赖</td></tr>
+    <tr><td>仓库卫生检查</td><td>1</td><td>166</td><td>死代码与未使用导入扫描</td></tr>
+  </tbody>
+</table>
 
 <!-- ==================== 2 需求分析 ==================== -->
 <h1 class="chapter"><span class="num">2</span>需求分析</h1>
 
 <h2>2.1 目标用户与场景</h2>
 <table>
-  <thead><tr><th style="width:20%">用户</th><th style="width:32%">场景</th><th>需求本质</th></tr></thead>
+  <thead><tr><th style="width:22%">用户</th><th style="width:32%">典型场景</th><th>他真正想要的</th></tr></thead>
   <tbody>
-    <tr><td>开发者（个人）</td><td>提交前自查；接手陌生模块时快速建立结构认知</td><td>需要一份「可以照着改」的问题清单，而不是一堆风格建议</td></tr>
-    <tr><td>团队评审者</td><td>把 AI 产出当作评审的起点，逐条讨论</td><td>需要证据可追溯、结论可反驳、边界清楚（哪些没看）</td></tr>
-    <tr><td>学生 / 学习者</td><td>用真实仓库练习代码阅读与架构分析</td><td>需要把「为什么这样设计」讲出来，而不只是给答案</td></tr>
+    <tr><td><b>接手陌生仓库的工程师</b></td><td>入职新项目、接手遗留系统</td><td>先看清分层与依赖，再决定从哪读起 —— 而不是从第一个文件顺序读下去</td></tr>
+    <tr><td><b>提交前的作者</b></td><td>自查本次改动、准备 PR</td><td>只审自己的改动，别把全仓旧问题一次性倒出来</td></tr>
+    <tr><td><b>做评审的资深工程师</b></td><td>评审分层方案、技术选型</td><td>可讨论的载体：决策写了代价、不确定的单独列出，能逐条反驳</td></tr>
+    <tr><td><b>教学与实训</b></td><td>讲解代码缺陷模式</td><td>每条发现都指向具体行，可当场打开核对</td></tr>
   </tbody>
 </table>
 
 <h2>2.2 功能需求</h2>
 <table>
-  <thead><tr><th style="width:8%">编号</th><th style="width:26%">功能</th><th>说明与验收标准</th></tr></thead>
+  <thead><tr><th style="width:8%">编号</th><th style="width:24%">需求</th><th style="width:38%">验收判据</th><th>实现位置</th></tr></thead>
   <tbody>
-    <tr><td>F1</td><td>选择被审仓库</td><td>自动列出示例子仓库，也可手动加入任意本地目录；服务端校验路径不得越界</td></tr>
-    <tr><td>F2</td><td>限定审查范围</td><td>可勾选仓库内的相对路径子集；越界项被丢弃且不回显原文</td></tr>
-    <tr><td>F3</td><td>发起智能体运行</td><td>输入目标（自然语言），Agent 自主决定读哪些文件、调哪些工具，直到收尾</td></tr>
-    <tr><td>F4</td><td>实时查看过程</td><td>SSE 流式推送：每一步工具调用、每一次产出登记即时可见</td></tr>
-    <tr><td>F5</td><td>结构化产出</td><td>审查产出发现列表（可按严重级筛选）；架构产出分层图 + 组件 + 决策 + 开放问题</td></tr>
-    <tr><td>F6</td><td>历史会话</td><td>运行结果归档，可重放；<b>按助手隔离</b>，切换助手只看到该助手的历史</td></tr>
-    <tr><td>F7</td><td>可中断</td><td>运行中可停止；被中断的那一轮如实标为未完成</td></tr>
-    <tr><td>F8</td><td>账号系统</td><td>注册 / 登录 / 退出；密码加盐哈希存储；可选强制登录</td></tr>
-    <tr><td>F9</td><td>接入新助手</td><td>写一份声明即可，不改既有代码；前端自动出现入口、文案与配色</td></tr>
+    <tr><td>F1</td><td>代码审查</td><td>产出结构化的发现列表，每条含文件、行号、严重级、复现证据与修复建议</td><td>助手 review</td></tr>
+    <tr><td>F2</td><td>架构设计</td><td>产出分层、组件与依赖、决策（含代价）、开放问题</td><td>助手 architect</td></tr>
+    <tr><td>F3</td><td>助手可插拔</td><td>新增助手只需一份声明；前端按清单渲染，不改代码</td><td>agents.py / /api/agents</td></tr>
+    <tr><td>F4</td><td>运行可追溯</td><td>每次运行的每一轮工具调用、耗时、用量都可回放</td><td>SSE 事件流 + 归档</td></tr>
+    <tr><td>F5</td><td>增量审查</td><td>只审 BASE..工作树的改动，并反查改动之外的调用点</td><td>diffmode.py</td></tr>
+    <tr><td>F6</td><td>产出可核验</td><td>每条产出都能给出「凭什么这么说」的代码位置，且位置可机械核对</td><td>三层核验</td></tr>
+    <tr><td>F7</td><td>模型可更换</td><td>只填三项即可接任意 OpenAI 兼容服务</td><td>config.py</td></tr>
+    <tr><td>F8</td><td>离线可用</td><td>无 API Key 时仍能跑完整链路（规则驱动）</td><td>offline.py</td></tr>
   </tbody>
 </table>
 
 <h2>2.3 非功能需求</h2>
 <table>
-  <thead><tr><th style="width:24%">维度</th><th>要求与实现方式</th></tr></thead>
+  <thead><tr><th style="width:22%">维度</th><th style="width:30%">要求</th><th>本项目的做法</th></tr></thead>
   <tbody>
-    <tr><td>安全 — 密钥</td><td>API Key 只存 `.env`（不入库）；一切读取都过密钥文件护栏，且护栏在<b>工具层</b>（因为读取结果会进模型上下文，只挡浏览器不够）</td></tr>
-    <tr><td>安全 — 越界</td><td>路径逃逸、绝对路径、技能目录逃逸一律拒绝；静态路由白名单 + 后缀白名单 + 拒绝点目录</td></tr>
-    <tr><td>安全 — 凭据</td><td>密码 scrypt 加盐哈希，明文不落盘；会话 HttpOnly + SameSite=Strict；登录失败不区分「用户不存在」与「密码错」以防账号枚举</td></tr>
-    <tr><td>可靠性</td><td>失败必须显式（目录不存在不能伪装成「没有匹配」）；归档原子写入；坏文件留档不静默丢弃</td></tr>
-    <tr><td>可审计</td><td>零 web 框架：HTTP 层用标准库实现，依赖只有 httpx —— 这个服务本身也要可被审计</td></tr>
-    <tr><td>可扩展</td><td>助手 = 声明；产出形态 = 声明；渲染器 = 注册表 + 兜底，未知形态不白屏也不冒充实出</td></tr>
-    <tr><td>性能</td><td>首屏无构建、无第三方 JS；后端单进程可并发处理 SSE；模型侧靠缓存命中降低延迟与成本</td></tr>
-    <tr><td>可用性</td><td>无 API Key 时降级为离线规则模式，界面功能完整；窄屏自适应到 430px</td></tr>
+    <tr><td>可审计性</td><td>安全类工具本身必须可读、可审查</td><td>零第三方依赖（仅 httpx）；HTTP/SSE 用标准库手写</td></tr>
+    <tr><td>安全性</td><td>路径不得逃逸、命令受限、密钥不入库</td><td>工作区解析校验 + 命令白名单 + .env 隔离（有回归测试守着）</td></tr>
+    <tr><td>成本</td><td>长任务不能烧钱</td><td>静态前缀恒定，KV 缓存命中率实测约 87%</td></tr>
+    <tr><td>可恢复性</td><td>中断后不能留下半份产出冒充完整</td><td>停止时如实标注「已停止，上面是停止前已完成的部分」</td></tr>
+    <tr><td>诚实性</td><td>失败不能说成空结果</td><td>工具层显式失败信封；前端连不上后端时明确说未连接</td></tr>
   </tbody>
 </table>
 
 <h2>2.4 赛题评分维度映射</h2>
-<p>下表说明本项目对赛题各评分维度的对应实现，便于评审定位：</p>
 <table>
-  <thead><tr><th style="width:22%">评分维度（权重）</th><th style="width:30%">赛题考察点</th><th>本项目的实现与位置</th></tr></thead>
+  <thead><tr><th style="width:26%">评分维度</th><th>本项目的对应交付</th><th style="width:14%">详见</th></tr></thead>
   <tbody>
-    <tr>
-      <td rowspan="6"><b>AI 技术深度</b><br />35%</td>
-      <td>大模型集成质量 8%</td>
-      <td>统一的模型客户端（重试 / 退避 / 用量统计）；系统提示分层；产出 schema 强约束；缓存命中率实测 ~87%</td>
-    </tr>
-    <tr>
-      <td>Agent / 工作流设计 8%</td>
-      <td>完整 Agent 循环：规划（任务列表）→ 工具调用 → 观察 → 收敛（finish）；工具集按助手插拔；熔断与迭代上限护栏</td>
-    </tr>
-    <tr>
-      <td>RAG 技术应用 6%</td>
-      <td>以<b>按需检索</b>替代向量检索：工具清单渐进披露（先检索再加载）、代码按符号索引读取 —— 面向代码场景的检索策略</td>
-    </tr>
-    <tr>
-      <td>多模态能力 5%</td>
-      <td>当前版本聚焦文本代码理解，未集成图像/语音（见 8.2 已知边界）</td>
-    </tr>
-    <tr>
-      <td>AI 安全与可控性 4%</td>
-      <td>熔断（连续被拒计数、可恢复）、重复调用检测、引用核验、失败显式化、只读助手硬契约</td>
-    </tr>
-    <tr>
-      <td>MCP / 工具集成 4%</td>
-      <td>工具即契约：JSON Schema 参数、四层错误信息（类型+参数+建议）、工具描述写「何时用/何时不用」</td>
-    </tr>
-    <tr>
-      <td rowspan="3"><b>创新性</b><br />25%</td>
-      <td>选题创新 10%</td>
-      <td>把「代码审查」与「架构设计」放进同一可插拔内核；架构助手产出可评审蓝图而非泛泛描述</td>
-    </tr>
-    <tr><td>技术方案创新 8%</td><td>确定性规则集兼作模型结果的交叉验证器；缓存感知的上下文结构；零依赖后端</td></tr>
-    <tr><td>交互模式创新 7%</td><td>助手切换时产出形态/文案/配色整体切换；分层蓝图的可读化（连线几何、决策与开放问题并列）</td></tr>
-    <tr><td rowspan="3"><b>前端工程质量</b><br />10%</td><td>代码质量 4%</td><td>模块化原生 JS（8 个模块）、统一 UI 原语、无第三方运行时依赖</td></tr>
-    <tr><td>组件化与架构 3%</td><td>渲染器按产出形态注册；视图注册表统一生命周期；助手轨道/上下文栏/工作台解耦</td></tr>
-    <tr><td>性能优化 3%</td><td>零构建直出、无阻塞脚本、SSE 增量渲染、ResizeObserver 按需重绘（并正确释放）</td></tr>
-    <tr><td><b>实用性</b> 10%</td><td>场景真实性与方案有效性</td><td>面向真实仓库；发现带行号与证据可直接定位；架构蓝图可作为评审材料</td></tr>
-    <tr><td rowspan="3"><b>用户体验</b> 10%</td><td>UI 设计 4%</td><td>设计令牌系统（颜色/间距/字体三档）、两套强调色、A4 一致的信息密度</td></tr>
-    <tr><td>交互体验 3%</td><td>运行状态条、任务清单实时更新、空态文案按助手方言区分、430px 起自适应</td></tr>
-    <tr><td>AI 交互体验 3%</td><td>SSE 流式渲染、思考与工具调用可视化、错误边界（失败不伪装）</td></tr>
-    <tr><td><b>社会价值<br />与商业潜力</b> 10%</td><td>社会价值 5%</td><td>降低代码阅读与架构分析门槛，可用于教学与开源维护；评估体系公开可复现</td></tr>
-    <tr><td></td><td>商业潜力 5%</td><td>可插拔内核可扩展到测试生成、文档生成等更多助手；面向团队可私有部署</td></tr>
+    <tr><td>技术创新性</td><td>三层质量约束（确定性核验 / 独立判官 / 证据审查）；助手即声明；缓存感知上下文</td><td>第 7 章</td></tr>
+    <tr><td>AI 技术应用深度</td><td>结构化产出 + 工具协议 + 渐进披露 + 判官复核 + 判据可验证</td><td>第 4 章</td></tr>
+    <tr><td>工程完成度</td><td>29,453 行、282 项回归、12 靶场评估、可插拔架构</td><td>第 5、6 章</td></tr>
+    <tr><td>可用性与体验</td><td>明暗双主题工作台、会话隔离、增量模式、失败可读</td><td>5.6 节</td></tr>
+    <tr><td>文档与规范</td><td>README / 技术文档 / 贡献指南 / 许可证 / 评估报告（脚本生成）</td><td>全篇</td></tr>
   </tbody>
 </table>
 
-<div class="note">
-  <b>关于 RAG 的说明。</b>赛题把 RAG 列为考察点。本项目没有采用向量数据库方案，
-  而是面向代码场景设计了另一套检索策略：<b>工具清单渐进披露 + 符号级读取 + 按需上下文</b>。
-  理由写在 4.4 与 4.8：代码检索的难点不是语义相似度，而是「准确的行号与结构」，
-  以及「不把整个仓库塞进上下文」。二者目标一致（让模型在有限上下文里拿到需要的知识），
-  技术路径不同。
-</div>
-
 <!-- ==================== 3 系统架构设计 ==================== -->
 <h1 class="chapter"><span class="num">3</span>系统架构设计</h1>
+
+<p class="lead">
+整个系统的设计围绕一条主线：<b>把 AI 的不确定性关进工程结构里</b>。
+下面按「分层 → 抽象 → 界面 → 事件 → 决策」展开，每条关键决策都注明替代方案与代价。
+</p>
 
 <h2>3.1 总体架构</h2>
 <p>
@@ -454,8 +428,8 @@ Margin 是一个面向研发流程的 AI 工作台：它把「读代码、找问
       <div class="arch__cells">
         <div class="cell cell--brand"><b>agents.js</b><span>助手清单 · 轨道 · 方言文案 · 强调色</span></div>
         <div class="cell cell--brand"><b>blueprint.js</b><span>架构产出渲染器（分层图/决策/开放问题）</span></div>
-        <div class="cell"><b>live.js</b><span>实时会话 · 事件应用 · 会话隔离</span></div>
-        <div class="cell"><b>app.js / api.js</b><span>UI 原语 · 演示模式 · 接口客户端</span></div>
+        <div class="cell"><b>live.js</b><span>实时会话 · 事件应用 · 会话隔离 · 证据面板</span></div>
+        <div class="cell"><b>app.js / api.js</b><span>UI 原语 · 主题 · 接口客户端</span></div>
         <div class="cell"><b>auth.js</b><span>登录 / 注册 / 账号态</span></div>
       </div>
     </div>
@@ -465,7 +439,7 @@ Margin 是一个面向研发流程的 AI 工作台：它把「读代码、找问
       <div class="arch__cells">
         <div class="cell cell--accent"><b>REST 路由</b><span>/api/agents · /api/repos · /api/audit · /api/runs</span></div>
         <div class="cell cell--accent"><b>SSE 事件流</b><span>历史补发 + 实时推送，同一路径</span></div>
-        <div class="cell cell--accent"><b>认证</b><span>注册/登录/登出/me · 会话 Cookie</span></div>
+        <div class="cell cell--accent"><b>配置接口</b><span>三项读写 · 连接测试 · 模型探测</span></div>
         <div class="cell cell--accent"><b>运行注册表</b><span>RunRecord · 事件序列号 · 归档</span></div>
       </div>
     </div>
@@ -474,20 +448,24 @@ Margin 是一个面向研发流程的 AI 工作台：它把「读代码、找问
       <div class="arch__head"><span class="arch__tag arch__tag--ink">Agent 运行时 · harness/</span><span class="arch__label">Agent = Model + Harness（上下文管理 + 工具接口 + 约束 + 验证 + 纠正）</span></div>
       <div class="arch__cells">
         <div class="cell"><b>agents.py</b><span>AgentSpec 注册表：一份声明 = 一个助手</span></div>
-        <div class="cell"><b>loop.py</b><span>主循环：规划 → 调用 → 观察 → 收敛</span></div>
-        <div class="cell"><b>model.py</b><span>模型客户端（重试 / 退避 / 用量）</span></div>
+        <div class="cell"><b>loop.py</b><span>主循环 + 收尾三层核验</span></div>
+        <div class="cell"><b>model.py</b><span>OpenAI 兼容客户端（重试 / 退避 / 用量）</span></div>
         <div class="cell"><b>context.py</b><span>上下文组装 · 预算 · 压缩 · 状态栏</span></div>
-        <div class="cell"><b>guardrails.py</b><span>熔断 · 重复检测 · 引用核验</span></div>
-        <div class="cell"><b>rules.py</b><span>确定性规则集（兼作交叉验证）</span></div>
+        <div class="cell"><b>guardrails.py</b><span>熔断 · 重复检测 · 位置核验</span></div>
+        <div class="cell"><b>judge.py</b><span>独立判官：只删不加</span></div>
+        <div class="cell"><b>arch_check.py</b><span>证据核验 · 权衡真实性</span></div>
+        <div class="cell"><b>pacing.py</b><span>轮次预算</span></div>
       </div>
     </div>
 
     <div class="arch__band">
       <div class="arch__head"><span class="arch__tag arch__tag--ink">工具与沙箱</span><span class="arch__label">Agent 与外部世界的唯一通路 · 护栏在此收口</span></div>
       <div class="arch__cells">
-        <div class="cell"><b>tools_common.py</b><span>公共工具唯一实现（9 个：读文件/搜索/符号/diff/命令/任务/收尾…）</span></div>
+        <div class="cell"><b>tools_common.py</b><span>公共工具唯一实现（10 个：读文件/搜索/符号/diff/速写/命令…）</span></div>
         <div class="cell"><b>tools_audit.py</b><span>审查特有：登记发现 · 打补丁 · 跑测试 · 静态检查</span></div>
         <div class="cell"><b>tools_design.py</b><span>架构特有：登记层/组件/决策/开放问题</span></div>
+        <div class="cell"><b>sketch.py</b><span>一次 ast 扫描出仓库结构清单</span></div>
+        <div class="cell"><b>diffmode.py</b><span>变更行 → 符号 → 反查调用点</span></div>
         <div class="cell cell--dash"><b>sandbox.py</b><span>工作区解析 · 密钥护栏 · 命令白名单</span></div>
       </div>
     </div>
@@ -495,7 +473,7 @@ Margin 是一个面向研发流程的 AI 工作台：它把「读代码、找问
     <div class="arch__band">
       <div class="arch__head"><span class="arch__tag arch__tag--ink">外部</span></div>
       <div class="arch__cells">
-        <div class="cell cell--dash"><b>大模型 API</b><span>OpenAI 兼容端点（DeepSeek）</span></div>
+        <div class="cell cell--dash"><b>大模型 API</b><span>任意 OpenAI 兼容端点（地址 / Key / 模型名）</span></div>
         <div class="cell cell--dash"><b>被审仓库</b><span>本地目录（只读或读写按助手声明）</span></div>
       </div>
     </div>
@@ -511,12 +489,12 @@ Harness 由五部分组成：
 </p>
 
 <table>
-  <thead><tr><th style="width:20%">组成</th><th style="width:38%">职责</th><th>本项目的实现</th></tr></thead>
+  <thead><tr><th style="width:20%">组成</th><th style="width:34%">职责</th><th>本项目的实现</th></tr></thead>
   <tbody>
     <tr><td><b>上下文管理</b></td><td>决定模型每一轮看到什么：静态前缀 + 动态追加</td><td>系统提示与核心工具定义恒定；进度、状态、检索到的工具 schema 追加到轨迹末尾</td></tr>
     <tr><td><b>工具接口</b></td><td>把能力以模型能理解的方式暴露</td><td>JSON Schema 参数；描述写「何时用 / 何时不用」；数组参数显式声明</td></tr>
     <tr><td><b>约束</b></td><td>限制行为边界，防止失控</td><td>迭代上限、重复调用检测、连续被拒熔断、命令白名单、只读助手硬契约</td></tr>
-    <tr><td><b>验证</b></td><td>检查产出是否可信</td><td>引用核验（行号是否真读过）、参数校验、确定性规则交叉验证</td></tr>
+    <tr><td><b>验证</b></td><td>检查产出是否可信</td><td>三层核验（位置 → 判官 → 证据与权衡）+ 确定性规则交叉验证</td></tr>
     <tr><td><b>纠正</b></td><td>出错后给出可操作的修复路径</td><td>错误信息四层（类型 + 参数 + 调用栈 + 建议）；失败显式而非伪装成空结果</td></tr>
   </tbody>
 </table>
@@ -526,83 +504,53 @@ Harness 由五部分组成：
 前端不做「一个助手一套页面」，而是<b>一套骨架 + 声明驱动的差异</b>：
 </p>
 <ul>
-  <li><b>骨架共享</b>：助手轨道（56px）+ 上下文栏 + 工作台 + 输入坞，四个助手都走这套结构</li>
-  <li><b>差异来自声明</b>：助手清单由后端 <code>GET /api/agents</code> 下发（未连后端时用内置兜底），
-      前端按 <code>outcome</code> 选产出渲染器，按 <code>accent</code> 注入强调色变量</li>
-  <li><b>文案分两层</b>：与助手有关的（输入框提示、按钮、空态、运行状态）走「方言」表；与助手无关的（品牌、快捷键提示）保持不变</li>
-  <li><b>渲染器注册表 + 兜底</b>：不认识的产出形态按字段原样列出，不白屏、也不冒充实出</li>
+  <li><b>骨架共享</b>：助手轨道 + 上下文栏 + 工作台 + 输入坞，所有助手走这套结构</li>
+  <li><b>差异来自声明</b>：助手清单由后端 <code>GET /api/agents</code> 下发，
+      前端据 <code>outcome</code> 选产出渲染器、据 <code>capabilities</code> 决定显示哪些入口
+      （例如只有声明了 diff 能力的助手才出现「增量」开关）</li>
+  <li><b>强调色只是声明里的一个色值</b>：<code>body[data-agent]</code> 注入 <code>--agent</code>，
+      深浅三档由 <code>color-mix</code> 派生 —— 接新助手只换一个色值</li>
+  <li><b>兜底渲染器</b>：不认识的产出形态按字段原样列出，不白屏、也不假装它是发现列表</li>
 </ul>
 
 <h2>3.4 事件流：一条路径同时服务「实时」与「重放」</h2>
 <p>
-这是架构上刻意避免重复的一点：<b>打开一条还在跑的会话</b>与<b>回放一条已完成的会话</b>
-走的是同一条代码路径 —— 服务端先补发历史事件，再接上实时推送。
+运行过程中的每一步（开始、决策、工具调用、产出、重试、压缩、完成）都以事件形式追加到运行记录。
+SSE 连接<b>先补发历史事件、再实时推送</b>，因此「打开一条正在跑的运行」与「回放一条已完成的运行」
+走的是同一条路径 —— 不存在两套渲染实现。
 </p>
-
 <div class="flow">
-  <span class="flow__item flow__item--brand">Agent 循环</span>
+  <span class="flow__item flow__item--brand">运行产生事件</span>
   <span class="flow__arrow">→</span>
-  <span class="flow__item">事件钩子</span>
+  <span class="flow__item">追加到记录（带序号）</span>
   <span class="flow__arrow">→</span>
-  <span class="flow__item">RunRecord（带序号）</span>
+  <span class="flow__item">SSE 补发 since 之后的事件</span>
   <span class="flow__arrow">→</span>
-  <span class="flow__item">SSE 订阅队列</span>
-  <span class="flow__arrow">→</span>
-  <span class="flow__item">补发历史 + 实时帧</span>
+  <span class="flow__item">实时推送新事件</span>
   <span class="flow__arrow">→</span>
   <span class="flow__item flow__item--brand">前端 applyEvent</span>
 </div>
 
-<p>每个事件带自增序号，因此断线重连可以按 <code>Last-Event-ID</code> 续传；终态后发送关闭帧并写 chunked 终止序列，客户端不会挂起等待。</p>
-
 <h2>3.5 关键架构决策</h2>
 <table>
-  <thead><tr><th style="width:26%">决策</th><th style="width:34%">选择</th><th>放弃的方案与代价</th></tr></thead>
+  <thead><tr><th style="width:22%">决策</th><th style="width:34%">替代方案与为什么不选</th><th>代价</th></tr></thead>
   <tbody>
-    <tr>
-      <td><b>助手如何接入</b></td>
-      <td>声明式注册表：写下 id / 工具工厂 / 产出形态 / 强调色，调一次 <code>register</code></td>
-      <td>放弃「写死在代码里的枚举」：那种做法每加一个助手都要改工具、渲染、路由、前端四处，
-          漏一处就是「跑得出来但显示成另一种产出」这种很难发现的问题</td>
-    </tr>
-    <tr>
-      <td><b>产出形态谁说了算</b></td>
-      <td>由助手自己声明 <code>outcome</code>，渲染层按注册表分派，未知形态走通用兜底</td>
-      <td>放弃「统一都叫发现」：架构运行若走审查渲染器，会打印「本次没有记录任何发现」——
-          那不是事实，是把渲染器的不认识说成了产出为空，比不渲染更糟</td>
-    </tr>
-    <tr>
-      <td><b>产出如何存放</b></td>
-      <td>按类型分桶（<code>artifacts: dict[str, list]</code>），发现列表只是其中一个桶的视图</td>
-      <td>放弃单一 <code>findings</code> 字段：那会让第二种产出无处安放，且归档重放时丢桶</td>
-    </tr>
-    <tr>
-      <td><b>只读助手怎么保证</b></td>
-      <td>运行前硬检查：声明 <code>can_edit=False</code> 的助手若注册了中高风险工具，直接让运行失败</td>
-      <td>放弃「靠自觉不给写工具」：声明与能力脱钩时无人发现，等于没有边界</td>
-    </tr>
-    <tr>
-      <td><b>框架依赖</b></td>
-      <td>后端标准库实现 HTTP；前端原生 JS/CSS，无构建</td>
-      <td>放弃了框架带来的开发效率。代价是部分工作要自己写；收益是
-          <b>整套系统可被完整审计、零安装门槛、不受依赖漏洞影响</b> —— 对一个安全审计工具，这个交换值得</td>
-    </tr>
+    <tr><td><b>标准库实现 HTTP 层</b></td><td>FastAPI/Flask 更省事，但引入依赖链；安全类工具需要可审计</td><td>需手写路由、分块传输、SSE 终止序列（都踩过坑）</td></tr>
+    <tr><td><b>静态前缀恒定</b></td><td>把时间/进度写进系统提示更直观，但会让 KV 缓存整轮失效</td><td>动态信息必须另想办法追加（状态栏）</td></tr>
+    <tr><td><b>产出落类型化桶</b></td><td>统一用自由文本更灵活，但无法按形态渲染</td><td>每加一种形态要写 schema 与渲染器</td></tr>
+    <tr><td><b>未知助手直接报错</b></td><td>回退到默认助手更「健壮」，但会产出答非所问的结果</td><td>调用方要处理 400</td></tr>
+    <tr><td><b>判官只删不加</b></td><td>让判官也能补充会更「完整」，但那等于把审查者与被审者合成一个角色</td><td>漏报无法由判官补回（可接受：宁可漏也不加噪声）</td></tr>
   </tbody>
 </table>
 
 <h2>3.6 技术选型理由</h2>
-<table>
-  <thead><tr><th style="width:22%">层</th><th style="width:26%">选型</th><th>理由</th></tr></thead>
-  <tbody>
-    <tr><td>模型</td><td>DeepSeek（OpenAI 兼容端点）</td><td>长上下文（约 100 万 token）支撑整仓库分析；缓存计价降低重复上下文成本；国内可直连</td></tr>
-    <tr><td>后端语言</td><td>Python 3.11+</td><td>代码分析生态与规则集实现成本低；标准库自带 HTTP/SSE/hashlib/cryptography 替代品</td></tr>
-    <tr><td>后端框架</td><td>无（标准库）</td><td>服务本身是被审计对象，依赖越少越好审；同源托管前端因此不需要 CORS</td></tr>
-    <tr><td>前端</td><td>原生 JS + CSS（ES2020+ / CSS 自定义属性）</td><td>零构建意味着评审者打开即用；无 npm 供应链风险；样式系统用令牌变量而非预处理器</td></tr>
-    <tr><td>实时通信</td><td>SSE</td><td>单向推送足够（Agent → 界面）；比 WebSocket 简单，且天然支持断线续传</td></tr>
-    <tr><td>持久化</td><td>JSON 文件（运行归档 / 账号表）</td><td>单机工具的数据量不需要数据库；JSON 可用任何工具检查，便于评审与调试</td></tr>
-    <tr><td>认证</td><td>scrypt + 内存会话</td><td>标准库可得的最强密码哈希之一；会话不落盘 = 不把长期凭据写到磁盘</td></tr>
-  </tbody>
-</table>
+<ul>
+  <li><b>Python 3.12</b>：`ast` 标准库足以做结构化代码分析，无需引入解析库</li>
+  <li><b>httpx 作为唯一运行时依赖</b>：同步调用 + 超时 + 连接池，比 urllib 更可控</li>
+  <li><b>原生 JS/CSS 前端</b>：无构建、无 npm 依赖，评审者可 clone 即读；对工具类产品，
+      这比框架带来的开发效率更重要</li>
+  <li><b>OpenAI 兼容协议</b>：业界事实标准，换供应商只改三个值</li>
+</ul>
 
 <!-- ==================== 4 AI 技术方案 ==================== -->
 <h1 class="chapter"><span class="num">4</span>AI 技术方案</h1>
@@ -615,31 +563,37 @@ Harness 由五部分组成：
 <h2>4.1 模型集成</h2>
 <h3>4.1.1 集成方式</h3>
 <p>
-模型调用集中在单一的客户端模块中（<code>harness/model.py</code>），对上层暴露一个
-「给消息与工具，返回一次决策」的接口。这样做的好处是：重试策略、退避、用量统计、
+模型调用集中在单一客户端模块（<code>harness/model.py</code>），对上层暴露
+「给消息与工具，返回一次决策」的接口。这样重试策略、退避、用量统计、
 错误分类只写一遍，Agent 循环里不掺协议细节。
 </p>
 
 <table>
-  <thead><tr><th style="width:26%">能力</th><th>实现要点</th></tr></thead>
+  <thead><tr><th style="width:24%">能力</th><th>实现要点</th></tr></thead>
   <tbody>
-    <tr><td>失败重试</td><td>只对可重试错误（限流、网络、5xx）重试；指数退避；重试过程以事件形式推给界面（用户能看到「在重试」而不是卡住）</td></tr>
-    <tr><td>用量统计</td><td>累计输入 / 输出 / 缓存命中 token，随运行结果一起归档 —— 成本可回溯</td></tr>
-    <tr><td>工具调用</td><td>走模型的 function calling 通道，参数以 JSON 对象返回；解析失败时（模型偶发输出非 JSON）归类为参数畸形错误并给出重试指引</td></tr>
-    <tr><td>降级</td><td>没有 API Key 时切换到启发式模型：仍走完整 Agent 循环与工具协议，产出由确定性规则给出 —— 界面与流程可以完整演示</td></tr>
+    <tr><td>失败重试</td><td>只对可重试错误（限流、网络、5xx）重试；指数退避；重试以事件推给界面（用户看到「在重试」而不是卡住）</td></tr>
+    <tr><td>用量统计</td><td>累计输入 / 输出 / 缓存命中 token，随运行结果归档 —— 成本可回溯</td></tr>
+    <tr><td>工具调用</td><td>走 function calling 通道；参数解析失败时归类为参数畸形并给出重试指引</td></tr>
+    <tr><td>降级</td><td>没有 API Key 时切到启发式模型：仍走完整 Agent 循环与工具协议，产出由确定性规则给出</td></tr>
   </tbody>
 </table>
 
-<h3>4.1.2 选型理由</h3>
-<ul>
-  <li><b>长上下文是硬需求</b>：架构分析需要跨文件理解调用链，小窗口模型会频繁触发压缩、丢失结构认知</li>
-  <li><b>缓存计价</b>：Agent 每轮都要重发系统提示与历史轨迹，缓存命中把成本与首字节延迟都压下来（本项目实测命中约 87%）</li>
-  <li><b>OpenAI 兼容协议</b>：换供应商只需改 base_url 与模型名，不绑定单一厂商</li>
-</ul>
+<h3>4.1.2 只填三项的接入设计</h3>
+<p>
+协议固定为 OpenAI 兼容，因此配置只需三项：<b>接口地址、API Key、模型名称</b>。
+其余差异都能从这三个值推出来，不需要用户选「提供商」。
+</p>
+<table>
+  <thead><tr><th style="width:26%">真实操作</th><th>系统如何处理</th></tr></thead>
+  <tbody>
+    <tr><td>贴完整请求地址<br /><code>https://x/v1/chat/completions</code></td><td>自动裁成根地址。不裁会请求 <code>/chat/completions/chat/completions</code> —— 一个会被误判成「服务挂了」的 404</td></tr>
+    <tr><td>只写域名 <code>api.x.cn/v1</code></td><td>按公网 https / 本机内网 http 自动补协议</td></tr>
+    <tr><td>自建服务用任意 Key<br />（vLLM / Ollama）</td><td>不强求 <code>sk-</code> 前缀：前缀不是任何协议的要求，强求等于把合法配置挡在门外</td></tr>
+    <tr><td>模型名写错</td><td>测试连接返回「接口可达，但列表里没有这个模型，可用：…」，并<b>不判失败</b> —— 有些服务不实现 <code>/models</code></td></tr>
+  </tbody>
+</table>
 
 <h2>4.2 Agent 循环设计</h2>
-<p>循环的骨架是四步，每一轮都留下可观察的痕迹：</p>
-
 <div class="flow">
   <span class="flow__item flow__item--brand">组装上下文</span>
   <span class="flow__arrow">→</span>
@@ -649,39 +603,41 @@ Harness 由五部分组成：
   <span class="flow__arrow">→</span>
   <span class="flow__item">观察结果入轨迹</span>
   <span class="flow__arrow">↺</span>
-  <span class="flow__item flow__item--brand">收尾（finish）</span>
+  <span class="flow__item flow__item--brand">收尾（三层核验）</span>
 </div>
 
 <h3>4.2.1 规划：把「打算怎么做」显式化</h3>
 <p>
-助手被要求用任务清单工具（<code>update_todo</code>）写下计划，并在推进中更新状态。
-这不只是为了界面好看 —— 显式计划让「读了三个文件就下结论」这种偷懒行为变得可见，
-也让用户能在中途判断方向对不对。
+助手被要求用任务清单工具（<code>update_todo</code>）写下计划并更新状态。
+显式计划让「读了三个文件就下结论」这种偷懒行为变得可见，也让用户能中途判断方向。
 </p>
 
 <h3>4.2.2 工具调用：能力按需可见</h3>
 <p>
-工具集分两档：<b>核心工具</b>进系统提示的静态前缀，随叫随到；<b>扩展工具</b>不进前缀，
-需要用检索工具先搜出来再加载其 schema。这个设计解决了两个实际问题：
+工具集分两档：<b>核心工具</b>进静态前缀，随叫随到；<b>扩展工具</b>需先检索再加载 schema。
+这解决两个实际问题：上下文占用（二十多个工具定义全量前置会吃掉可观预算）、
+选择质量（候选越少选错越少）。
 </p>
-<ul>
-  <li><b>上下文占用</b>：把二十多个工具的完整定义全部前置，会占掉可观的上下文，
-      而在一次具体任务里多数工具根本用不到</li>
-  <li><b>选择质量</b>：候选工具越少，选错工具的概率越低</li>
-</ul>
 
-<h3>4.2.3 收敛：怎么收尾是设计出来的</h3>
+<h3>4.2.3 收敛：轮次预算</h3>
 <p>
-收尾工具（<code>finish</code>）受两层约束：一是必须在总结里说明「检查了哪些范围、
-为什么足以判定」，二是它<b>永不进熔断</b> —— 否则模型被护栏锁死时会连收尾都做不到，
-结果一条产出都拿不回来。
+实测发现「撞上限」的根因不是能力不足，而是<b>模型不知道自己还剩几轮</b>。
+因此每轮把进度写进状态栏，按<b>剩余比例</b>分三档：
 </p>
+<table>
+  <thead><tr><th style="width:18%">剩余比例</th><th style="width:26%">提示强度</th><th>理由</th></tr></thead>
+  <tbody>
+    <tr><td>&gt; 40%</td><td>只报数字</td><td>不打扰，避免过早收尾</td></tr>
+    <tr><td>20%–40%</td><td>「可以开始收尾」</td><td>剩余轮次优先留给补证据与写代价，而不是继续扩大阅读</td></tr>
+    <tr><td>≤ 20%</td><td>「立刻 finish，未覆盖的写进开放问题」</td><td>半份产出比明确声明「未完成」更糟 —— 评审会以为那是全部</td></tr>
+  </tbody>
+</table>
 
 <div class="warnbox">
-  <b>踩过的坑（真实记录）。</b>早期版本的熔断用「累计被拒次数」判定，
-  一旦打开就再也不会关闭，模型被自己的护栏锁死 —— 连 <code>finish</code> 都被拒绝。
-  现在改成：判据是<b>连续</b>被拒次数（成功一次即归零），且收尾与产出类工具走前缀豁免。
-  这个 bug 的教训是：<b>护栏必须可恢复</b>，否则它就是故障源本身。
+  <b>踩过的坑（真实记录）。</b>早期熔断用「累计被拒次数」判定，一旦打开就再也不会关闭，
+  模型被自己的护栏锁死 —— 连 <code>finish</code> 都被拒绝。
+  现在改成判据是<b>连续</b>被拒次数（成功一次即归零），且收尾与产出类工具走前缀豁免。
+  教训：<b>护栏必须可恢复</b>，否则它就是故障源本身。
 </div>
 
 <h2>4.3 Prompt 工程</h2>
@@ -691,58 +647,63 @@ Harness 由五部分组成：
   <tbody>
     <tr><td>身份与目标</td><td>你最擅长什么；本次任务的判据</td><td>最先进入上下文，决定整体基调</td></tr>
     <tr><td>工具契约</td><td>核心工具定义（何时用 / 何时不用）</td><td>恒定不变，可被缓存</td></tr>
-    <tr><td>硬约束</td><td>只读边界、证据要求、不得编造行号</td><td>紧跟在目标之后，避免被具体任务细节冲淡</td></tr>
+    <tr><td>硬约束</td><td>只读边界、证据要求、不得编造行号</td><td>紧跟在目标之后，避免被任务细节冲淡</td></tr>
     <tr><td>失败兜底</td><td>读不到文件怎么办、路径不存在怎么办</td><td>没有兜底规则时模型会即兴发挥，通常发挥得不好</td></tr>
     <tr><td>风格与格式</td><td>产出字段要求、语言</td><td>放最后，不占早期注意力</td></tr>
   </tbody>
 </table>
 
 <h3>4.3.2 工具描述的三条规矩</h3>
-<ol>
-  <li><b>写「何时用」也写「何时不用」</b>：只写能力会诱使模型把它当万能工具。
-      例如「只想看结构时用符号表工具，比读全文省 token」这类反向说明，能显著降低误用。</li>
-  <li><b>数组参数必须明说</b>：光有 schema 的 <code>type: array</code> 不够 ——
-      实测模型连续多次把「只有一个条目的数组」写成裸字符串。描述里必须给出目标形态
-      （<code>['...']</code>，即使只有一项）。</li>
-  <li><b>错误信息四层</b>：类型 + 参数 + 调用栈 + 修复建议。缺任何一层，模型要么猜，要么重复同样的错误调用。</li>
-</ol>
+<ul>
+  <li><b>必须写「何时不用」</b>：只写能干什么，模型会在不合适的场景使用它</li>
+  <li><b>数组参数要在描述里明说</b>：schema 声明 <code>type: array</code> 不够 ——
+      实测模型连续 5 次把数组字段填成字符串。描述必须写「数组，每项一个…」</li>
+  <li><b>错误信息给出目标形态</b>：不只是「类型错误」，而是「即使只有一项也要写成 <code>['…']</code>」</li>
+</ul>
 
-<div class="keybox">
-  <b>一条被实测逼出来的纪律。</b>工具层<b>不做静默类型转换</b>。
-  把字符串自动包成数组看起来「贴心」，但它掩盖了模型的表达错误，
-  下次换个字段还会犯；正确做法是拒绝并在错误信息里给出目标形态。
-  这个原则同样适用于产出层：宁可让运行失败并说明原因，也不要生成一份看起来正常的错误数据。
+<h3>4.3.3 用「照妖镜」防背诵式作答</h3>
+<p>
+架构助手最典型的失败是「背架构图」：把教科书里的通用结构套上去，而不是读代码。
+因此在任务说明里直接点出该仓库的照妖镜，例如对 requests：
+</p>
+<div class="warnbox">
+  requests 本身<b>不实现重试</b>，重试在 urllib3 的 <code>Retry</code>。
+  如果你的方案里出现了「重试层」，说明你没读代码。
 </div>
+<p>
+评估时这条会被机器检查：参考蓝图里声明了 <code>must_not_contain</code>，
+命中的组件会被单独告警 —— 这类「多报了一个不该有的东西」靠精确率抓不住重点。
+</p>
 
 <h2>4.4 工具接口设计</h2>
 <table>
-  <thead><tr><th style="width:24%">工具</th><th style="width:30%">作用</th><th>设计要点</th></tr></thead>
+  <thead><tr><th style="width:24%">工具</th><th style="width:26%">作用</th><th>设计要点</th></tr></thead>
   <tbody>
     <tr><td><code>list_files</code></td><td>列目录</td><td>目录不存在显式失败（不是「没有匹配」）；跳过点目录与依赖目录</td></tr>
     <tr><td><code>read_file</code></td><td>读文件（带行号）</td><td>支持分段；行号前缀为证据引用服务；offset 越界显式报错</td></tr>
-    <tr><td><code>grep</code></td><td>正则搜索</td><td>非法正则给出转义提示；命中上限提示「结果不完整」而不静默截断</td></tr>
+    <tr><td><code>grep</code></td><td>正则搜索</td><td>非法正则给转义提示；命中上限提示「结果不完整」而不静默截断</td></tr>
     <tr><td><code>read_symbols</code></td><td>符号表（函数/类清单）</td><td>建立结构认知的高性价比手段，避免通读全文</td></tr>
+    <tr><td><b><code>sketch</code></b></td><td>一次 ast 扫描出全仓结构</td><td>两阶段的第一步：先拿结构再判断。逐文件读会读完之前用完轮次预算</td></tr>
     <tr><td><code>git_diff</code></td><td>看变更</td><td>审查场景的起点：只看改动比通读全仓更有效率</td></tr>
     <tr><td><code>discover_tools</code></td><td>检索扩展工具</td><td>渐进披露的入口；按需求检索而非全量列举</td></tr>
-    <tr><td><code>record_*</code></td><td>登记产出（发现/层/组件/决策/问题）</td><td>边确认边登记，不攒到最后；同名去重</td></tr>
+    <tr><td><code>record_*</code></td><td>登记产出（发现/层/组件/决策/问题）</td><td>边确认边登记；同名去重；数组参数在描述里明说</td></tr>
     <tr><td><code>update_todo</code></td><td>任务清单</td><td>让计划可见、可纠偏</td></tr>
     <tr><td><code>finish</code></td><td>收尾</td><td>必须写范围与理由；统计口径随产出形态变化</td></tr>
   </tbody>
 </table>
 
 <h2>4.5 上下文预算与压缩</h2>
-<p>
-长任务会超出上下文窗口，因此需要预算管理：
-</p>
 <ul>
   <li><b>预算对象</b>统计静态前缀、历史轨迹与工具输出的 token 占用</li>
-  <li><b>压缩触发</b>：占用达到窗口的 80% 时，对较早的工具输出做摘要化处理，保留结论与证据，丢弃大段原文</li>
-  <li><b>截断提示</b>：单个工具输出过大时落盘并在上下文里只给摘要与路径，同时明确标注「已截断」，避免模型以为拿到了全部</li>
+  <li><b>压缩触发</b>：占用达窗口 80% 时，对较早的工具输出做摘要化，保留结论与证据，丢弃大段原文</li>
+  <li><b>截断提示</b>：单个输出过大时落盘并在上下文里只给摘要与路径，同时明确标注「已截断」，避免模型以为拿到了全部</li>
+  <li><b>统一硬上限</b>：读文件、搜索、列表全部有显式上限，且**上限生效时必然告知** ——
+      静默截断会让模型得出「全仓都没有」的假结论</li>
 </ul>
 
 <h2>4.6 缓存感知的上下文结构</h2>
 <p>
-这是本项目在成本与延迟上的关键优化，做法本身很简单，但需要纪律来维持：
+这是成本与延迟上的关键优化，做法简单但需要纪律维持：
 </p>
 
 <div class="grid2">
@@ -753,265 +714,315 @@ Harness 由五部分组成：
   </div>
   <div class="note">
     <b>为什么有效</b><br />
-    主流模型服务按「前缀相同的最长部分」计费与加速。前缀稳定时，
-    每轮只有尾部新增部分需要重新计算 —— 本项目实测 KV 缓存命中约 <b>87%</b>，
-    同时降低了单轮延迟与成本。
+    主流模型服务按「前缀相同的最长部分」计费与加速。前缀稳定时，每轮只有尾部新增部分
+    需要重新计算 —— 本项目实测 KV 缓存命中约 <b>87%</b>。
   </div>
 </div>
 
 <div class="warnbox">
-  <b>维持这条纪律的难点。</b>「把当前时间放进系统提示」是很自然的写法，但它会让前缀
-  每轮都变，缓存全部失效。因此项目里把这类信息统一交给「运行时状态栏」追加在轨迹尾部，
-  并以自检方式暴露前缀指纹，防止有人顺手破坏这个不变量。
+  <b>维持这条纪律的难点。</b>「把当前时间放进系统提示」是很自然的写法，但它会让前缀每轮都变，
+  缓存全部失效。因此这类信息统一由「运行时状态栏」追加在轨迹尾部，
+  并以自检方式暴露前缀指纹，防止后续改动无意破坏这个不变量。
 </div>
 
 <h2>4.7 AI 安全与可控性</h2>
-<p>模型会犯错，也会被诱导。以下四类护栏分别对应四种失控模式：</p>
-
 <table>
-  <thead><tr><th style="width:22%">失控模式</th><th style="width:26%">护栏</th><th>恢复路径</th></tr></thead>
+  <thead><tr><th style="width:22%">失控模式</th><th style="width:34%">护栏</th><th>实现要点</th></tr></thead>
   <tbody>
-    <tr>
-      <td>陷入循环<br />（反复调用同一个工具）</td>
-      <td>重复调用检测：连续 N 次相同调用即拒绝</td>
-      <td>拒绝信息明确告知「换个思路」；计数<b>连续</b>语义，换工具即归零</td>
-    </tr>
-    <tr>
-      <td>无限探索<br />（读不完的仓库）</td>
-      <td>迭代上限（硬约束）</td>
-      <td>达到上限时如实标注「未收尾，结论可能不完整」，而不是假装完成</td>
-    </tr>
-    <tr>
-      <td>越权操作<br />（不该改的代码被改）</td>
-      <td>只读助手硬契约 + 命令白名单 + 高风险工具需显式开关</td>
-      <td>声明与能力不符时运行直接失败，暴露问题而不是静默放行</td>
-    </tr>
-    <tr>
-      <td>编造证据<br />（引用不存在的行号）</td>
-      <td>引用核验：结论中的 <code>file:line</code> 若不在本次读过的文件集合里，标为待复核</td>
-      <td>核验结果作为告警单列，不混进「发现」里冒充结论</td>
-    </tr>
+    <tr><td>死循环</td><td>迭代上限 + 重复调用检测</td><td>连续相同工具与参数 N 次即判定陷入循环，强制收尾</td></tr>
+    <tr><td>越界读写</td><td>路径围栏</td><td>所有路径 resolve 后校验必须位于工作区内；符号名也做同样校验</td></tr>
+    <tr><td>危险命令</td><td>命令白名单 + 风险分级</td><td>不在白名单的命令直接拒绝；高风险工具需显式开关</td></tr>
+    <tr><td>密钥外泄</td><td>路径拦截</td><td><code>.env</code>、私钥、凭据文件在读取层被拦下</td></tr>
+    <tr><td>声明与能力脱钩</td><td>只读硬契约</td><td>声明只读的助手若注册写工具，<b>运行会在启动时直接失败</b>，而不是靠自觉</td></tr>
+    <tr><td>静默失败</td><td>显式失败信封</td><td>错误含类型、参数、调用栈与建议四层</td></tr>
   </tbody>
 </table>
 
-<h3>4.7.1 敏感信息与越界</h3>
-<ul class="tight">
-  <li><b>密钥文件护栏在工具层</b>：模型的读结果会进入上下文与报告，只挡浏览器是不够的</li>
-  <li><b>路径逃逸防护</b>：工作区解析统一收口，<code>..</code>、绝对路径、技能目录逃逸均拒绝</li>
-  <li><b>范围校验在服务端</b>：前端传什么都不能决定边界；越界项丢弃且不回显原文到模型上下文</li>
-  <li><b>只读助手的能力边界</b>：不注册任何中高风险工具，且由运行时检查兜底</li>
-</ul>
-
 <h2>4.8 规则与模型的交叉验证</h2>
 <p>
-本项目有一组确定性规则集（可检出硬编码密钥、危险函数调用、资源未释放等可判定的模式）。
-它的作用有两个，第二个才是关键：
+「能确定性判定的就不交给模型」—— 规则集既独立产出，又作为模型结果的验证器：
+规则命中而模型未报标为疑似漏报，两者都报则提高置信度。
+实测中这一机制把规则难以覆盖的语义类缺陷与模型容易忽略的机械模式各自补齐。
 </p>
-<ol>
-  <li>不接模型时也能产出（离线模式的基础）</li>
-  <li><b>作为模型结果的交叉验证器</b>：规则命中但模型没报 → 标记为疑似漏报；
-      两者都报 → 提高置信度。这是「能确定性判定的就不交给模型」这条原则的落地</li>
-</ol>
-
-<div class="keybox">
-  <b>为什么这是本项目的核心判断。</b>
-  语言模型的强项是语义理解与跨文件推理，弱项是精确的机械判定（某一行是否包含某个模式）。
-  把后者交给规则，前者交给模型，两边互相校验 ——
-  既避免了「用模型做正则的活」这种浪费，也让产出多了一道可验证的关口。
-</div>
 
 <h2>4.9 结构化产出</h2>
 <p>
-所有产出通过工具登记，参数即 schema。这样做的直接收益是：<b>模型不需要「写出一份格式正确的报告」，
-它只需要填字段</b>；渲染、归档、评估都基于结构，而不是解析自由文本。
+产出不是自由文本，而是有 schema 的结构化数据，落进按类型分桶的容器：
+</p>
+<table>
+  <thead><tr><th style="width:20%">助手</th><th style="width:22%">产出形态</th><th>字段</th></tr></thead>
+  <tbody>
+    <tr><td>代码审查</td><td><code>findings</code></td><td>severity · file · line · title · detail · evidence · fix · diff</td></tr>
+    <tr><td>架构设计</td><td><code>blueprint</code></td><td>layer（名称/职责/证据）· component（职责/依赖/失效模式/证据）· decision（决策/备选/代价/证据）· open_question（问题/影响/是否阻塞）</td></tr>
+  </tbody>
+</table>
+<p>
+结构化带来三个直接好处：前端能按形态渲染；产出能被机械核验（见 4.10）；
+评估可以逐条比对答案键。
 </p>
 
-<pre><code>record_component(
-  name        = "session",                  # 组件名
-  layer       = "会话编排层",                # 所属层（必须先登记层）
-  role        = "跨请求状态容器 + 请求编排",
-  interfaces  = ["GET /users/{id}", ...],   # 数组：每项一个接口
-  depends_on  = ["http-adapter", ...],      # 数组：每项一个已登记组件名
-  failure_modes = ["连接池耗尽时排队直到超时"],  # 数组：每项一种失效后果
-  rationale   = "为什么这样切"                # 必填的实质内容
-)</code></pre>
+<h2>4.10 三层质量约束：确定性核验 → 独立判官 → 证据审查</h2>
+<p class="lead">
+本节是本项目在 AI 可靠性上的核心工作。三层按<b>成本从低到高</b>排列，前一层的输出是后一层的输入 ——
+先用零成本的方式把明显站不住的挡掉，再花钱让模型复核剩下的。
+</p>
 
-<p>产出层的两条质量约束：</p>
-<ul>
-  <li><b>依赖名对齐</b>：登记组件时把 <code>depends_on</code> 按「忽略大小写与首尾空格」
-      对齐到已登记组件的规范名，自依赖直接剔除，未登记的名字在回复里点名。
-      否则前端画连线时找不到目标，图上就会缺一条边 —— 这种「图缺了一块」极难事后发现。</li>
-  <li><b>未知形态兜底</b>：渲染层对不认识的产出按字段原样列出，不假装它是已知形态</li>
-</ul>
+<div class="flow">
+  <span class="flow__item flow__item--brand">模型产出</span>
+  <span class="flow__arrow">→</span>
+  <span class="flow__item">① 位置真实性核验<br /><span class="mono">0 成本 · 确定性</span></span>
+  <span class="flow__arrow">→</span>
+  <span class="flow__item">② 独立判官复核<br /><span class="mono">1 次模型调用</span></span>
+  <span class="flow__arrow">→</span>
+  <span class="flow__item flow__item--brand">③ 证据与权衡审查<br /><span class="mono">0 成本 · 确定性</span></span>
+</div>
+
+<h3>4.10.1 第一层：位置真实性核验（零成本，确定性）</h3>
+<p>
+最初的 <code>verify_citations</code> 只核对「引用的文件读过没有」，不核对
+<b>「引用的那一行是否真的在支撑这条描述」</b>。这正是「看似专业但其实错」的软肋。
+现在直接读真实文件判断，三条判据（任一成立即通过）：
+</p>
+<ol class="tight">
+  <li>引用行里出现了描述中的技术线索（关键词族，如 shell / 加密 / 资源释放 / 越权）</li>
+  <li>引用行邻近上下文里出现了该线索（缺陷常写跨多行表达式）</li>
+  <li>引用行含描述提到的标识符（函数名、变量名）</li>
+</ol>
+<p>
+行号越界（文件被改写或纯编造）、文件不存在、指向空行或纯注释，一律判不可信。
+这条判据是<b>实测出来的，不是想出来的</b>：
+</p>
+<div class="warnbox">
+  <b>三轮修正记录。</b>第一版对 4 条人工构造的假发现只拦住 1 条 ——
+  原因是关键词族里放进了裸的「query」「拼接」，它们也出现在无关描述里。
+  收紧后仍有 1 条漏过（指向空行，却靠邻域里的线索蒙混过关）。
+  最终判据改为「线索命中<b>且</b>引用行本身不是结构行」才 4/4 全部拒绝，
+  同时保证 20 条真实发现零误杀。
+</div>
+
+<h3>4.10.2 第二层：独立判官（只删不加）</h3>
+<p>
+运行收尾前，把每条发现连同它引用的<b>真实代码（带行号）</b>交给一次独立判断：
+只问「这段代码能证明这个结论吗」，答 drop 或 keep。
+</p>
+<table>
+  <thead><tr><th style="width:26%">设计约束</th><th>理由</th></tr></thead>
+  <tbody>
+    <tr><td><b>只删不加</b></td><td>让判官既能删又能加，等于把审查者与被审者合成一个角色 —— 正是共享盲区</td></tr>
+    <tr><td><b>先做位置核验再送判官</b></td><td>位置站不住的发现不进判官：省 token，也避免对着无关代码猜</td></tr>
+    <tr><td><b>失败即保留全部</b></td><td>判官是降低误报的增强项，不是正确性前提。它挂了就清空结果，会把一次网络抖动放大成「什么都没查到」</td></tr>
+    <tr><td><b>输出不可解析也保留全部</b></td><td>漏判不等于判错</td></tr>
+  </tbody>
+</table>
+
+<p>
+实测效果：在 <code>vulnerable-service</code> 上，两条「结论与代码相反」的假发现被准确剔除，
+并给出具体理由（「第 22 行已是 <code>max(0, ...)</code>，已有下界保护」）；
+20 条真实发现零误杀，耗时 7.3 秒。
+</p>
+
+<div class="keybox">
+  <b>一个必须记下的发现：判官口径与标注口径并不相同。</b>
+  在边界条件靶场上，判官删掉了两条真实缺陷，理由是「<code>LIMIT - hits</code> 返回负数在数学上是对的」
+  「闭区间是设计选择」。判官按<b>「代码是否写错」</b>判断，而标注按<b>「前提是否被约束」</b>判断 ——
+  两者不同维度。于是加了一道确定性闸：低置信度提示只有在判官明确指出
+  「代码里没有这回事」时才允许删，其余情况保留。修正后召回从 80% 回到 86%，精确率不变。
+</div>
+
+<h3>4.10.3 第三层：证据与权衡审查（零成本，确定性）</h3>
+<p>
+架构产出的性质与缺陷不同：它说的是「这个层 / 组件存在于这里」，关键词族对不上。
+因此换判据，但沿用同一个原则 —— <b>能确定性判定的绝不交给模型</b>。
+</p>
+
+<h4>证据核验</h4>
+<p>
+四类产出（层 / 组件 / 决策 / 开放问题）都带 <code>evidence</code> 字段，格式是完整相对路径加行号。
+三档核验结果：
+</p>
+<table>
+  <thead><tr><th style="width:14%">状态</th><th style="width:34%">含义</th><th>处理</th></tr></thead>
+  <tbody>
+    <tr><td><b>ok</b></td><td>路径存在、行号在范围内、指向代码而非空行/注释</td><td>计入「可精确定位」</td></tr>
+    <tr><td><b>weak</b></td><td>只有文件名（需补全路径），或指向空行与纯注释</td><td>提示补全，不判死 —— 有些架构事实确实由注释声明</td></tr>
+    <tr><td><b>bad</b></td><td>文件不存在或行号越界</td><td>这条产出没有依据</td></tr>
+  </tbody>
+</table>
+<p>
+「没给证据」与「证据是错的」<b>分开统计</b>：前者是遗漏，后者是编造，性质不同。
+</p>
+
+<h4>权衡真实性</h4>
+<p>
+业界公认最难识别的失败模式：模型能为任何选择写出流畅理由，把「单纯的偏好」包装成
+「严谨的权衡」—— 表面过关，底下没通过。两条确定性规则逼近它：
+</p>
+<ol class="tight">
+  <li><code>consequences</code> 必须含负面信号；只有好处没有代价的选择，通常不是选择，而是还没想清楚</li>
+  <li><code>alternatives</code> 里至少有一条写出了<b>它自己的优点</b> —— 只有缺点的备选是稻草人</li>
+</ol>
+<div class="warnbox">
+  <b>这条检查也被真实产出打过脸。</b>初版只查「成本 / 风险 / 复杂度」这类名词，
+  结果在 requests 案例上把 4 条写得很好的决策全判成「只写好处」。原文是这样的：
+  「依赖图里是假边：只在类型检查期存在，运行时不存在」「必须穷举 urllib3 各版本的异常类型」
+  「多线程共享同一 Session 时无锁保护」—— 一句「成本」都没有，但都是实打实的代价。
+  于是改成三条件联合（没有负面词 <b>且</b> 没有转折结构 <b>且</b> 短到不像认真写过），
+  并把稻草人判据从「逐条备选都要有优点」改成「整条决策至少一条有优点」。
+  修正后三案 21 条决策零误报，同时四类真问题仍全部能抓到。
+</div>
+
+<h3 style="break-after: avoid; page-break-after: avoid;">4.10.4 三层合起来的效果</h3>
+<table>
+  <thead><tr><th style="width:26%">指标</th><th style="width:24%">改造前</th><th>改造后</th></tr></thead>
+  <tbody>
+    <tr><td>架构证据可精确定位率</td><td>9%（55 处引用仅 5 处写全路径）</td><td><b>95%–99%</b>（三案例实测）</td></tr>
+    <tr><td>编造/错位引用</td><td>未检测</td><td>0（bad 计数为 0）</td></tr>
+    <tr><td>小靶场精确率</td><td>76%</td><td>76%（小样本本就没有多少误报可删）</td></tr>
+    <tr><td>小靶场召回</td><td>86%</td><td>86%（加低置信度保护前会掉到 80%）</td></tr>
+    <tr><td>架构依赖边 F1</td><td>—</td><td>19%–88%（按案例差异大，与参考蓝图完整度强相关）</td></tr>
+  </tbody>
+</table>
+<div class="keybox">
+  <b>诚实结论：</b>三层核验在<b>大样本</b>上收益明显（证据可核验率从 9% 提到 95% 以上），
+  在<b>小样本</b>上几乎无收益（小样本误报本来就少），但会带来误删风险 —— 所以低置信度保护是必要防线。
+  不夸大它，也不因为「没测出提升」就撤掉它。
+</div>
 
 <!-- ==================== 5 核心功能实现 ==================== -->
 <h1 class="chapter"><span class="num">5</span>核心功能实现</h1>
 
 <h2>5.1 代码审查助手</h2>
-
-<h3>5.1.1 工作流程</h3>
+<p>一次审查的完整链路：</p>
 <div class="flow">
-  <span class="flow__item flow__item--brand">选定仓库与范围</span>
+  <span class="flow__item flow__item--brand">选仓库</span>
   <span class="flow__arrow">→</span>
-  <span class="flow__item">看变更（git_diff）</span>
+  <span class="flow__item">描述重点 / 勾选范围</span>
   <span class="flow__arrow">→</span>
-  <span class="flow__item">读文件 / 搜符号</span>
+  <span class="flow__item">运行（可实时观察）</span>
   <span class="flow__arrow">→</span>
-  <span class="flow__item">登记发现</span>
+  <span class="flow__item">三层核验</span>
   <span class="flow__arrow">→</span>
-  <span class="flow__item">规则交叉验证</span>
-  <span class="flow__arrow">→</span>
-  <span class="flow__item flow__item--brand">收尾报告</span>
+  <span class="flow__item flow__item--brand">发现列表 + 可回放</span>
 </div>
-
-<h3>5.1.2 发现的结构</h3>
-<table>
-  <thead><tr><th style="width:20%">字段</th><th>说明</th></tr></thead>
-  <tbody>
-    <tr><td>严重级</td><td>阻断 / 警告 / 建议（三级；前端按级筛选）</td></tr>
-    <tr><td>位置</td><td>文件 + 行号 —— 必须指向缺陷所在行，可直接跳转</td></tr>
-    <tr><td>标题 / 说明</td><td>一句话结论 + 具体展开</td></tr>
-    <tr><td>证据</td><td>为什么判定为缺陷（引用代码、说明触发条件）</td></tr>
-  </tbody>
-</table>
-
-<h3>5.1.3 让产出可信的三个机制</h3>
-<ul>
-  <li><b>证据必填</b>：没有证据的发现无法登记，从工具层杜绝「我觉得这里有问题」</li>
-  <li><b>引用核验</b>：登记后核验引用的行号是否真在本次读过的文件里，否则单列为待复核告警</li>
-  <li><b>规则交叉验证</b>：确定性规则命中的模式若模型未报，标记疑似漏报</li>
-</ul>
+<p>
+每条发现都带：严重级别、文件与行号、复现证据、修复建议，若涉及代码改动还会给出建议 diff。
+列表支持按严重级别筛选，计数随产出实时增长。
+</p>
 
 <h2>5.2 架构设计助手</h2>
-
-<h3>5.2.1 产出形态</h3>
-<p>架构助手的产出不是一段描述，而是四类结构化条目：</p>
+<p>
+架构助手是<b>只读</b>的（<code>can_edit=False</code>），工具集里没有写工具 ——
+这是硬契约，声明与能力不允许脱钩。产出为分层蓝图：
+</p>
 <table>
-  <thead><tr><th style="width:22%">产出</th><th>内容</th></tr></thead>
+  <thead><tr><th style="width:20%">产出</th><th>要求</th></tr></thead>
   <tbody>
-    <tr><td><b>分层</b></td><td>每一层的名称、职责、边界提示</td></tr>
-    <tr><td><b>组件</b></td><td>所属层、角色、职责、对外接口、依赖、失效后果、切分理由</td></tr>
-    <tr><td><b>关键决策</b></td><td>选了什么 + 为什么 + <b>放弃了什么及代价</b></td></tr>
-    <tr><td><b>开放问题</b></td><td>当前无法确定、需要人来定的问题（可标记是否阻塞）</td></tr>
+    <tr><td>分层</td><td>每层说清「负责什么」与「<b>不负责什么</b>」；层数宜少不宜多，超过 5 层通常是误把模块当层</td></tr>
+    <tr><td>组件</td><td>必须写「为什么这样切」；依赖只写已确认存在的</td></tr>
+    <tr><td>决策</td><td>必须写<b>放弃了什么</b>与代价；「先这样以后再改」尤其要留下当时的前提</td></tr>
+    <tr><td>开放问题</td><td>不确定的必须登记，不许用肯定语气掩盖</td></tr>
   </tbody>
 </table>
+<p>
+界面把四条产出的代码依据做成可复制的路径标签，底部是证据核验面板
+（可精确定位率、ok/weak/bad 分布条、分类型明细、问题清单）。
+</p>
 
-<div class="keybox">
-  <b>为什么强调「放弃了什么」。</b>只写「我们选了 A」的文档无法评审 ——
-  评审要讨论的正是被放弃的那条路。因此决策记录强制包含备选方案与代价，
-  这让蓝图从「介绍现状」变成「可供讨论的方案」。
+<h2>5.3 增量审查</h2>
+<p>
+商用审查工具的真实工作模式是<b>只审 PR 改动</b>。本项目实现为：
+</p>
+<div class="flow">
+  <span class="flow__item flow__item--brand">解析 unified diff</span>
+  <span class="flow__arrow">→</span>
+  <span class="flow__item">抽被改符号</span>
+  <span class="flow__arrow">→</span>
+  <span class="flow__item">grep 反查调用点</span>
+  <span class="flow__arrow">→</span>
+  <span class="flow__item flow__item--brand">合成审查简报</span>
+</div>
+<p>
+关键设计：<b>只定位不判断</b>（判断归模型、判定归判官），以及
+<b>反查改动之外的调用点</b> —— 这是增量审查最有价值的部分，
+因为作者往往没打开那些文件。实测改动一个函数后，准确找出了未在 diff 中的调用点。
+</p>
+<div class="warnbox">
+  <b>拿不到 diff 必须报错，不能静默退化成全仓审查。</b>
+  用户以为自己在审增量、实际审了全仓，这种偏差比报错难发现得多。
 </div>
 
-<h3>5.2.2 分层图的可读化</h3>
-<p>把结构画成图容易，画得可读不容易。实现中处理了这些细节：</p>
-<ul class="tight">
-  <li><b>层名走左侧栏位</b>：节点排在右侧。否则跨层连线必然横穿每层的说明文字</li>
-  <li><b>连线走廊实测</b>：跨层竖线走在「层名栏位与节点区之间的缝」，缝宽由 DOM 实测而来
-      （写死数值或不按栏位宽计算，窄屏下竖线会压进层名文字）</li>
-  <li><b>横段走空隙中线</b>：节点行之间留有间隔，横线取其中心，保证上下都有净空，
-      既不穿节点也不出层</li>
-  <li><b>同层连线的两种走法</b>：同行且中间不夹节点走「短 U 形」；否则走走廊直角折线 ——
-      固定下沉量的浅弧会从换行后的第二个节点身上穿过去</li>
-  <li><b>线型携带信息</b>：同层实线、跨层虚线（图例标明）</li>
+<h2>5.4 多助手隔离</h2>
+<p>
+「可插拔」若只是切换图标，会产生一类难发现的问题：切到架构助手，侧栏里还是审查记录。
+本项目从三处隔离：
+</p>
+<ul>
+  <li><b>服务端过滤</b>：<code>/api/runs?agent=</code> 与 <code>/api/repos?agent=</code>，各自只返回自己的记录</li>
+  <li><b>计数同口径</b>：仓库卡上的运行次数与会话列表必须用同一处过滤逻辑，否则会出现「写着 5 次却点不出来」</li>
+  <li><b>正文归属</b>：正文区归当前选中的那一条会话独占，切换时先清空再加载，避免两次运行的内容拼接</li>
 </ul>
 
-<h2>5.3 多助手隔离</h2>
-<p>「一个工作台 + 多个助手」最容易出的问题是串台。本项目在四个位置做了隔离：</p>
+<h2>5.5 账号与会话安全</h2>
 <table>
-  <thead><tr><th style="width:24%">位置</th><th>规则</th></tr></thead>
+  <thead><tr><th style="width:22%">项</th><th>实现</th></tr></thead>
   <tbody>
-    <tr><td>正文归属</td><td>工作区正文归「当前选中的那一条会话」独占；切会话或新建任务先清空再渲染</td></tr>
-    <tr><td>历史过滤</td><td>助手运行列表与仓库计数在<b>服务端</b>按助手过滤，且两处用同一个口径
-        （否则会出现「写着 5 次却点不出来」）</td></tr>
-    <tr><td>未知助手</td><td>一律显式报错并附可用清单，绝不静默回退到审查助手 ——
-        「选错助手却跑出一份完整结果」比直接报错难发现得多</td></tr>
-    <tr><td>演示数据</td><td>每个助手一套演示数据；没有完整记录的会话如实说明，不假装有内容</td></tr>
+    <tr><td>密码存储</td><td>scrypt（n=2<sup>14</sup>, r=8, p=1）+ 每账号随机盐，存 <code>scrypt$n$r$p$salt$hash</code></td></tr>
+    <tr><td>比较方式</td><td><code>hmac.compare_digest</code> 常量时间比较，防时序攻击</td></tr>
+    <tr><td>登录失败</td><td>不区分「用户不存在」与「密码错误」—— 否则接口变成账号枚举器；连续失败 5 次锁 60 秒</td></tr>
+    <tr><td>会话</td><td>只存服务端内存，Cookie 为 HttpOnly + SameSite=Strict；<b>刻意不加 Secure</b>（本机 http 加了浏览器就不发送），注释里写明对外服务必须同时上 HTTPS</td></tr>
+    <tr><td>落盘</td><td>账号表原子替换写入；文件损坏时改名留档而非静默清空</td></tr>
   </tbody>
 </table>
 
-<h2>5.4 账号与会话安全</h2>
+<h2>5.6 前端设计系统</h2>
+<p>
+视觉方向是「玻璃仪表台」。核心是一条结构性规则，而非审美偏好：
+</p>
 <table>
-  <thead><tr><th style="width:26%">环节</th><th>实现</th></tr></thead>
+  <thead><tr><th style="width:22%">材质</th><th style="width:34%">用在哪</th><th>为什么</th></tr></thead>
   <tbody>
-    <tr><td>密码存储</td><td>scrypt（n=2¹⁴ / r=8 / p=1）+ 每账号独立随机盐，存
-        <code>scrypt$n$r$p$salt$hash</code>；比较用恒定时间函数；明文不落盘</td></tr>
-    <tr><td>登录防护</td><td>失败不区分「账号不存在」与「密码错」（防账号枚举）；
-        失败时也执行一次哈希运算以避免时间差泄漏；连续失败达阈值后短期锁定</td></tr>
-    <tr><td>会话</td><td>令牌只存服务端内存；Cookie 为 HttpOnly + SameSite=Strict；
-        退出时服务端吊销（不是仅清前端标记）</td></tr>
-    <tr><td>存储健壮性</td><td>账号文件原子写入（临时文件 + 替换），避免进程中断留下半截 JSON；
-        文件损坏时改名留档而不是静默清空</td></tr>
-    <tr><td>访问控制</td><td>默认不强制登录（本机工具直开即用）；开启后业务接口要求有效会话，
-        未登录返回 401 并带登录页地址，前端自动跳转</td></tr>
+    <tr><td><b>玻璃</b><br />blur + 上缘内高光 + 发丝边界</td><td>顶栏、输入坞、模型菜单、弹层、运行条</td><td>这些是「浮在内容之上」的东西</td></tr>
+    <tr><td><b>实体</b><br />实心表面 + 1px 边界</td><td>发现卡、工具步、计划项、蓝图节点</td><td>这些是「内容本身」</td></tr>
   </tbody>
 </table>
-
-<div class="warnbox">
-  <b>一个关于演示账号的工程细节。</b>测试账号的密码在「前端常量」与「后端种子」两处出现，
-  任何一处漂移的后果都很具体：<b>用户照着页面上写的密码登录会失败</b>。
-  因此页面上的提示文本由前端常量渲染（不硬编码第三处），并加了一条测试把两处钉死 ——
-  改一处忘了另一处，测试立刻失败。
+<div class="keybox">
+  <b>为什么不能全用玻璃：</b>毛玻璃铺满每个卡片，层级就全平了 —— 屏幕上所有东西都在发虚光，
+  眼睛找不到落点。这条规则写在贡献指南里，并有测试断言守着。
 </div>
-
-<h2>5.5 前端设计系统</h2>
-<table>
-  <thead><tr><th style="width:24%">方面</th><th>实现</th></tr></thead>
-  <tbody>
-    <tr><td>设计令牌</td><td>颜色、间距、字体、层级全部走 CSS 自定义属性；改主题只改令牌</td></tr>
-    <tr><td>强调色分层</td><td><code>--agent</code>（属于「这条运行 / 这个助手」）与
-        <code>--accent</code>（属于「这个产品」）分开；助手切换只改前者</td></tr>
-    <tr><td>响应式</td><td>三档断点（宽屏 / 中屏 / 窄屏 ≤900px 抽屉化）；最小验证到 430px</td></tr>
-    <tr><td>可访问性</td><td>图标按钮有 <code>aria-label</code>；动态内容有 <code>role="status"</code>；
-        折叠操作有 <code>aria-expanded</code>；表单错误用 <code>aria-invalid</code> + 关联错误文本</td></tr>
-    <tr><td>空态与失败</td><td>空态文案按助手方言区分（「还没有审查记录」/「还没有设计记录」）；
-        失败显式提示且给恢复路径，不显示假数据</td></tr>
-  </tbody>
-</table>
+<p>
+配套：深色为默认、浅色是同构覆盖（不是两套样式）；字体三族分工（Sora / Instrument Sans /
+JetBrains Mono）；数字一律 tabular-nums；过渡只命名改变的属性，禁止 <code>transition: all</code>；
+图标按钮视觉 36px、热区补到 44px。
+</p>
 
 <!-- ==================== 6 测试与部署 ==================== -->
 <h1 class="chapter"><span class="num">6</span>测试与部署</h1>
 
 <h2>6.1 测试体系</h2>
-<div class="kpi">
-  <div class="kpi__item"><div class="kpi__num">175</div><div class="kpi__label">回归测试项（全绿）</div></div>
-  <div class="kpi__item"><div class="kpi__num">0</div><div class="kpi__label">跳过的测试</div></div>
-  <div class="kpi__item"><div class="kpi__num">~13s</div><div class="kpi__label">全量测试耗时</div></div>
-</div>
-
+<p>
+282 项回归测试，覆盖四类：
+</p>
 <table>
-  <thead><tr><th style="width:26%">测试文件</th><th style="width:14%">规模</th><th>覆盖内容</th></tr></thead>
+  <thead><tr><th style="width:22%">类别</th><th style="width:14%">数量</th><th>代表内容</th></tr></thead>
   <tbody>
-    <tr><td><code>test_harness.py</code></td><td>主套件</td><td>主循环、上下文、工具、护栏、规则集、评估数据加载</td></tr>
-    <tr><td><code>test_server.py</code></td><td>服务层</td><td>真起 HTTP 服务的集成测试：路由、范围校验、归档、不泄漏密钥</td></tr>
-    <tr><td><code>test_agents.py</code></td><td>平台层</td><td>助手注册表、产出分桶、渲染分派、工具 schema 一致性、参数健壮性</td></tr>
-    <tr><td><code>test_tools_common.py</code></td><td>工具层</td><td>9 个公共工具的行为（路径逃逸 / 密钥拦截 / 分段 / 非法正则 / 目录不存在 / 白名单）+ SSE 集成</td></tr>
-    <tr><td><code>test_auth.py</code></td><td>认证层</td><td>哈希不落明文、账号枚举防护、限流、会话生命周期、HTTP 往返、强制登录模式</td></tr>
+    <tr><td>运行时内核</td><td>约 120</td><td>主循环、上下文压缩、熔断可恢复、类型分桶、跳过与中断</td></tr>
+    <tr><td>工具与安全</td><td>约 45</td><td>路径逃逸、密钥拦截、非法正则、命令白名单、目录不存在</td></tr>
+    <tr><td>三层核验</td><td>约 35</td><td>位置核验（假发现必须拒绝、真发现不能误杀）、判官（失败保留全部）、权衡真实性</td></tr>
+    <tr><td>服务与前端契约</td><td>约 80</td><td>SSE 补发与终止、配置读写、前端不许有假数据、id 必须存在、玻璃只给浮层</td></tr>
   </tbody>
 </table>
+<p>测试密度偏高是因为大部分 bug 出在<b>边界条件与失败路径</b>上，而这两类恰恰是手工点不出来的。</p>
 
-<h3>6.1.1 两条被测试守住的纪律</h3>
-<div class="grid2">
-  <div class="note">
-    <b>标注隔离</b><br />
-    评估靶场的答案标注绝不能出现在被审计的代码里 —— 答案印在题目下面，指标就是假的。
-    有一条测试遍历所有靶场，检查代码里没有泄漏标注。
-  </div>
-  <div class="note">
-    <b>失败不伪装</b><br />
-    「目录不存在」被说成「没有匹配内容」会驱动假阴性结论。
-    有一条测试断言这类情况必须显式失败并给出修复建议。
-  </div>
+<div class="note">
+  <b>前端契约测试的写法值得说明。</b>它读文件、找字符串、算对比度，看起来很笨，
+  但每条都对应一个真实发生过的问题：假数据回归、id 改了忘改引用、
+  CSS 类名与 JS 生成的类名对不上（这一条曾让蓝图连线样式整段失效）。
 </div>
 
 <h2>6.2 评估体系</h2>
-<p>
-AI 应用最难的部分之一是「怎么知道它做得好不好」。本项目用一套可复现的评估链路回答这个问题，
-并有两条刻意坚持的纪律。
-</p>
-
 <h3>6.2.1 靶场与链路</h3>
 <div class="flow">
-  <span class="flow__item flow__item--brand">8 个靶场仓库</span>
+  <span class="flow__item flow__item--brand">12 个靶场</span>
   <span class="flow__arrow">→</span>
   <span class="flow__item">批量运行</span>
   <span class="flow__arrow">→</span>
@@ -1021,15 +1032,24 @@ AI 应用最难的部分之一是「怎么知道它做得好不好」。本项�
   <span class="flow__arrow">→</span>
   <span class="flow__item flow__item--brand">报告（脚本现算）</span>
 </div>
-<p>8 个靶场覆盖不同难度：资源生命周期、并发安全、输入路径处理、边界条件、危险调用等，
-每个靶场配有独立答案键（34 条标注）。</p>
+<p>
+12 个靶场、134 条标注。其中 8 个是<b>难度刻度</b>（s1–s8，平均 2 文件 / 62 行），
+3 个是<b>规模刻度</b>（m1–m3，1300–1800 行，含跨文件调用链与刻意埋设的干扰项），
+1 个综合样本（6 文件 / 231 行 / 23 条标注）。
+</p>
+<div class="warnbox">
+  <b>为什么要分开两种刻度。</b>小样本上测出的分数会系统性偏高：
+  同一个综合样本，F1 从 8 个小靶场的 82% 掉到 70%。
+  只在小文件上验证，等于只测了最容易的场景。
+</div>
 
 <h3>6.2.2 实测结果</h3>
 <table>
-  <thead><tr><th style="width:32%">口径</th><th style="width:22%">召回率</th><th style="width:22%">精确率</th><th>F1</th></tr></thead>
+  <thead><tr><th style="width:34%">口径</th><th style="width:20%">召回率</th><th style="width:20%">精确率</th><th>F1</th></tr></thead>
   <tbody>
-    <tr><td><b>自动匹配</b>（同文件 + 行号 ±2）</td><td>86%</td><td>80%</td><td>82%</td></tr>
+    <tr><td><b>自动匹配</b>（同文件 + 行号 ±2，8 小靶场）</td><td>86%</td><td>80%</td><td>82%</td></tr>
     <tr><td><b>人工复核</b>（逐条判定，带理由）</td><td>97%</td><td>95%</td><td>—</td></tr>
+    <tr><td>规模刻度（m1–m3，1300+ 行）</td><td>74%</td><td>72%</td><td>72%</td></tr>
     <tr><td>确定性规则基线（对照）</td><td>32%</td><td>—</td><td>—</td></tr>
   </tbody>
 </table>
@@ -1037,161 +1057,205 @@ AI 应用最难的部分之一是「怎么知道它做得好不好」。本项�
 <div class="keybox">
   <b>为什么要给两个口径。</b>自动匹配用「同文件 + 行号容差」判定，会产生三类系统性误判：
   同一缺陷行号略有不同（被算成一漏一多）、模型指出的真问题不在答案键里（被算成误报）、
-  相邻缺陷互相顶替。只报对自己有利的那个口径，等于把度量方式伪装成能力差异 ——
-  因此两个数字都要给，且人工复核的每条判定都写明理由。
+  相邻缺陷互相顶替。只报对自己有利的那个口径，等于把度量方式伪装成能力差异。
 </div>
 
 <h3>6.2.3 度量本身的纪律</h3>
 <ul>
-  <li><b>度量工具出 bug 时先怀疑度量。</b>本项目发生过两次：一次是匹配逻辑重复消费标注，
-      导致召回被低估约 10 个百分点；一次是分组口径把冗余算成误报，精确率从 100% 掉到 58%。
+  <li><b>度量工具出 bug 时先怀疑度量。</b>本项目发生过两次：一次匹配逻辑重复消费标注，
+      召回被低估约 10 个百分点；一次分组口径把冗余算成误报，精确率从 100% 掉到 58%。
       两次都不是模型的问题。</li>
-  <li><b>指标对行号容差高度敏感。</b>整体 F1 在容差 ±0 时为 61%，放宽到 ±4 时升到 95% ——
-      所以报单一容差下的数字没有意义。</li>
-  <li><b>单次跑分不可引用。</b>同一个靶场三轮的召回波动可达 100/100/50。
-      因此选型类结论必须跑 3–5 次看均值与波动。</li>
-  <li><b>报告不手抄。</b>交付文档中的数字由脚本从原始结果现算生成，避免手抄与数据脱节。</li>
+  <li><b>指标对行号容差高度敏感。</b>整体 F1 在容差 ±0 时为 61%，±4 时升到 95% ——
+      报单一容差下的数字没有意义。</li>
+  <li><b>单次跑分不可引用。</b>同一靶场三轮的召回波动可达 100/100/50。
+      选型类结论必须跑 3–5 次看均值与波动。</li>
+  <li><b>任何口径算出精确率或召回 &gt; 100%，立刻停手查分母。</b>
+      本项目确实发生过一次：用宽容差统计时得出「召回 96% / 精确 110%」，
+      说明同一条发现被反复计入覆盖多条标注 —— 口径在自欺欺人，当场推翻改报区间。</li>
+  <li><b>标注要拿真实运行结果对照补全。</b>「先写标注再跑模型」会把精确率系统性低估：
+      同一天在三个大样本上分别低估到 30% / 22% / 31%，逐条读源码核实后修正到 83% / 56% / 77%。</li>
+  <li><b>报告不手抄。</b>文档里的数字由脚本从原始结果现算，避免手抄与数据脱节。</li>
 </ul>
 
-<h2>6.3 架构助手的三档难度实测</h2>
+<h2>6.3 架构助手难度实测</h2>
 <p>
 针对架构助手单独设计了难度刻度，用三个真实开源仓库验证能力边界
-（psf/requests、pytest-dev/pluggy、celery/celery，规模 7k / 12k / 123k 行）：
+（pluggy / requests / celery，规模 7k / 12k / 123k 行）。上游代码不入库，
+由 <code>arch-cases/fetch-cases.sh</code> 按需克隆 —— 这是许可证边界，也是仓库体积问题。
 </p>
-
 <table>
-  <thead><tr><th style="width:16%">档位</th><th style="width:22%">仓库</th><th>结论</th></tr></thead>
+  <thead><tr><th style="width:16%">案例</th><th style="width:12%">难度</th><th style="width:20%">规模</th><th style="width:22%">证据可精确定位率</th><th>轮数</th></tr></thead>
   <tbody>
-    <tr>
-      <td>中等</td><td>requests</td>
-      <td>正确识别出「requests 本身不做重试，重试在传输适配层的 urllib3」——
-          这是一个「没读代码就一定会说错」的判定点，可作为能力校验的探针</td>
-    </tr>
-    <tr>
-      <td>中等</td><td>pluggy</td>
-      <td>8 条关键决策全部命中真实设计取舍（顺序决策放在注册时刻、用属性命名空间做宿主隔离、
-          刻意不做并发保护）</td>
-    </tr>
-    <tr>
-      <td>困难</td><td>celery</td>
-      <td>任务链路的九个环节齐全，并提出真实存在的结构问题（两套任务状态并存、
-          确认语义分裂在不同层、跨三层直接依赖）</td>
-    </tr>
+    <tr><td>pluggy</td><td>简单</td><td>36 文件 / 7.2k 行</td><td>95.3%</td><td>20（正常收尾）</td></tr>
+    <tr><td>requests</td><td>中等</td><td>37 文件 / 12k 行</td><td>96.9%</td><td>20</td></tr>
+    <tr><td>celery</td><td>困难</td><td>447 文件 / 123k 行</td><td>99.2%</td><td>23（改造前两次撞 24 轮上限）</td></tr>
   </tbody>
 </table>
-
+<p>
+蓝图质量评分（分层 / 组件 / 决策 / 依赖边四维 P/R/F1 加权）：简单档约 63 分、
+中等档 60 分、困难档 57 分 —— <b>难度梯度成立</b>。
+</p>
 <div class="warnbox">
-  <b>实测暴露的两个反直觉结论（如实记录）。</b>
-  ① <b>产出规模不随仓库复杂度缩放</b>：同一个仓库两次运行产出 9 个组件与 19 个组件（波动一倍），
-  而简单仓库与复杂仓库的产出量级相同 —— 因此<b>不能把产出计数当作质量或难度的代理指标</b>。
-  ② <b>困难案例显著更难收敛</b>：复杂仓库运行中出现「读了 43 个文件仍撞到迭代上限」，
-  需要在产品上给出更明确的收尾引导。
+  <b>必须说清的三个局限。</b>
+  ① 参考蓝图是人写的，评分上限受它约束；
+  ② 同一案例两次跑分可能相差 16 分（79.3 vs 63.4）—— 那是模型产出在波动，
+  单次分数不能当「系统能力」；
+  ③ 只测结构正确性，不测论证质量（后者由权衡检查兜，只覆盖两个硬信号）。
+</div>
+<div class="keybox">
+  <b>一个反直觉的发现。</b>初版参考蓝图只收「教科书级事实」（Session 三合一、mount 可替换），
+  结果两个案例的决策维度<b>命中 0 条</b>。打开产出后看到模型给的是
+  「bootsteps DAG 动态装配」「公共 API 惰性模块代理」「fast_trace 快路径」——
+  <b>比参考蓝图更深入</b>。问题不在模型，在评分标准只认概念层、不认实现层。
+  合并两类条目后才反映出真实水平。
 </div>
 
-<h2>6.4 部署与运行</h2>
+<h2>6.4 与业界水位对照</h2>
+<p>
+为避免「自己出题自己打分」的偏差，把结果放进公开基准的坐标系里看：
+</p>
 <table>
-  <thead><tr><th style="width:24%">方式</th><th>命令 / 说明</th></tr></thead>
+  <thead><tr><th style="width:34%">来源</th><th style="width:20%">F1</th><th>说明</th></tr></thead>
   <tbody>
-    <tr><td>本地运行（推荐）</td><td><code>cd backend &amp;&amp; python -m harness.server --port 8000</code>，
-        打开 <code>http://127.0.0.1:8000/</code></td></tr>
-    <tr><td>命令行模式</td><td><code>python -m harness -r &lt;仓库&gt; --goal "..."</code>；
-        加 <code>--scan-only</code> 走纯规则扫描（不调模型）</td></tr>
-    <tr><td>离线模式</td><td>不配置 API Key 即可运行，走确定性规则 + 启发式模型</td></tr>
-    <tr><td>演示模式</td><td>直接打开 <code>index.html</code>，使用内置演示数据（无需后端）</td></tr>
-    <tr><td>运行依赖</td><td>Python 3.11+ 与 <code>httpx</code>；无 Node.js、无数据库</td></tr>
-    <tr><td>数据目录</td><td><code>.runs/</code>（运行归档）、<code>.auth/</code>（账号表）—— 均不入库</td></tr>
+    <tr><td>商用产品独立排行（16,017 个真实 PR）</td><td>60.8% – 65.7%</td><td>CodeRabbit / Greptile / Copilot / Claude / Cubic 区间；厂商自测普遍虚高 15–35 个百分点</td></tr>
+    <tr><td>学术基准中的人类基线</td><td>0.81</td><td>所有 AI 策略的精确率-召回率曲线被人类严格支配</td></tr>
+    <tr><td>本项目（小靶场自动口径）</td><td>82%</td><td>缺陷明确、单次全读、自建靶场</td></tr>
+    <tr><td>本项目（规模刻度 1300+ 行）</td><td>72%</td><td>真实分层调用、含干扰项</td></tr>
   </tbody>
 </table>
+<div class="warnbox">
+  <b>这个对比不能简单读成「超过了商用产品」。</b>样本量差百倍、任务也不同
+  （本项目静态读全仓，商用产品审 PR 增量），而且本项目面对的是自己植入的缺陷，
+  人家面对的是「人类真实会评论什么」。
+  可信的说法是：<b>在「小文件、缺陷明确、单次全读」的场景下达到商用水平；
+  规模放大会掉分，50 文件以上的表现尚无样本，不能断言。</b>
+</div>
 
-<h2>6.5 代码质量与工程纪律</h2>
-<ul>
-  <li><b>注释写「为什么」而不是「做什么」</b>：关键决策点都记录了放弃的方案与实测依据，
-      并保留被验证为错的做法的说明（例如熔断为什么必须可恢复）</li>
-  <li><b>一次实现，多处使用</b>：公共工具只有一处实现（两个助手共享），
-      重复实现必然导致行为分叉</li>
-  <li><b>安全边界用测试守住</b>：密钥不入库、标注不泄漏、失败不伪装，都有对应测试</li>
-  <li><b>提交历史保留真实开发过程</b>：可看到问题如何被发现与修复（含被推翻的结论）</li>
-</ul>
+<h2 style="break-after: avoid; page-break-after: avoid;">6.5 部署与运行</h2>
+<pre style="break-inside: avoid; page-break-inside: avoid;"><code># 1. 依赖（仅 httpx；开发多一个 pytest）
+cd backend
+pip install -r requirements-dev.txt
+
+# 2. 配置模型：只需三项
+cp .env.example .env
+#   LLM_BASE_URL=https://api.deepseek.com
+#   LLM_API_KEY=sk-...
+#   LLM_MODEL=deepseek-chat
+
+# 3. 启动（服务同源托管前端）
+python -m harness.server --port 8765
+# 打开 http://127.0.0.1:8765/
+
+# 4. 回归
+python -m pytest -q                    # 282 passed
+python scripts/check_hygiene.py        # 死代码 / 未用导入
+
+# 5. 架构案例（可选，需联网克隆上游）
+bash arch-cases/fetch-cases.sh</code></pre>
+<table>
+  <thead><tr><th style="width:22%">项</th><th>说明</th></tr></thead>
+  <tbody>
+    <tr><td>运行环境</td><td>Python 3.12+；无需 Node.js、无需数据库</td></tr>
+    <tr><td>数据落点</td><td><code>backend/.runs/</code>（运行归档）· <code>backend/.auth/</code>（账号表），<b>均不入库</b></td></tr>
+    <tr><td>网络</td><td>默认仅绑定本机；被审代码不出机器</td></tr>
+    <tr><td>离线模式</td><td><code>--offline</code> 不调模型，产出由确定性规则给出；无 Key 时界面会自动降级并说明</td></tr>
+  </tbody>
+</table>
 
 <!-- ==================== 7 创新点说明 ==================== -->
 <h1 class="chapter"><span class="num">7</span>创新点说明</h1>
 
 <h2>7.1 技术创新点</h2>
 
-<h3>创新点 1：助手即声明（Agent as a Declaration）</h3>
+<h3>创新点 1：三层质量约束 —— 把「可信」拆成可执行的检查</h3>
 <p>
-把「一个 AI 助手」抽象成一份声明：标识、系统提示、工具工厂、产出形态、强调色、只读边界。
-接入新助手只需写这份声明并注册，<b>工具层、渲染层、HTTP 层、前端轨道都不需要改动</b>。
-更进一步：声明是<b>可执行的契约</b> —— 声明只读的助手若注册了写工具，运行会在启动时直接失败，
-而不是靠自觉。
+AI 审查工具最大的问题不是找不到问题，而是<b>找到了一堆站不住的问题</b>。
+本项目把「可信」拆成三层按成本递增的检查：零成本的位置真实性核验、
+一次模型调用的独立判官、零成本的证据与权衡审查。
+每层的判据都是<b>确定性优先</b>，且每条判据都被真实数据反向修正过（详见 4.10）。
+</p>
+<p>
+其中「判官只删不加」「判官失败保留全部」「低置信度需明确反证才允许删」三条约束，
+解决的是一类很隐蔽的失败：<b>过滤器本身变成了故障源</b>。
 </p>
 
-<h3>创新点 2：产出形态由助手声明，渲染层注册表 + 兜底</h3>
+<h3>创新点 2：助手即声明（Agent as a Declaration）</h3>
+<p>
+把「一个 AI 助手」抽象成一份声明：标识、系统提示、工具工厂、产出形态、强调色、只读边界与能力标记。
+接入新助手只需写这份声明并注册，<b>工具层、渲染层、HTTP 层、前端轨道都不需要改动</b>。
+声明是<b>可执行的契约</b> —— 声明只读的助手若注册了写工具，运行会在启动时直接失败。
+前端也不按助手 id 硬编码，而是读清单里的 <code>outcome</code> 与 <code>capabilities</code> 决定渲染与入口。
+</p>
+
+<h3>创新点 3：产出形态由助手声明，渲染层注册表 + 兜底</h3>
 <p>
 产出不是「统一都叫发现」，而是由助手自己声明形态（发现列表 / 分层蓝图 / 其他），
-渲染层按注册表分派，遇到未注册的形态走通用兜底（按字段原样列出）。
-这消灭了一类很难发现的问题：<b>把「渲染器不认识」说成「产出为空」</b>。
-</p>
-
-<h3>创新点 3：确定性规则与语言模型的交叉验证</h3>
-<p>
-「能确定性判定的就不交给模型」—— 规则集既独立产出，又作为模型结果的验证器：
-规则命中而模型未报标记为疑似漏报，两者都报提高置信度。
-实测中这一机制把规则难以覆盖的语义类缺陷 与 模型容易忽略的机械模式 各自补齐。
+渲染层按注册表分派，未注册的形态走通用兜底。这消灭了一类很难发现的问题：
+<b>把「渲染器不认识」说成「产出为空」</b>。
 </p>
 
 <h3>创新点 4：缓存感知的上下文结构</h3>
 <p>
-静态前缀（系统提示 + 核心工具定义）恒定不变，一切动态信息追加到轨迹末尾，
-使模型侧 KV 缓存命中率实测达到约 <b>87%</b>，显著降低长任务成本与延迟。
+静态前缀恒定不变，一切动态信息追加到轨迹末尾，使 KV 缓存命中率实测约 <b>87%</b>。
 项目还把「前缀指纹」做成自检项，防止后续改动无意破坏这个不变量。
 </p>
 
-<h3>创新点 5：可审计的零依赖架构</h3>
+<h3>创新点 5：轮次预算 —— 让模型知道还剩几轮</h3>
 <p>
-后端 HTTP/SSE 层用标准库实现（外部依赖仅 httpx），前端原生 JS/CSS 无构建。
-对一个<b>安全审计类工具</b>而言这不是「简陋」，而是设计选择：
-依赖越少越可审计、零安装门槛、不受供应链风险影响。整套系统可在无 Node.js、
-无数据库的机器上完整运行。
+实测发现「撞上限」的根因是模型不知道自己还剩几轮，于是边读边画直到用尽。
+解决方式不是加轮数，而是每轮把剩余比例写进状态栏，并在 ≤20% 时明确要求收尾。
+改造后困难案例从「两次撞 24 轮上限」变为「23 轮正常收尾」。
 </p>
 
-<h3>创新点 6：面向代码场景的检索策略（替代向量 RAG）</h3>
+<h3>创新点 6：可审计的零依赖架构</h3>
 <p>
-代码检索的难点不是语义相似度，而是<b>准确的行号与结构</b>。项目采用三条路径替代向量检索：
-工具清单渐进披露（先检索再加载 schema）、符号级读取（只看函数/类清单建立结构认知）、
-按需上下文（读到的内容带行号，作为证据可核验）。目标与 RAG 一致（在有限上下文里拿到需要的知识），
-路径更贴合代码场景。
+后端 HTTP/SSE 层用标准库实现（外部依赖仅 httpx），前端原生 JS/CSS 无构建。
+对一个<b>安全审计类工具</b>而言这不是「简陋」，而是设计选择：依赖越少越可审计、
+零安装门槛、不受供应链风险影响。
+</p>
+
+<h3>创新点 7：面向代码场景的检索策略（替代向量 RAG）</h3>
+<p>
+代码检索的难点不是语义相似度，而是<b>准确的行号与结构</b>。项目用三条路径替代向量检索：
+工具清单渐进披露、符号级读取、一次 ast 扫描产出结构清单（<code>sketch</code>）。
+目标与 RAG 一致（在有限上下文里拿到需要的知识），路径更贴合代码场景。
 </p>
 
 <h2>7.2 应用创新点</h2>
 
-<h3>创新点 7：审查与设计共用一个可插拔内核</h3>
+<h3>创新点 8：审查与设计共用一个可插拔内核</h3>
 <p>
-把两类差异很大的研发任务（找缺陷 / 讲结构）放进同一工作台，共享同一套 Agent 运行时、
-工具协议、事件流与界面骨架，差异全部由声明表达。这验证了内核的通用性 ——
+把两类差异很大的研发任务（找缺陷 / 讲结构）放进同一工作台，共享同一套运行时、工具协议、
+事件流与界面骨架，差异全部由声明表达。这验证了内核的通用性 ——
 新增助手不再是「再造一个应用」，而是补一份声明。
 </p>
 
-<h3>创新点 8：架构蓝图的可评审化</h3>
+<h3>创新点 9：架构蓝图的可评审化</h3>
 <p>
-架构助手的产出不是描述性文字，而是「分层 + 组件 + 决策（含放弃的方案与代价）+ 开放问题」。
-其中<b>开放问题</b>尤其有价值：它明确标出「当前无法确定、需要人来定」的部分，
-把 AI 的边界如实交付给使用者，而不是用流畅的语言掩盖不确定性。
+架构产出不是描述性文字，而是「分层 + 组件 + 决策（含放弃的方案与代价）+ 开放问题」，
+每条都带可核验的代码位置。其中<b>开放问题</b>尤其有价值：它明确标出「当前无法确定、
+需要人来定」的部分，把 AI 的边界如实交付给使用者。
 </p>
 
-<h3>创新点 9：面向评审的诚实性设计</h3>
+<h3>创新点 10：面向评审的诚实性设计</h3>
 <p>
-一系列刻意的「不假装」：
-失败必须显式（目录不存在 ≠ 没有匹配）、产出计数不当质量指标、
-无法确定的问题单列、渲染器不认识就说认识不了、被中断的运行如实标注未完成、
-演示数据与真实数据在界面上明确区分。<b>在 AI 应用里，可信度本身就是产品能力。</b>
+一系列刻意的「不假装」：失败必须显式；产出计数不当质量指标；无法确定的问题单列；
+渲染器不认识就说认识不了；被中断的运行如实标注未完成；<b>界面不内置任何样例数据</b> ——
+连不上后端时明确说未连接并给出启动命令，而不是渲染一份「看起来跑完了」的结果。
 </p>
+<div class="keybox">
+  <b>为什么把「诚实」算作创新点。</b>AI 应用最容易赢得短期好评、输掉长期信任的做法，
+  就是让界面看起来很完整。本项目把「不假装」做成了工程约束：界面不携带假数据、
+  工具失败必须上报、判官失败保留全部、指标双口径全报。这些选择让演示效果<b>变差</b>，
+  让可信度<b>变高</b>。
+</div>
 
-<h3>创新点 10：评估驱动开发</h3>
+<h3>创新点 11：评估驱动开发</h3>
 <p>
-项目自带完整的评估链路（靶场 → 批量运行 → 人工复核 → 报告现算），并在开发过程中
-反复修正<b>度量本身</b>的错误（匹配逻辑重复消费标注、分组口径把冗余算成误报），
-最终形成「双口径报告 + 单次不可引用 + 数字不手抄」的纪律。
+自带完整评估链路（靶场 → 批量运行 → 人工复核 → 报告现算），并在开发过程中
+反复修正<b>度量本身</b>的错误，最终形成「双口径 + 单次不可引用 + 数字不手抄 +
+&gt;100% 立即停手查分母」的纪律。项目还留下了与公开基准的对照，明确写出
+「哪些结论可以下、哪些不能下」。
 </p>
 
 <!-- ==================== 8 总结与展望 ==================== -->
@@ -1201,72 +1265,44 @@ AI 应用最难的部分之一是「怎么知道它做得好不好」。本项�
 <table>
   <thead><tr><th style="width:26%">能力</th><th>状态</th></tr></thead>
   <tbody>
-    <tr><td>可插拔多助手内核</td><td>✅ 内置两个助手，接新助手 = 一份声明</td></tr>
-    <tr><td>代码审查助手</td><td>✅ 带证据的发现列表，8 靶场人工复核 R=97% / P=95%</td></tr>
-    <tr><td>架构设计助手</td><td>✅ 分层图 + 组件 + 决策 + 开放问题，三个真实仓库验证</td></tr>
-    <tr><td>实时交互</td><td>✅ SSE 流式事件，历史补发与实时推送同路径</td></tr>
-    <tr><td>安全与可控</td><td>✅ 密钥护栏、路径逃逸防护、范围服务端校验、引用核验、四类护栏</td></tr>
-    <tr><td>账号系统</td><td>✅ 注册 / 登录 / 退出，scrypt 哈希，可选强制登录</td></tr>
-    <tr><td>测试与评估</td><td>✅ 175 项回归 + 完整评估链路（含人工复核）</td></tr>
-    <tr><td>响应式界面</td><td>✅ 三档断点，430px 起可用</td></tr>
+    <tr><td>代码审查助手</td><td>✅ 结构化发现 + 三层核验 + 增量审查</td></tr>
+    <tr><td>架构设计助手</td><td>✅ 分层/组件/决策/开放问题 + 证据核验 + 权衡检查</td></tr>
+    <tr><td>可插拔平台</td><td>✅ 加助手 = 一份声明；前端按清单渲染</td></tr>
+    <tr><td>工作台界面</td><td>✅ 明暗双主题、会话隔离、实时/回放同一路径、零依赖</td></tr>
+    <tr><td>模型接入</td><td>✅ 三项配置接任意 OpenAI 兼容服务</td></tr>
+    <tr><td>测试与评估</td><td>✅ 282 项回归 + 12 靶场评估 + 双口径报告</td></tr>
+    <tr><td>工程规范</td><td>✅ README / 技术文档 / 贡献指南 / MIT 许可证 / 卫生检查脚本</td></tr>
   </tbody>
 </table>
 
 <h2>8.2 已知边界与不足</h2>
-<p>如实说明当前能力边界，这些是后续版本要解决的问题：</p>
-
 <table>
-  <thead><tr><th style="width:30%">边界</th><th>影响与现状</th></tr></thead>
+  <thead><tr><th style="width:24%">边界</th><th>具体情况</th></tr></thead>
   <tbody>
-    <tr>
-      <td><b>未集成多模态</b></td>
-      <td>当前聚焦代码文本理解，未支持图像 / 语音 / 视频输入。
-          对于「看界面截图找问题」这类场景尚不支持</td>
-    </tr>
-    <tr>
-      <td><b>产出规模不稳定</b></td>
-      <td>实测同一仓库两次运行的组件数可相差一倍（9 vs 19）；
-          复杂仓库偶发「撞迭代上限未收尾」。已在文档中如实标注，不把产出计数当质量指标</td>
-    </tr>
-    <tr>
-      <td><b>归档未脱敏</b></td>
-      <td>运行归档会保存工具输出原文；若被审仓库在非密钥命名文件里夹带凭据，
-          会被明文归档（已记为待改进项）</td>
-    </tr>
-    <tr>
-      <td><b>会话不持久化</b></td>
-      <td>会话令牌只在服务端内存，服务重启需要重新登录 —— 这是「不把长期凭据写盘」的取舍</td>
-    </tr>
-    <tr>
-      <td><b>单机定位</b></td>
-      <td>服务默认只绑定回环地址，面向单机使用；未做多用户隔离与配额管理</td>
-    </tr>
-    <tr>
-      <td><b>评估样本量</b></td>
-      <td>8 靶场 34 条标注，够看难度梯度但不足以做模型选型；
-          答案键已知不完整（人工复核发现 6 处真缺陷未被收录）</td>
-    </tr>
+    <tr><td>语言覆盖</td><td>结构化分析（符号、结构清单）只做了 Python；其他语言靠文本读取</td></tr>
+    <tr><td>规模效应未测</td><td>最大测到 1300–1800 行；50 文件以上的表现没有样本，不能断言</td></tr>
+    <tr><td>波动</td><td>单次跑分波动显著（架构评分同案例可差 16 分），结论需多轮均值</td></tr>
+    <tr><td>运行归档未脱敏</td><td><code>.runs/</code> 里可能含被审代码片段，尚未做凭据脱敏（已记录，未修）</td></tr>
+    <tr><td>HTTP 无超时兜底</td><td>畸形请求可能挂住线程（仅影响本机单用户场景）</td></tr>
+    <tr><td>判官覆盖有限</td><td>只对小样本几乎无收益；大样本收益明显但依赖模型质量</td></tr>
+    <tr><td>权衡检查是启发式</td><td>只覆盖两个硬信号，不能判断「这个决策好不好」</td></tr>
   </tbody>
 </table>
 
 <h2>8.3 后续计划</h2>
 <ol>
-  <li><b>收敛性改进</b>：为复杂仓库引入「先分层后细化」的两阶段策略，并在接近迭代上限时
-      主动提示收尾，降低「读了 43 个文件仍没结论」的概率</li>
-  <li><b>产出规模校准</b>：把「组件粒度」显式写入助手声明（粒度指导），
-      并对规模异常（过细 / 过粗）给出运行时提示</li>
-  <li><b>多模态接入</b>：支持设计稿与界面截图作为输入，扩展「看图找实现问题」的场景</li>
-  <li><b>归档脱敏</b>：对运行归档中的凭据模式做替换，进一步收紧数据卫生</li>
-  <li><b>助手生态</b>：按同一份声明扩展测试生成、文档生成、依赖升级评估等助手，
-      验证内核的可扩展边界</li>
-  <li><b>团队协作</b>：多用户隔离、运行配额与评审工作流（把当前的单机工具推进到团队可用）</li>
+  <li><b>扩大样本</b>：补 500–2000 行、多语言的靶场，让规模效应可测 —— 这是当前最缺的证据</li>
+  <li><b>多轮评测</b>：每档跑 3–5 次取均值与波动，替代单次跑分</li>
+  <li><b>归档脱敏</b>：把 <code>.runs/</code> 里的凭据与内联密钥做正则脱敏</li>
+  <li><b>语言扩展</b>：接入 Tree-sitter 之类做多语言符号提取，替代只支持 Python 的 ast</li>
+  <li><b>判官迭代</b>：把判官口径与标注口径的差异做成可配置，而不是硬编码</li>
 </ol>
 
-<div class="keybox" style="margin-top:8mm">
-  <b>一句话总结。</b>
-  本项目的价值不在于「用 AI 写了一个工具」，而在于把<b>如何让 AI 可靠地做研发工作</b>
-  这件事工程化：能力用声明表达、边界用运行时强制、产出用结构化收口、
-  错误用可恢复的护栏兜住、效果用双口径评估验证、不足如实写进文档。
+<div class="keybox avoid" style="margin-top:6mm">
+  <b>一句话总结。</b>这个项目最有价值的不是「AI 能审代码」，而是<b>把 AI 的不确定性
+  变成了可以检查、可以讨论、可以反驳的东西</b> —— 每条产出指向具体行，
+  每条决策写出代价，每个不确定标为开放问题，每个指标给出双口径。
+  在这个前提下，「AI 辅助研发」才是一个工程问题，而不是一个期待。
 </div>
 
 </body>
