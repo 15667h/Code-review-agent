@@ -169,3 +169,131 @@ def test_normalize_strips_only_one_suffix() -> None:
         normalize_base_url("https://gw.example/openai/v1/chat/completions")
         == "https://gw.example/openai/v1"
     )
+
+
+# --------------------------------------------------------------------------- #
+# tool_choice：保守型中转的适配开关
+# --------------------------------------------------------------------------- #
+
+
+def test_tool_choice_defaults_to_auto(tmp_path: Path, monkeypatch) -> None:
+    """没写就是标准语义 auto。"""
+    _clean(monkeypatch)
+    monkeypatch.delenv("AUDIT_TOOL_CHOICE", raising=False)
+    config = load_config(_env(tmp_path, "LLM_API_KEY=k\n"))
+    assert config.tool_choice == "auto"
+
+
+def test_tool_choice_accepts_required(tmp_path: Path, monkeypatch) -> None:
+    """``required`` 是为「auto 下不调工具」的保守中转准备的。"""
+    _clean(monkeypatch)
+    monkeypatch.delenv("AUDIT_TOOL_CHOICE", raising=False)
+    config = load_config(_env(tmp_path, "LLM_API_KEY=k\nAUDIT_TOOL_CHOICE=required\n"))
+    assert config.tool_choice == "required"
+
+
+def test_tool_choice_is_case_insensitive(tmp_path: Path, monkeypatch) -> None:
+    _clean(monkeypatch)
+    monkeypatch.delenv("AUDIT_TOOL_CHOICE", raising=False)
+    config = load_config(_env(tmp_path, "LLM_API_KEY=k\nAUDIT_TOOL_CHOICE=REQUIRED\n"))
+    assert config.tool_choice == "required"
+
+
+def test_bad_tool_choice_falls_back_to_auto(tmp_path: Path, monkeypatch) -> None:
+    """非法值退回 auto，而不是让服务起不来。
+
+    这是个投递参数（tuning knob），写错最坏结果是「跟默认一样」，
+    不该变成启动失败。
+    """
+    _clean(monkeypatch)
+    monkeypatch.delenv("AUDIT_TOOL_CHOICE", raising=False)
+    config = load_config(_env(tmp_path, "LLM_API_KEY=k\nAUDIT_TOOL_CHOICE=bogus\n"))
+    assert config.tool_choice == "auto"
+
+
+# --------------------------------------------------------------------------- #
+# 本机端点不能被系统代理劫持
+# --------------------------------------------------------------------------- #
+
+
+def test_model_client_ignores_system_proxy(tmp_path: Path, monkeypatch) -> None:
+    """模型客户端必须 ``trust_env=False``。
+
+    实测事故：base_url 指向本机网关（``http://127.0.0.1:7864/v1``）时，
+    httpx 默认读取 ``HTTP_PROXY`` 与 Windows 系统代理，把请求送到代理，
+    代理再转发回来就是 **502**。而命令行 curl 加 ``--noproxy`` 完全正常 ——
+    两边行为对不上，排查成本极高。
+
+    这条测试守的是「不许有人为了『兼容企业代理』把这个开关改回默认」。
+    """
+    from harness.model import OpenAIModel
+
+    _clean(monkeypatch)
+    env = _env(tmp_path, "LLM_API_KEY=k\nLLM_BASE_URL=http://127.0.0.1:7864/v1\nLLM_MODEL=m\n")
+    config = load_config(env)
+    model = OpenAIModel(config)
+    assert model._client._trust_env is False
+
+
+# --------------------------------------------------------------------------- #
+# tool_choice：保守型中转的适配开关
+# --------------------------------------------------------------------------- #
+
+
+def test_tool_choice_defaults_to_auto(tmp_path: Path, monkeypatch) -> None:
+    """没写就是标准语义 auto。"""
+    _clean(monkeypatch)
+    monkeypatch.delenv("AUDIT_TOOL_CHOICE", raising=False)
+    config = load_config(_env(tmp_path, "LLM_API_KEY=k\n"))
+    assert config.tool_choice == "auto"
+
+
+def test_tool_choice_accepts_required(tmp_path: Path, monkeypatch) -> None:
+    """``required`` 是为「auto 下不调工具」的保守中转准备的。"""
+    _clean(monkeypatch)
+    monkeypatch.delenv("AUDIT_TOOL_CHOICE", raising=False)
+    config = load_config(_env(tmp_path, "LLM_API_KEY=k\nAUDIT_TOOL_CHOICE=required\n"))
+    assert config.tool_choice == "required"
+
+
+def test_tool_choice_is_case_insensitive(tmp_path: Path, monkeypatch) -> None:
+    _clean(monkeypatch)
+    monkeypatch.delenv("AUDIT_TOOL_CHOICE", raising=False)
+    config = load_config(_env(tmp_path, "LLM_API_KEY=k\nAUDIT_TOOL_CHOICE=REQUIRED\n"))
+    assert config.tool_choice == "required"
+
+
+def test_bad_tool_choice_falls_back_to_auto(tmp_path: Path, monkeypatch) -> None:
+    """非法值退回 auto，而不是让服务起不来。
+
+    这是个投递参数（tuning knob），写错最坏结果是「跟默认一样」，
+    不该变成启动失败。
+    """
+    _clean(monkeypatch)
+    monkeypatch.delenv("AUDIT_TOOL_CHOICE", raising=False)
+    config = load_config(_env(tmp_path, "LLM_API_KEY=k\nAUDIT_TOOL_CHOICE=bogus\n"))
+    assert config.tool_choice == "auto"
+
+
+# --------------------------------------------------------------------------- #
+# 本机端点不能被系统代理劫持
+# --------------------------------------------------------------------------- #
+
+
+def test_model_client_ignores_system_proxy(tmp_path: Path, monkeypatch) -> None:
+    """模型客户端必须 ``trust_env=False``。
+
+    实测事故：base_url 指向本机网关（``http://127.0.0.1:7864/v1``）时，
+    httpx 默认读取 ``HTTP_PROXY`` 与 Windows 系统代理，把请求送到代理，
+    代理再转发回来就是 **502**。而命令行 curl 加 ``--noproxy`` 完全正常 ——
+    两边行为对不上，排查成本极高。
+
+    这条测试守的是「不许有人为了『兼容企业代理』把这个开关改回默认」。
+    """
+    from harness.model import OpenAIModel
+
+    _clean(monkeypatch)
+    env = _env(tmp_path, "LLM_API_KEY=k\nLLM_BASE_URL=http://127.0.0.1:7864/v1\nLLM_MODEL=m\n")
+    config = load_config(env)
+    model = OpenAIModel(config)
+    assert model._client._trust_env is False

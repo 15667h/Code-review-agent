@@ -185,6 +185,8 @@ def run_agent(
     max_model_retries: int = 2,
     should_stop: Callable[[], bool] | None = None,
     judge: bool = True,
+    remember: bool = False,
+    runs_dir: Path | None = None,
 ) -> AgentResult:
     """跑完一次完整运行。
 
@@ -199,6 +201,13 @@ def run_agent(
 
     ``judge`` 控制是否在收尾前跑一遍独立复核（见 ``judge.py``）。
     关掉它只用于 A/B 对比「有/无过滤层的差距」，默认开启。
+
+    ``remember`` 打开跨 Agent 记忆：把同一仓库的历史发现与**其他助手**的产出
+    作为补充信息注入首条消息。**默认关闭**，三个理由：
+    ① 它会让同样的目标产生不同结果，破坏可复现性；
+    ② 历史可能过期，默认开着等于让模型默认相信旧结论；
+    ③ 有人在公开讨论里明确批评过「不透明的自动注入会让 agent 基于过期前提行动」。
+    所以这个能力必须显式开启，并且注入内容里写明了「可能已过期」。
     """
     started = time.time()
 
@@ -215,8 +224,19 @@ def run_agent(
     _enforce_read_only(spec, registry)
     core_tools = registry.core_schemas()
 
+    # 语言能力段落追加到 system prompt 末尾。
+    #
+    # 为什么放在**静态前缀**而不是每轮的状态消息里：
+    # ① 它是稳定文本（只随代码版本变），进前缀不破坏 KV 缓存；
+    # ② 如果放进每轮消息，缓存前缀每轮都会失效，长运行的输入成本会翻倍；
+    # ③ 语言能力属于「这个 Agent 的基本认知」，和工具定义同层，不是运行状态。
+    #
+    # 新增 agent 自动获得这段 —— 不需要在每个 prompt 里各写一遍。
+    from .languages import prompt_section
+
+    system_prompt = f"{spec.system_prompt.rstrip()}\n\n{prompt_section()}"
     builder = ContextBuilder(
-        system_prompt=spec.system_prompt,
+        system_prompt=system_prompt,
         core_tools=core_tools,
         budget=Budget(config.context_window),
     )
@@ -237,7 +257,24 @@ def run_agent(
         tool_summary=tool_report(registry),
     )
 
-    trajectory: list[Message] = [goal_message(goal, context_note, heading=spec.goal_heading)]
+    # ---- 跨 Agent 记忆：只在显式开启时注入，且失败不影响主流程 ----
+    memory_note = ""
+    if remember:
+        try:
+            from .memory import aggregate, brief
+
+            runs_path = Path(runs_dir) if runs_dir else Path(".runs")
+            mem = aggregate(workspace.root, runs_path)
+            memory_note = brief(mem, agent=spec.id)
+            if memory_note:
+                result.warnings.append(
+                    f"已注入仓库历史（{len(mem.effective_runs)} 次有效运行 / {len(mem.issues)} 条去重发现）"
+                )
+        except Exception as exc:  # 记忆是辅助功能，绝不能让它中断审查
+            result.warnings.append(f"仓库历史聚合失败，已跳过：{exc}")
+
+    combined_note = "\n\n".join(x for x in (context_note, memory_note) if x)
+    trajectory: list[Message] = [goal_message(goal, combined_note, heading=spec.goal_heading)]
     status_note = ""
 
     _emit(on_event, "start", {"prefix": result.prefix_trace, "goal": goal})

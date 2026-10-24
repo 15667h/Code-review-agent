@@ -356,13 +356,11 @@ def _tool_read_symbols(workspace: Workspace) -> Tool:
         except OSError as exc:
             return ToolResult.failure("FileNotFound", str(exc), {"path": path})
 
-        if resolved.suffix != ".py":
-            return ToolResult.failure(
-                "UnsupportedLanguage",
-                f"read_symbols 目前只支持 Python 文件，收到 {resolved.suffix or '无扩展名'}。",
-                {"path": path},
-                suggestion="对非 Python 文件请直接用 read_file 或 grep。",
-            )
+        if resolved.suffix.lower() not in {".py", ".pyi"}:
+            # 非 Python：退化为**浅层符号提取**（按语言关键字定位），
+            # 而不是直接拒绝。能给出「这个文件里有哪些函数/类」已经比完全没有有用，
+            # 但必须标注这是启发式结果 —— 不标的话模型会以为它和 AST 结果等价。
+            return _shallow_symbols(workspace, resolved, path, text)
 
         try:
             tree = ast.parse(text)
@@ -446,6 +444,112 @@ def _name_of(node: ast.AST) -> str:
 # =============================================================================
 # 执行类工具
 # =============================================================================
+
+#: 支持「方法定义形态」判定的语言。这些语言的类方法不带 func/def/function 关键字。
+_METHOD_STYLE_LANGS = {"typescript", "javascript", "java", "csharp", "kotlin", "swift", "scala"}
+
+
+def _looks_like_method(stripped: str, lang_id: str) -> bool:
+    """判断一行是不是「方法定义」（``getUser(id: string) {``）。
+
+    启发式三条同时满足：
+    ① 语言在 ``_METHOD_STYLE_LANGS`` 里（这些语言的方法没有 func 关键字）；
+    ② 行以 ``{`` 结尾（定义体开始，区别于调用）；
+    ③ 行内有一段 ``标识符(`` 形态，且不含 ``=``（排除赋值/箭头函数）。
+
+    宁可漏报也不滥报：调用语句通常不以 ``{`` 结尾，构造器调用一般带 ``new``。
+    """
+    if lang_id not in _METHOD_STYLE_LANGS:
+        return False
+    if not stripped.endswith("{"):
+        return False
+    if "=" in stripped.split("(")[0]:
+        return False
+    import re as _re
+
+    return bool(_re.search(r"[A-Za-z_]\w*\s*\(", stripped))
+
+
+def _shallow_symbols(workspace: Workspace, resolved: Path, path: str, text: str) -> ToolResult:
+    """非 Python 文件的浅层符号提取。
+
+    ## 为什么做「浅层」而不是直接拒绝
+
+    拒绝会逼模型退回 ``read_file`` 读整个文件（贵、且它得自己数行号）。
+    按关键字扫一遍能直接给出「L12 function handleRequest」这种清单，
+    对 JS/TS/Go/Java 这些主流语言已经够用。
+
+    ## 为什么必须标注启发式
+
+    这和 Python 的 AST 结果**不等价**：
+    - 字符串/注释里出现的 ``function`` 会被误认（这里先剥注释，但多行字符串顾不上）；
+    - 嵌套定义、匿名函数、装饰器包裹的名字会漏；
+    - 拿不到签名（参数类型、返回值）。
+    不标注的话模型会拿它当权威结果用 —— 那是「近实方案」。
+    """
+    from .languages import for_path
+    from .rules import _iter_lines
+
+    lang = for_path(path)
+    if lang is None:
+        return ToolResult.failure(
+            "UnsupportedLanguage",
+            f"未注册的语言：{resolved.suffix or '无扩展名'}。",
+            {"path": path},
+            suggestion="这个扩展名不在语言注册表里，只能 read_file 或 grep。"
+                       "要正式支持请在 harness/languages.py 注册。",
+        )
+
+    if lang.level == "shallow" and not lang.func_keywords and not lang.class_keywords:
+        return ToolResult.failure(
+            "UnsupportedLanguage",
+            f"{lang.display} 没有登记结构关键字，无法做符号提取。",
+            {"path": path},
+            suggestion="用 read_file 读全文，或 grep 定位。",
+        )
+
+    func_kw = lang.func_keywords
+    class_kw = lang.class_keywords
+    found: list[str] = []
+    for lineno, line in _iter_lines(text, lang.id):
+        stripped = line.strip()
+        if not stripped:
+            continue
+        # 类先判（Java/C# 的 class 行也常含 public 等修饰词）
+        if any(kw in stripped for kw in class_kw):
+            found.append(f"L{lineno:<5} [class] {stripped[:120]}")
+            continue
+        if any(kw in stripped for kw in func_kw):
+            found.append(f"L{lineno:<5} [func ] {stripped[:120]}")
+            continue
+        # 方法形态兜底：``name(args) {`` 结尾的调用签名（TS/Java/C#/Kotlin 的类内方法）。
+        # 这条是**启发式**：构造器调用、立即执行函数也可能命中，所以放在最后兜底，
+        # 且只对登记了「方法形态」的语言启用。
+        if _looks_like_method(stripped, lang.id):
+            found.append(f"L{lineno:<5} [meth ] {stripped[:120]}")
+
+    lines = [
+        f"{path}（{lang.display}）",
+        f"浅层扫描：按 {lang.display} 的结构关键字定位，**不是 AST**。",
+    ]
+    if lang.limits:
+        lines.append(f"能力边界：{lang.limits}")
+    lines.append("")
+    if found:
+        lines.append(f"找到 {len(found)} 处疑似定义（行号 + 原始行，未解析签名）：")
+        lines.extend(found)
+        lines.append("")
+        lines.append(
+            "注意：字符串或嵌套结构里的关键字可能被误认；匿名函数与装饰器包裹会漏。"
+            "要确认具体实现请 read_file 该行附近。"
+        )
+    else:
+        lines.append(
+            "没找到函数/类定义。两种可能：① 这个文件确实没有定义；"
+            "② 该语言的定义写法与登记的关键字不匹配（请 read_file 确认）。"
+        )
+    return ToolResult.success("\n".join(lines))
+
 
 def _tool_run_command(workspace: Workspace, runner: CommandRunner) -> Tool:
     def handler(argv: list[str], cwd: str = "") -> ToolResult:

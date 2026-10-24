@@ -472,6 +472,163 @@ class RunState:
         return counts
 
 
+
+# =============================================================================
+# 测试域（测试助手的产出）
+# =============================================================================
+#
+# 与「发现」「设计」并列的第三种产出。三者回答三件不同的事：
+# 审查 = 哪里坏了；架构 = 该怎么切；测试 = **哪些行为还没被锁住**。
+#
+# 为什么单独建类型而不是复用 Finding：测试用例没有「严重级别」，
+# 但有「预期在什么情况下失败」—— 这个字段是特征测试的核心，
+# 用 Finding 装它会被严重级别的语义带偏。
+
+
+@dataclass(slots=True)
+class TestCase:
+    """一条测试用例。**重点在「它锁定的是什么行为」，不在代码本身。**
+
+    ``should_fail_when`` 是刻意设的必填字段：它逼着作者回答
+    「这条测试在什么情况下会失败」。回答不出来，说明这条测试没有断言任何东西 ——
+    那样的测试通过了也不构成证据。
+    """
+
+    target: str                      # 被测符号（函数/类/方法名）
+    file: str                        # 被测代码所在文件
+    line: int
+    title: str                       # 这条测试锁住什么行为
+    kind: str                        # characterization / unit / integration / regression
+    should_fail_when: str            # 什么情况下它应该失败（核心字段）
+    # 行为描述（characterization 测试锁的「当前实际行为」）
+    pins_behavior: str = ""
+    # 测试代码（可选：给了就可以直接跑）
+    code: str = ""
+    # 为什么需要这条测试（覆盖缺口在哪）
+    rationale: str = ""
+    # 证据：读了哪处代码得出的结论（file:line）
+    evidence: str = ""
+    #: 验证状态。三态而不是布尔：
+    #: ``verified``（真跑过且通过）/ ``failed``（跑过但没过）/ ``unverified``（只有描述）
+    #:
+    #: 为什么必须记这个：「42 条用例，0 条验证过」和「42 条都跑通了」
+    #: 是两件完全不同的事。不记状态，报告读起来两者一模一样。
+    verified: str = "unverified"
+    #: 跑测试时拿到的实际输出摘要（只留关键几行）
+    verify_output: str = ""
+    id: str = field(default_factory=lambda: _new_id("T"))
+    fingerprint: str = ""
+
+    # pytest 会把 ``Test*`` 开头的类当成测试类去收集（并要求无 __init__），
+    # 这里显式声明「我不是测试类」，避免它每次跑测试都报一条 CollectionWarning。
+    __test__ = False
+
+    def __post_init__(self) -> None:
+        if not self.fingerprint:
+            # 去重按「目标 + 锁定的行为」而不是代码文本：
+            # 同一条用例换个写法不该算两条，但锁不同行为的同名用例必须分开。
+            self.fingerprint = f"{self.target}:{self.title}".lower().strip()
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "id": self.id,
+            "target": self.target,
+            "file": self.file,
+            "line": self.line,
+            "title": self.title,
+            "kind": self.kind,
+            "should_fail_when": self.should_fail_when,
+            "pins_behavior": self.pins_behavior,
+            "code": self.code,
+            "rationale": self.rationale,
+            "evidence": self.evidence,
+            "verified": self.verified,
+            "verify_output": self.verify_output,
+        }
+
+
+#: 测试用例的类型。定义写在这里而不是散在 prompt 里，因为渲染与校验都要用。
+TEST_KINDS: dict[str, str] = {
+    "characterization": "特征测试：锁定代码**当前实际**的行为（包括看起来是错的），改动会立刻显形",
+    "unit": "单元测试：锁定一个函数/方法在给定输入下的预期输出",
+    "integration": "集成测试：锁定多个组件协作时的行为",
+    "regression": "回归测试：锁定「曾经坏过、已修好」的那个具体缺陷",
+}
+
+
+
+# =============================================================================
+# 计划域（策划助手的产出）
+# =============================================================================
+#
+# 第四种产出。前三种回答「现在怎样」：审查=哪里坏了 / 架构=该怎么切 / 测试=哪些行为没锁住。
+# 计划回答的是「**要改成什么样，怎么落地**」—— 它是唯一面向**未来**的产出。
+#
+# 为什么不能复用 Finding 或 Component：计划的每一步都必须有**可验收的完成条件**。
+# 没有验收条件的步骤是「优化代码质量」这类空话，读者无法判断做完没有。
+
+
+@dataclass(slots=True)
+class PlanStep:
+    """计划里的一步。
+
+    ## 为什么 ``done_when`` 是必填
+
+    一步计划如果没有「怎么算做完」，它就不是计划，是愿望。
+    这个字段逼着作者写出**可判定**的完成条件：
+
+    ✗ 「重构支付模块」          ← 做完了吗？不知道
+    ✓ 「把 refund 的金额来源从 order.total 改成 order.paid，
+        并让现有 6 条 service 测试全绿」   ← 可以判定
+
+    ## 为什么 ``verify`` 与 ``done_when`` 分开
+
+    前者是**判据**（要满足什么），后者是**手段**（怎么确认）。
+    两件事分开写，是因为同一个判据可能有多种验证手段
+    （跑测试 / 跑类型检查 / 人工看diff），混在一起会写漏。
+    """
+
+    order: int                                   # 第几步（从 1 开始）
+    title: str                                   # 这一步做什么（动词开头）
+    why: str = ""                                # 为什么需要这一步（不做会怎样）
+    #: 涉及的文件/符号。指不到具体位置就说明这一步还没想清楚。
+    touches: list[str] = field(default_factory=list)
+    #: **可验收的完成条件**。必须能判定真假。
+    done_when: str = ""
+    #: 怎么验证（跑什么命令 / 看什么现象）
+    verify: str = ""
+    #: 这一步可能推翻前面哪些假设。写不出说明步骤之间没有真实依赖。
+    may_invalidate: str = ""
+    #: 证据：读了哪处代码得出「要改这里」
+    evidence: str = ""
+    id: str = field(default_factory=lambda: _new_id("S"))
+    fingerprint: str = ""
+
+    def __post_init__(self) -> None:
+        if not self.fingerprint:
+            self.fingerprint = f"step:{self.order}:{self.title}".lower()
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "id": self.id,
+            "order": self.order,
+            "title": self.title,
+            "why": self.why,
+            "touches": self.touches,
+            "done_when": self.done_when,
+            "verify": self.verify,
+            "may_invalidate": self.may_invalidate,
+            "evidence": self.evidence,
+        }
+
+
+#: 实践计划的角色。定义放这里而不是散在 prompt 里：校验与渲染都要用。
+PLAN_ROLES: dict[str, str] = {
+    "spec": "改造规格：说明「改成什么样」，不写实现细节",
+    "steps": "实施步骤：按依赖排序、每步可验收的落地顺序",
+    "risk": "风险与前提：哪些假设一旦不成立，整个计划要重来",
+}
+
 # =============================================================================
 # 产出的序列化往返
 # =============================================================================
@@ -486,6 +643,8 @@ ARTIFACT_TYPES: dict[str, type] = {
     "component": Component,
     "decision": DecisionRecord,
     "open_question": OpenQuestion,
+    "test_case": TestCase,
+    "plan_step": PlanStep,
 }
 
 

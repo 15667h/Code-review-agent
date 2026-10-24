@@ -76,9 +76,16 @@ class OpenAIModel:
         self.config = config
         self.name = config.model
         self.max_retries = max_retries
+        # ``trust_env=False`` 是必需的，不是可选优化：
+        # httpx 默认读取 ``HTTP_PROXY``/``HTTPS_PROXY`` 与 Windows 系统代理，
+        # 连**本机**端点（127.0.0.1:7864 这类自建网关 / vLLM / Ollama）时
+        # 会把请求送到代理，代理再转发回来就是一个 502 ——
+        # 而 curl 加了 ``--noproxy`` 就正常，两边行为对不上，极难自查。
+        # 模型端点由使用者显式填写，不需要「帮它猜代理」。
         self._client = httpx.Client(
             base_url=config.base_url.rstrip("/"),
             timeout=config.timeout,
+            trust_env=False,
             headers={
                 "Authorization": f"Bearer {config.api_key}",
                 "Content-Type": "application/json",
@@ -101,6 +108,10 @@ class OpenAIModel:
         }
         if tools:
             payload["tools"] = tools
+            # 显式带上策略。实测：不传时某些中转在指令模糊的情况下不调工具，
+            # Agent 循环第一轮就收尾（产出 0 条却报 finished，最难自查的一类失败）。
+            choice = getattr(self.config, "tool_choice", "auto") or "auto"
+            payload["tool_choice"] = choice
 
         last_error: ModelError | None = None
         for attempt in range(self.max_retries + 1):

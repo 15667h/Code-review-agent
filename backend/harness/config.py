@@ -119,6 +119,13 @@ class Config:
     )
     temperature: float = 0.2
     timeout: float = 120.0
+    #: 工具的调用策略，透传给 API 的 ``tool_choice``。
+    #:
+    #: 默认 ``auto``（标准语义：模型自己决定）。设成 ``required`` 时**强制**模型每轮必须
+    #: 调一个工具 —— 这一项是为「保守型中转」准备的：实测某些中转服务在 ``auto`` 下
+    #: 只要指令稍微模糊就不调工具、直接回一句自然语言，导致 Agent 循环第一轮就收尾。
+    #: 用 ``required`` 能把它拽回来，但代价是模型无法主动收尾（要靠轮次上限或 finish 工具）。
+    tool_choice: str = "auto"
     #: 是否要求登录才能用工作台。默认关（本机工具，直开即用）；
     #: 置 1 后业务接口一律要求有效会话，未登录返回 401。
     require_auth: bool = False
@@ -139,6 +146,16 @@ class Config:
         if not self.model:
             gaps.append("LLM_MODEL")
         return gaps
+
+
+def _normalize_tool_choice(raw: str) -> str:
+    """归一 tool_choice。非法值退回 auto 而不是报错。
+
+    理由：这是个投递参数（tuning knob），写错了最坏结果是「行为和默认一样」，
+    不该让整个服务起不来。但要在日志/配置页看得到实际生效值。
+    """
+    value = (raw or "").strip().lower()
+    return value if value in {"auto", "required", "none"} else "auto"
 
 
 def _truthy(raw: str) -> bool:
@@ -223,6 +240,7 @@ def load_config(env_file: Path | None = None) -> Config:
         workspace_root=Path(workspace_raw).expanduser().resolve() if workspace_raw else None,
         temperature=get_float("AUDIT_TEMPERATURE", 0.2),
         timeout=get_float("AUDIT_TIMEOUT", 120.0),
+        tool_choice=_normalize_tool_choice(get("AUDIT_TOOL_CHOICE")),
         require_auth=_truthy(get("MARGIN_REQUIRE_AUTH")),
     )
     if commands:

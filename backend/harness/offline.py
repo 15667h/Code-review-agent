@@ -28,12 +28,32 @@ _IMPORT_RE = re.compile(r"^\s*(?:from\s+([A-Za-z_][\w.]*)\s+import|import\s+([A-
 
 AUDIT_AGENT = "review"
 DESIGN_AGENT = "architect"
+TEST_AGENT = "tester"
+PLAN_AGENT = "planner"
 
 def _last_tool_output(messages: Sequence[Message]) -> str:
     for message in reversed(messages):
         if message.role == "tool":
             return message.content
     return ""
+
+#: 这些目录下的文件不是审查目标（配置、文档、锁文件）
+_NON_SOURCE_DIRS = {"node_modules", ".git", "dist", "build", "vendor", "__pycache__"}
+
+
+def _is_source_file(rel: str) -> bool:
+    """是否已注册语言的源文件。
+
+    离线模式用 ``list_files("*")`` 拉全量，再靠这个函数筛出代码文件 ——
+    不筛的话会把 README、package.json、锁文件都读进来，浪费轮次预算。
+    """
+    from .languages import for_path
+
+    p = rel.replace("\\", "/")
+    if any(part in _NON_SOURCE_DIRS for part in p.split("/")[:-1]):
+        return False
+    return for_path(p) is not None
+
 
 def _parse_file_list(text: str) -> list[str]:
     files: list[str] = []
@@ -42,6 +62,24 @@ def _parse_file_list(text: str) -> list[str]:
         if match:
             files.append(match.group(1).strip())
     return files
+
+_GAP_ENTRY = re.compile(r"^-\s+`([^`]+)`\s+\(([^:)]+):(\d+)")
+
+
+def _parse_gap_list(text: str) -> list[tuple[str, str, int]]:
+    """解析 check_coverage 输出里的「未覆盖符号」清单。
+
+    格式：``- `name`  (file:line、file:line)``。
+    只取第一个位置作为登记位置 —— 同名符号在多处定义时，
+    取第一个足以让人找得到，精确到哪一个由人复核。
+    """
+    out: list[tuple[str, str, int]] = []
+    for line in text.splitlines():
+        match = _GAP_ENTRY.match(line.strip())
+        if match:
+            out.append((match.group(1), match.group(2).strip(), int(match.group(3))))
+    return out
+
 
 def _strip_line_numbers(text: str) -> tuple[list[str], str]:
     """把 read_file 的带行号输出还原成源码行。
@@ -83,6 +121,9 @@ class HeuristicModel:
         self._awaiting_read = False
         self._components_recorded = False
         self._todos_closed = False
+        # 测试模式的状态
+        self.gaps: list[tuple[str, str, int]] = []
+        self.reported_gap_index = 0
 
     # ------------------------------------------------------------------ #
 
@@ -94,9 +135,208 @@ class HeuristicModel:
     ) -> Decision:
         if self.agent == DESIGN_AGENT:
             return self._complete_design(messages)
+        if self.agent == TEST_AGENT:
+            return self._complete_test(messages)
+        if self.agent == PLAN_AGENT:
+            return self._complete_plan(messages)
         return self._complete_audit(messages)
 
     # ------------------------------------------------------------------ #
+
+    # ------------------------------------------------------------------ #
+
+    # ------------------------------------------------------------------ #
+
+    def _complete_plan(self, messages: Sequence[Message]) -> Decision:
+        """策划助手的离线路径：盘点文件 → 按文件分组生成可验收的步骤。
+
+        离线模式的步骤来自**确定性规则**（每个生产文件一步，改哪里=该文件，
+        完成条件=该文件被改且原有测试全绿）。它当然比不上真实模型写的计划，
+        但它保证了 `--agent planner --offline` 能跑通整条链，
+        让 CLI 与前端在没有模型时也能演示计划的形状。
+        """
+        self.step += 1
+        last = _last_tool_output(messages)
+
+        # 1) 列计划
+        if self.step == 1:
+            return _call(
+                ToolCall("update_todo", {
+                    "todos": [
+                        {"text": "盘点要改的范围", "status": "in_progress"},
+                        {"text": "按依赖拆步骤并登记", "status": "pending"},
+                        {"text": "登记前提并收尾", "status": "pending"},
+                    ]
+                }),
+                reasoning="离线模式：先定范围，再按文件拆步骤。",
+            )
+
+        # 2) 枚举文件
+        if self.step == 2:
+            return _call(
+                # 多语言：不能硬编码 "*.py"。用 `*` 然后由 _parse_file_list +
+                # _is_source_file 过滤 —— 只认已注册语言的源文件。
+                # 硬编码 "*.py" 会让离线模式在 JS/Go 仓库上一无所获，
+                # 而输出看起来是「没问题」。实测踩过。
+                ToolCall("list_files", {"path": ".", "pattern": "*", "limit": 60}),
+                reasoning="确定改动范围。",
+            )
+
+        # 3) 解析并开始逐步登记
+        if self.step == 3:
+            files = [
+                f for f in _parse_file_list(last)
+                if not (f.rsplit("/", 1)[-1].startswith("test_") or "/tests/" in f)
+            ][: self.max_files]
+            self.files = files
+            if not files:
+                return _call(ToolCall("finish", {
+                    "summary": "没有找到可改的 Python 文件，离线计划到此结束。"
+                }), reasoning="没有目标。")
+            return _call(ToolCall("update_todo", {
+                "todos": [
+                    {"text": f"盘点要改的范围（{len(files)} 个文件）", "status": "completed"},
+                    {"text": "按依赖拆步骤并登记", "status": "in_progress"},
+                    {"text": "登记前提并收尾", "status": "pending"},
+                ]
+            }), reasoning=f"{len(files)} 个文件。")
+
+        # 4) 逐文件登记一步
+        if self.reported_gap_index < len(self.files):
+            idx = self.reported_gap_index
+            rel = self.files[idx]
+            self.reported_gap_index += 1
+            return _call(
+                ToolCall("record_plan_step", {
+                    "order": idx + 1,
+                    "title": f"改造 {rel}",
+                    "done_when": (
+                        f"{rel} 的改动完成，且 python -m pytest 全绿、ruff check 无新增告警"
+                    ),
+                    "touches": [rel],
+                    "why": "该文件属于本次改动范围",
+                    "verify": "python -m pytest -q",
+                    "evidence": f"{rel}:1",
+                }),
+                reasoning=f"登记第 {idx + 1} 步。",
+            )
+
+        # 5) 登记前提
+        if not self._todos_closed:
+            self._todos_closed = True
+            return _call(
+                ToolCall("record_plan_risk", {
+                    "assumption": "本次改动只涉及上述文件，没有其他模块引用它们的内部实现",
+                    "if_wrong": "若有未列出的调用方，改动会造成静默不兼容；"
+                                "需要用 impact 核对每个被改符号的反向调用图",
+                    "blocking": False,
+                }),
+                reasoning="离线模式无法核对跨模块引用，如实登记为假设。",
+            )
+
+        # 6) 收尾
+        return _call(ToolCall("finish", {
+            "summary": (
+                f"离线模式按文件拆出 {len(self.files)} 步，每步都给了完成条件与验证命令。"
+                "局限：步骤是按文件机械划分的，**没有识别真实依赖顺序**；"
+                "真实模型运行时会读代码后按依赖排序。"
+            )
+        }), reasoning="收尾。")
+
+    def _complete_test(self, messages: Sequence[Message]) -> Decision:
+        """测试助手的离线路径：扫描覆盖缺口 → 为未覆盖符号登记特征测试。
+
+        为什么离线模式也要支持 tester：8 个靶场与回归测试都靠离线跑，
+        缺这条路径的话，`--agent tester --offline` 会掉进审查分支去调
+        record_finding —— 而测试助手的工具箱里根本没有这个工具，直接报错。
+        分派必须显式，不能让「没写分支」变成「走错路」。
+        """
+        self.step += 1
+        last = _last_tool_output(messages)
+
+        # 1) 先列计划
+        if self.step == 1:
+            return _call(
+                ToolCall(
+                    "update_todo",
+                    {
+                        "todos": [
+                            {"text": "扫描覆盖缺口", "status": "in_progress"},
+                            {"text": "为未覆盖的行为登记特征测试", "status": "pending"},
+                            {"text": "收尾汇总", "status": "pending"},
+                        ]
+                    },
+                ),
+                reasoning="离线模式：先机械扫描缺口，再按清单登记用例。",
+            )
+
+        # 2) 机械扫描覆盖缺口
+        if self.step == 2:
+            return _call(
+                ToolCall("check_coverage", {"path": ".", "limit": 12}),
+                reasoning="先拿一份客观的未覆盖清单，而不是凭感觉挑。",
+            )
+
+        # 3) 解析清单
+        if self.step == 3:
+            self.gaps = _parse_gap_list(last)
+            if not self.gaps:
+                return _call(
+                    ToolCall("finish", {
+                        "summary": "扫描后没有发现「完全未被测试引用」的公开符号，"
+                                   "或仓库里没有公开符号。离线模式到此为止。",
+                    }),
+                    reasoning="没有可补的目标。",
+                )
+            return _call(
+                ToolCall("update_todo", {
+                    "todos": [
+                        {"text": f"扫描覆盖缺口（{len(self.gaps)} 个未覆盖）", "status": "completed"},
+                        {"text": "为未覆盖的行为登记特征测试", "status": "in_progress"},
+                        {"text": "收尾汇总", "status": "pending"},
+                    ]
+                }),
+                reasoning=f"找到 {len(self.gaps)} 个未覆盖符号。",
+            )
+
+        # 4) 逐个登记特征测试
+        if self.step >= 4 and self.reported_gap_index < len(self.gaps):
+            name, file, line = self.gaps[self.reported_gap_index]
+            self.reported_gap_index += 1
+            return _call(
+                ToolCall("record_test_case", {
+                    "target": name,
+                    "file": file,
+                    "line": line,
+                    "title": f"锁定 {name} 的现有行为",
+                    "kind": "characterization",
+                    # should_fail_when 必须写具体条件 —— 这里写「行为被改动」是可判定的
+                    "should_fail_when": (
+                        f"`{name}` 的行为被改动且没有同步更新这条测试时"
+                        "（包括返回值类型变化、分支条件变化、异常类型变化）"
+                    ),
+                    "pins_behavior": (
+                        f"当前实现下 `{name}` 会按 {file} 里的现有逻辑返回结果；"
+                        "离线模式未逐行推断具体返回值，运行时应读代码补全这一步"
+                    ),
+                    "rationale": f"`{name}` 是公开符号，但没有任何测试引用过它",
+                    "evidence": f"{file}:{line}",
+                }),
+                reasoning=f"为未覆盖的 `{name}` 建立安全网。",
+            )
+
+        # 5) 收尾
+        return _call(
+            ToolCall("finish", {
+                "summary": (
+                    f"扫描到 {len(self.gaps)} 个完全未被测试引用的公开符号，"
+                    f"已为其中 {min(self.reported_gap_index, len(self.gaps))} 个登记特征测试。"
+                    "注意：特征测试建立的是安全网（改动会立刻显形），不代表代码正确。"
+                    "离线模式未逐个读实现推断具体断言，实际运行时应当读代码补全。"
+                )
+            }),
+            reasoning="覆盖缺口已登记，收尾。",
+        )
 
     def _complete_audit(self, messages: Sequence[Message]) -> Decision:
         self.step += 1
@@ -121,13 +361,17 @@ class HeuristicModel:
         # 2) 枚举文件
         if self.step == 2:
             return _call(
-                ToolCall("list_files", {"path": ".", "pattern": "*.py", "limit": 60}),
+                # 多语言：不能硬编码 "*.py"。用 `*` 然后由 _parse_file_list +
+                # _is_source_file 过滤 —— 只认已注册语言的源文件。
+                # 硬编码 "*.py" 会让离线模式在 JS/Go 仓库上一无所获，
+                # 而输出看起来是「没问题」。实测踩过。
+                ToolCall("list_files", {"path": ".", "pattern": "*", "limit": 60}),
                 reasoning="枚举 Python 源文件。",
             )
 
         # 3) 解析文件列表
         if self.step == 3:
-            self.files = _parse_file_list(last)[: self.max_files]
+            self.files = [f for f in _parse_file_list(last) if _is_source_file(f)][: self.max_files]
             if not self.files:
                 return _call(
                     ToolCall(

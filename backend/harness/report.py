@@ -136,6 +136,8 @@ def render_generic_terminal(result: AuditResult, *, color: bool = True) -> str:
 # 「本次没有记录任何发现」（那不是事实，是误导，比不渲染更糟）。
 _MARKDOWN_RENDERERS: dict[str, Callable[..., str]] = {
     "blueprint": lambda result, **kw: render_blueprint_markdown(result, **kw),
+    "test_plan": lambda result, **kw: render_test_plan_markdown(result, **kw),
+    "roadmap": lambda result, **kw: render_roadmap_markdown(result, **kw),
 }
 
 
@@ -234,6 +236,308 @@ def render_markdown(result: AuditResult, *, repo: str = "", model: str = "") -> 
 
 # =============================================================================
 # 架构方案
+# =============================================================================
+# 测试助手：产出渲染
+# =============================================================================
+# 策划助手：产出渲染
+# =============================================================================
+
+
+def render_roadmap_markdown(result: AuditResult, *, repo: str = "", model: str = "") -> str:
+    """实施计划的 Markdown 渲染。
+
+    顺序刻意是「前提 → 步骤」：读计划的人先要知道「这些步骤建立在什么假设上」，
+    否则会照着做，做到一半才发现前提不成立。
+
+    每一步必须露出 **完成条件**（done_when）和**验证手段**（verify）——
+    没有这两项，一份计划就退化成「建议按顺序做这几件事」，无法验收。
+    """
+    steps = sorted(result.artifacts.get("plan_step", []), key=lambda x: getattr(x, "order", 0))
+    risks = result.artifacts.get("plan_risk", [])
+
+    def get(obj, key, default=""):
+        return obj.get(key) if isinstance(obj, dict) else getattr(obj, key, default)
+
+    lines: list[str] = []
+    lines.append("# 实施计划")
+    lines.append("")
+    lines.append(f"- **改动意图**：{result.goal}")
+    if repo:
+        lines.append(f"- **仓库路径**：`{repo}`")
+    if model:
+        lines.append(f"- **驱动模型**：`{model}`")
+    lines.append(f"- **步骤数**：{len(steps)}")
+    blocking = sum(1 for r in risks if get(r, "blocking", False))
+    lines.append(f"- **前提/风险**：{len(risks)} 条（其中 {blocking} 条会阻塞）")
+    lines.append("")
+
+    if not steps:
+        lines.append("本次没有登记任何计划步骤。")
+        if result.stop_reason != "final_answer":
+            lines.append(f"（结束原因：`{result.stop_reason}` —— 可能说明运行没有正常收尾。）")
+        return "\n".join(lines)
+
+    # ---- 前提放前面：读到步骤之前先知道它们建立在什么假设上 ----
+    if risks:
+        lines.append("## 前提与风险")
+        lines.append("")
+        for risk in risks:
+            flag = "**[阻塞]** " if get(risk, "blocking", False) else ""
+            lines.append(f"- {flag}{get(risk, 'question', '')}")
+            why = get(risk, "why_it_matters", "")
+            if why:
+                lines.append(f"  - 不成立时：{why}")
+        lines.append("")
+    else:
+        lines.append("> 这份计划**没有登记任何前提**。零前提通常说明作者还没真正评估过不确定性")
+        lines.append("> —— 或者确实没有不确定的地方。两种都要让人知道。")
+        lines.append("")
+
+    # ---- 步骤 ----
+    lines.append("## 步骤")
+    lines.append("")
+    for step in steps:
+        order = get(step, "order", "?")
+        lines.append(f"### {order}. {get(step, 'title', '')}")
+        lines.append("")
+        touches = get(step, "touches", []) or []
+        if touches:
+            lines.append(f"- **改哪里**：{'、'.join(f'`{t}`' for t in touches)}")
+        why = get(step, "why", "")
+        if why:
+            lines.append(f"- **为什么需要**：{why}")
+        done = get(step, "done_when", "")
+        if done:
+            # 完成条件紧跟「改哪里」，因为它是这一步的可验收性所在
+            lines.append(f"- **做完是什么样**：{done}")
+        verify = get(step, "verify", "")
+        if verify:
+            lines.append(f"- **怎么验证**：`{verify}`")
+        else:
+            lines.append("- **怎么验证**：（未给出 —— 这一步做完后无法自动确认）")
+        invalidate = get(step, "may_invalidate", "")
+        if invalidate:
+            lines.append(f"- **可能推翻**：{invalidate}")
+        evidence = get(step, "evidence", "")
+        if evidence:
+            lines.append(f"- **依据**：`{evidence}`")
+        lines.append("")
+
+    if result.warnings:
+        lines.append("## 运行提示")
+        lines.append("")
+        for warn in result.warnings:
+            lines.append(f"- {warn}")
+        lines.append("")
+
+    return "\n".join(lines)
+
+
+def render_roadmap_terminal(result: AuditResult, *, color: bool = True) -> str:
+    """终端版：步骤一行一条，突出完成条件。"""
+
+    def paint(text: str, code: str) -> str:
+        return f"{code}{text}{_RESET}" if color else text
+
+    steps = sorted(result.artifacts.get("plan_step", []), key=lambda x: getattr(x, "order", 0))
+    risks = result.artifacts.get("plan_risk", [])
+
+    def get(obj, key, default=""):
+        return obj.get(key) if isinstance(obj, dict) else getattr(obj, key, default)
+
+    lines: list[str] = []
+    lines.append(paint(f"实施计划 · {len(steps)} 步 · {len(risks)} 条前提", _BOLD))
+    lines.append(f"意图：{result.goal}")
+    if not steps:
+        lines.append("本次没有登记任何计划步骤。")
+        return "\n".join(lines)
+
+    blocking = [r for r in risks if get(r, "blocking", False)]
+    if blocking:
+        lines.append("")
+        lines.append(paint(f"阻塞性前提（{len(blocking)} 条，未定就不该开始）：", _BOLD))
+        for r in blocking:
+            lines.append(f"  - {get(r, 'question', '')}")
+
+    lines.append("")
+    for step in steps:
+        lines.append(paint(f"{get(step, 'order', '?')}. {get(step, 'title', '')}", _BOLD))
+        touches = get(step, "touches", []) or []
+        if touches:
+            lines.append(f"   改：{'、'.join(touches)}")
+        done = get(step, "done_when", "")
+        if done:
+            lines.append(f"   完成条件：{done}")
+        verify = get(step, "verify", "")
+        lines.append(f"   验证：{verify if verify else '（未给出）'}")
+    return "\n".join(lines)
+
+
+# =============================================================================
+
+#: kind 的中文标签。放在这里而不是 prompt 里，因为渲染与 prompt 要一致，
+#: 两处各写一份必然会漂。
+_KIND_LABEL = {
+    "characterization": "特征测试",
+    "unit": "单元测试",
+    "integration": "集成测试",
+    "regression": "回归测试",
+}
+
+
+def render_test_plan_markdown(result: AuditResult, *, repo: str = "", model: str = "") -> str:
+    """测试用例清单的 Markdown 渲染。
+
+    顺序：按 kind 分组（特征测试在前）。理由与架构报告一致 ——
+    读的人先看「这套用例是干什么的」，再看具体条目。
+
+    **每条都必须露出 `should_fail_when`**：没有它，一份测试清单和
+    「建议补测试」的空话没有区别。这个字段是这份产出的可评审性所在。
+    """
+    cases = result.artifacts.get("test_case", [])
+    lines: list[str] = []
+    lines.append("# 测试补全报告")
+    lines.append("")
+    lines.append(f"- **目标**：{result.goal}")
+    if repo:
+        lines.append(f"- **仓库路径**：`{repo}`")
+    if model:
+        lines.append(f"- **驱动模型**：`{model}`")
+    lines.append(f"- **迭代轮数**：{result.iterations}")
+    lines.append(f"- **用例总数**：{len(cases)}")
+    # 验证状态必须单独统计并展示 ——「42 条，0 条跑过」和「42 条全跑通」
+    # 是两件事，报告读起来必须能分辨
+    _vcount = {"verified": 0, "failed": 0, "unverified": 0}
+    for c in cases:
+        key = (getattr(c, "verified", "") if not isinstance(c, dict) else c.get("verified", "")) or "unverified"
+        _vcount[key] = _vcount.get(key, 0) + 1
+    lines.append(
+        f"- **验证状态**：跑通 {_vcount['verified']} / 跑过但失败 {_vcount['failed']}"
+        f" / 未验证 {_vcount['unverified']}"
+    )
+    if _vcount["unverified"] and _vcount["unverified"] == len(cases):
+        lines.append("")
+        lines.append("> **注意：这批用例一条都没有被真实执行过。**"
+                     "它们是按源码逐行推出来的规格说明，落地前需要先跑一遍再采信。")
+    lines.append("")
+
+    if not cases:
+        lines.append("本次没有登记任何测试用例。")
+        if result.stop_reason != "final_answer":
+            lines.append(f"（结束原因：`{result.stop_reason}` —— 这可能说明运行没有正常收尾。）")
+        return "\n".join(lines)
+
+    # ---- 分组统计 ----
+    by_kind: dict[str, list[Any]] = {}
+    for case in cases:
+        kind = str(getattr(case, "kind", "") or "unknown")
+        by_kind.setdefault(kind, []).append(case)
+
+    order = ["characterization", "unit", "integration", "regression"]
+    kinds = [k for k in order if k in by_kind] + [k for k in by_kind if k not in order]
+
+    lines.append("| 类型 | 数量 |")
+    lines.append("|---|---|")
+    for kind in kinds:
+        lines.append(f"| {_KIND_LABEL.get(kind, kind)} | {len(by_kind[kind])} |")
+    lines.append("")
+
+    # ---- 特征测试单独说明 ----
+    if "characterization" in by_kind:
+        lines.append("> **关于特征测试**：它锁定的是代码**当前实际**的行为，包括那些看起来是错的。")
+        lines.append("> 它建立的是一张**安全网**（改动会立刻显形），不是**正确性认证**。")
+        lines.append("> 如果某条用例锁住的是一个已知缺陷，它会在修好之后变红 —— 那是预期的。")
+        lines.append("")
+
+    # ---- 逐条 ----
+    for kind in kinds:
+        lines.append(f"## {_KIND_LABEL.get(kind, kind)}（{len(by_kind[kind])} 条）")
+        lines.append("")
+        for case in by_kind[kind]:
+            get = (lambda k, d="": getattr(case, k, d) or d) if not isinstance(case, dict) else (lambda k, d="": case.get(k) or d)
+            title = get("title")
+            target = get("target")
+            file = get("file")
+            line = get("line")
+            lines.append(f"### {title}")
+            lines.append("")
+            lines.append(f"- **被测对象**：`{target}`　`{file}:{line}`")
+            # 这个字段放第二位 —— 它是整条用例的证据强度所在
+            lines.append(f"- **什么情况下它会红**：{get('should_fail_when')}")
+            pinned = get("pins_behavior")
+            if pinned:
+                lines.append(f"- **锁定的当前行为**：{pinned}")
+            rationale = get("rationale")
+            if rationale:
+                lines.append(f"- **为什么需要它**：{rationale}")
+            evidence = get("evidence")
+            if evidence:
+                lines.append(f"- **依据**：`{evidence}`")
+            status = get("verified", "unverified")
+            label = {"verified": "已跑通", "failed": "跑过但失败"}.get(status, "未验证")
+            lines.append(f"- **验证状态**：{label}")
+            vout = get("verify_output")
+            if vout:
+                lines.append(f"- **执行输出**：`{str(vout)[:200]}`")
+            code = get("code")
+            if code:
+                lines.append("")
+                lines.append("```python")
+                lines.append(str(code).strip())
+                lines.append("```")
+            else:
+                lines.append("")
+                lines.append("> 这条用例只有描述、没有可运行代码 —— 它是一份规格说明，不是能跑的测试。")
+            lines.append("")
+
+    if result.warnings:
+        lines.append("## 运行提示")
+        lines.append("")
+        for warn in result.warnings:
+            lines.append(f"- {warn}")
+        lines.append("")
+
+    return "\n".join(lines)
+
+
+def render_test_plan_terminal(result: AuditResult, *, color: bool = True) -> str:
+    """终端版：只给摘要 + 每条一行，代码不进终端（太长且没格式化）。"""
+
+    def paint(text: str, code: str) -> str:
+        return f"{code}{text}{_RESET}" if color else text
+
+    cases = result.artifacts.get("test_case", [])
+    lines: list[str] = []
+    lines.append(paint(f"测试补全 · 共 {len(cases)} 条用例", _BOLD))
+    lines.append(f"目标：{result.goal}")
+    if not cases:
+        lines.append("本次没有登记任何测试用例。")
+        return "\n".join(lines)
+
+    by_kind: dict[str, list[Any]] = {}
+    for case in cases:
+        kind = str(getattr(case, "kind", "") or "unknown")
+        by_kind.setdefault(kind, []).append(case)
+    order = ["characterization", "unit", "integration", "regression"]
+    kinds = [k for k in order if k in by_kind] + [k for k in by_kind if k not in order]
+
+    lines.append("")
+    for kind in kinds:
+        lines.append(paint(f"{_KIND_LABEL.get(kind, kind)}（{len(by_kind[kind])} 条）", _BOLD))
+        for case in by_kind[kind]:
+            target = getattr(case, "target", "?") if not isinstance(case, dict) else case.get("target", "?")
+            file = getattr(case, "file", "?") if not isinstance(case, dict) else case.get("file", "?")
+            title = getattr(case, "title", "?") if not isinstance(case, dict) else case.get("title", "?")
+            fail_when = getattr(case, "should_fail_when", "") if not isinstance(case, dict) else case.get("should_fail_when", "")
+            status = getattr(case, "verified", "unverified") if not isinstance(case, dict) else case.get("verified", "unverified")
+            label = {"verified": "✓已跑通", "failed": "✗跑过但失败"}.get(status, "未验证")
+            lines.append(f"  [{label}] {title}")
+            lines.append(f"    {target}  ({file})")
+            lines.append(f"    会红于：{fail_when}")
+        lines.append("")
+    return "\n".join(lines)
+
+
 # =============================================================================
 
 
@@ -380,6 +684,8 @@ def _append_warnings(lines: list[str], result: AuditResult) -> None:
 
 _TERMINAL_RENDERERS: dict[str, Callable[..., str]] = {
     "blueprint": lambda result, **kw: render_blueprint_terminal(result, **kw),
+    "test_plan": lambda result, **kw: render_test_plan_terminal(result, **kw),
+    "roadmap": lambda result, **kw: render_roadmap_terminal(result, **kw),
 }
 
 
