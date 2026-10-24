@@ -206,7 +206,21 @@ def collect_diff(
             return report
 
     # --unified=0 只给变更行本身，不给上下文 —— 我们要的正是「精确到行」。
-    result = _git(root, "diff", "--unified=0", "--no-color", base)
+    #
+    # 比较对象的选择（这个区别在 CI 里是致命的）：
+    # - 本地开发：``git diff <base>`` 比的是 base 与**工作树**，能包含未提交改动。这是默认行为。
+    # - CI（PR）：代码已 checkout，工作树干净。``git diff <base>`` 会返回**空** ——
+    #   于是过滤逻辑认为「没有改动」，把所有发现都丢掉，PR 上永远显示 0 条。
+    #   所以 CI 场景必须比 base 与 **HEAD**。
+    #
+    # 判据：工作树有未提交改动 → 按本地语义（含工作树）；否则 → 比到 HEAD。
+    # 这样两种场景都对，且不要求调用方多传一个参数。
+    dirty = _git(root, "status", "--porcelain", "--untracked-files=no")
+    has_worktree_changes = bool(dirty.stdout.strip())
+    if has_worktree_changes:
+        result = _git(root, "diff", "--unified=0", "--no-color", base)
+    else:
+        result = _git(root, "diff", "--unified=0", "--no-color", f"{base}..HEAD")
     if result.returncode != 0:
         report.error = f"git diff 失败：{result.stderr.strip()[:200]}"
         return report

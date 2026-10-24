@@ -1,0 +1,205 @@
+name: Margin 代码审查
+
+# 只审 diff，不审全仓；结论以 SARIF 落到 Security 页，评论只给摘要。
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+  workflow_dispatch:
+    inputs:
+      base:
+        description: "对比基准（默认取 PR base）"
+        required: false
+        default: ""
+
+# 权限最小化：审查只需要读代码 + 写评论/安全结果。
+# 不给 contents: write —— 即使这个 job 被供应链攻击利用，也推不了代码。
+permissions:
+  contents: read
+  pull-requests: write
+  security-events: write
+
+concurrency:
+  # 同一个 PR 上新的推送取消旧的运行：审查结果以最后一次为准，旧的不值得占 runner。
+  group: margin-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  review:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: 检出（需要完整历史才能算 diff）
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: 安装 Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: 安装依赖
+        # 平台核心零依赖，只装 HTTP 客户端 —— 这是本项目的定位，别在这里加别的。
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r backend/requirements.txt
+
+      # ---- 小 PR 直接跑，大 PR 先提示拆分 ----
+      #
+      # 为什么要有这一步：一次几百个文件的 diff 既慢又贵，而且模型会「看不完」
+      # 却照样给出像样的结论 —— 那比不审更危险。
+      - name: 评估改动规模
+        id: size
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || inputs.base }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+          if [ -z "${BASE_SHA:-}" ]; then
+            echo "没有 base（可能是手动触发），按全仓处理"
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+            echo "lines=0" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          git diff --numstat "$BASE_SHA" HEAD > /tmp/numstat.txt || true
+          lines=$(awk '{s+=$1+$2} END {print s+0}' /tmp/numstat.txt)
+          files=$(wc -l < /tmp/numstat.txt)
+          echo "改动 $files 个文件，$lines 行"
+          echo "lines=$lines" >> "$GITHUB_OUTPUT"
+          echo "files=$files" >> "$GITHUB_OUTPUT"
+          # 阈值取 3000 行：超过这个规模的 PR，本身就是「该拆」的信号，
+          # 强行审查得到的结论质量不可靠（模型会跳读）。
+          if [ "$lines" -gt 3000 ]; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: 提示 PR 过大
+        if: steps.size.outputs.skip == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          LINES: ${{ steps.size.outputs.lines }}
+          FILES: ${{ steps.size.outputs.files }}
+        run: |
+          gh pr comment "$PR_NUMBER" --body "$(cat <<EOF
+          ### Margin：本次改动过大，已跳过自动审查
+
+          改动 **${FILES} 个文件 / ${LINES} 行**，超过 3000 行阈值。
+
+          这个阈值不是为了省钱 —— 而是超过这个规模时，审查结论本身的可靠性会下降：
+          模型对超大 diff 会出现「跳读」，但输出的结论看起来依然完整。**那比不审更危险。**
+
+          建议拆成若干个可独立审查的 PR。需要强制审查本次改动，
+          可以在 PR 上评论 \`/margin review\` 后由维护者手动触发 workflow_dispatch。
+          EOF
+          )"
+
+      # ---- 确定性规则扫描（不需要模型，秒级，永远跑）----
+      #
+      # 这一层刻意跑在模型之前：规则命中是**可复现的事实**，
+      # 而模型结论可能波动。两者一起上传到 Security 页，人是能分辨来源的。
+      - name: 规则扫描（确定性，无需模型）
+        if: steps.size.outputs.skip != 'true'
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || inputs.base }}
+        run: |
+          set -euo pipefail
+          cd backend
+          if [ -n "${BASE_SHA:-}" ]; then
+            python -m harness -r . --scan-only --out /tmp/rules.md --sarif "$GITHUB_WORKSPACE/results-rules.sarif"
+          else
+            python -m harness -r . --scan-only --out /tmp/rules.md --sarif "$GITHUB_WORKSPACE/results-rules.sarif"
+          fi
+
+      # ---- 上传 SARIF：结果会出现在 Security → Code scanning ----
+      #
+      # if: always() —— 即使上一步因为发现阻断级问题返回了非 0，也要上传结果。
+      # 否则「有问题的 PR」反而看不到问题（因为 job 失败后面步骤被跳过）。
+      - name: 上传 SARIF
+        if: always() && steps.size.outputs.skip != 'true'
+        uses: github/codeql-action/upload-sarif@v3
+        continue-on-error: true
+        with:
+          sarif_file: results-rules.sarif
+          category: margin-rules
+
+      # ---- AI 审查（可选：没配密钥就跳过，不阻塞 PR）----
+      #
+      # 设计取舍：**没有 LLM_API_KEY 时不应该让 CI 变红**。
+      # 开源项目的 fork PR 拿不到 secrets，如果这里硬失败，
+      # 所有外部贡献都会被一个「配置缺失」卡住 —— 那是把基础设施问题伪装成代码问题。
+      - name: AI 审查（需要 LLM_API_KEY）
+        id: ai
+        if: steps.size.outputs.skip != 'true'
+        env:
+          LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
+          LLM_BASE_URL: ${{ vars.LLM_BASE_URL }}
+          LLM_MODEL: ${{ vars.LLM_MODEL }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha || inputs.base }}
+        run: |
+          set -euo pipefail
+          if [ -z "${LLM_API_KEY:-}" ]; then
+            echo "未配置 LLM_API_KEY，跳过 AI 审查（规则扫描结果仍然有效）"
+            echo "ran=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          cd backend
+          # --diff 让模型只审改动；--sarif 输出供 Security 页使用。
+          # 退出码 1 表示有阻断级发现 —— 这里刻意不 `|| true`，
+          # 而是用 continue-on-error 在外面接住，保持退出码语义不被污染。
+          python -m harness \
+            -r . \
+            --diff "$BASE_SHA" \
+            -g "审查本次 PR 的改动。只关注会导致错误行为、安全问题、资源泄漏的实现。如果没有值得修的实质问题，直接说「本次改动未发现阻断级问题」，不要为了显得有用而提出风格建议。" \
+            --out /tmp/ai-review.md \
+            --sarif "$GITHUB_WORKSPACE/results-ai.sarif" \
+            --max-iterations 30
+          echo "ran=true" >> "$GITHUB_OUTPUT"
+        continue-on-error: true
+
+      - name: 上传 AI 审查 SARIF
+        if: always() && steps.ai.outputs.ran == 'true'
+        uses: github/codeql-action/upload-sarif@v3
+        continue-on-error: true
+        with:
+          sarif_file: results-ai.sarif
+          category: margin-ai
+
+      # ---- 一条评论，而不是每次 push 刷一屏 ----
+      - name: 发评论
+        if: always() && github.event_name == 'pull_request' && steps.size.outputs.skip != 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          AI_RAN: ${{ steps.ai.outputs.ran }}
+          RULE_LINES: ${{ steps.size.outputs.lines }}
+        run: |
+          set -euo pipefail
+          {
+            echo "### Margin 审查结果"
+            echo ""
+            echo "改动规模：${RULE_LINES} 行。详情见 **Security → Code scanning**（可筛选、可标记误报）。"
+            echo ""
+            if [ -f /tmp/rules.md ]; then
+              echo "<details><summary>确定性规则扫描</summary>"
+              echo ""
+              cat /tmp/rules.md
+              echo ""
+              echo "</details>"
+              echo ""
+            fi
+            if [ "${AI_RAN:-false}" = "true" ] && [ -f /tmp/ai-review.md ]; then
+              echo "<details><summary>AI 审查</summary>"
+              echo ""
+              cat /tmp/ai-review.md
+              echo ""
+              echo "</details>"
+            elif [ "${AI_RAN:-false}" != "true" ]; then
+              echo "> AI 审查未运行：未配置 \`LLM_API_KEY\`。规则扫描结果仍然有效。"
+            fi
+          } > /tmp/comment.md
+          gh pr comment "$PR_NUMBER" --body-file /tmp/comment.md
+        continue-on-error: true

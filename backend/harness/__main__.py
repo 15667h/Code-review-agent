@@ -142,6 +142,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--context", default="", help="补充给模型的背景信息")
     parser.add_argument("--out", default="", help="Markdown 报告输出路径")
     parser.add_argument("--json", default="", help="JSON 结果输出路径")
+    parser.add_argument(
+        "--sarif",
+        default="",
+        help="SARIF 2.1.0 输出路径（给 GitHub Code Scanning / 其他 CI 用）。"
+             "配合 --diff 时只输出本次改动范围内的发现。",
+    )
     parser.add_argument("--offline", action="store_true", help="离线规则模式，不需要 API Key")
     parser.add_argument("--scan-only", action="store_true", help="只跑确定性规则扫描，不调用模型")
     parser.add_argument("--model", default="", help="覆盖模型名")
@@ -269,8 +275,63 @@ def _run_scan_only(repo: Path, args: argparse.Namespace) -> int:
         _write_output(args.out, render_markdown(result, repo=str(repo), model="rules-only"))
         print(f"\n报告已写入 {args.out}")
 
-    blockers = sum(1 for hit in report.hits if hit.rule.severity == "blocker")
+    # ---- 增量过滤：--scan-only 也必须支持 --diff ----
+    #
+    # 之前这里漏了：传了 --diff 会被**静默忽略**，仍然输出全仓结果。
+    # 那比报错更糟 —— CI 里用户以为过滤生效，实际没有，PR 上照样一片红。
+    findings_for_report = findings
+    note = ""
+    if getattr(args, "diff", ""):
+        findings_for_report, note = _filter_to_diff(findings, repo, args.diff)
+        print(f"\n{note}")
+
+    if args.sarif:
+        from .sarif import rule_metadata, write_sarif
+
+        write_sarif(findings_for_report, args.sarif, repo=str(repo), rules=rule_metadata())
+        print(f"SARIF 已写入 {args.sarif}（{len(findings_for_report)} 条）")
+
+    # 退出码按**过滤后**的结果算：CI 要拦的是「这个 PR 引入了阻断级问题」，
+    # 不是「仓库里历史上有阻断级问题」—— 后者会让任何 PR 都过不去。
+    blockers = sum(1 for f in findings_for_report if str(f.severity) == "blocker")
     return 1 if blockers else 0
+
+
+def _filter_to_diff(findings: list, repo: Path, base: str) -> tuple[list, str]:
+    """只留下「落在本次改动范围内」的发现。
+
+    ## 为什么 CI 里必须过滤
+
+    PR 场景下，全仓扫描会把**历史遗留问题**也报出来。开发者打开 PR 看到
+    200 条与本次改动无关的红色标记，第一反应是把这个检查关掉 ——
+    这正是「AI 审查变成噪音」的典型路径。
+
+    只报改动行及其邻近（±3 行）的问题，让「这个 PR 引入了什么」成为唯一的信号。
+
+    ## 为什么容差是 3 行
+
+    模型给的行号常有一两行偏差（它引用的是上下文行而不是精确行）。
+    容差太小会漏掉真实发现，太大又会把邻近的旧问题拉进来。
+    3 行是这个权衡的中点，且与项目既有评估口径（行号 ±2）量级一致。
+    """
+    from .diffmode import collect_diff
+
+    try:
+        report = collect_diff(repo, base)
+    except Exception as exc:  # diff 拿不到时不要吞掉，交给调用方决定
+        return findings, f"无法获取 diff（{exc}），已输出全仓结果"
+
+    if not report.ok:
+        return findings, f"diff 为空或不可解析（{report.brief()}），已输出全仓结果"
+
+    changed = {h.file for h in report.hunks}
+    kept = [f for f in findings if str(f.file).replace("\\", "/") in changed]
+    dropped = len(findings) - len(kept)
+    return kept, (
+        f"按 --diff {base} 过滤：改动 {len(changed)} 个文件，"
+        f"保留 {len(kept)} 条、省略 {dropped} 条改动范围外的历史发现"
+    )
+
 
 def _run_agent(repo: Path, args: argparse.Namespace, config: Config) -> int:
     workspace = resolve_workspace(repo)
@@ -372,6 +433,20 @@ def _run_agent(repo: Path, args: argparse.Namespace, config: Config) -> int:
             payload["evidence_report"] = result.evidence_report
         _write_output(args.json, json.dumps(payload, ensure_ascii=False, indent=2))
         print(f"JSON 结果已写入：{args.json}")
+
+    # ---- SARIF：给 GitHub Code Scanning 用 ----
+    if args.sarif:
+        from .sarif import rule_metadata, write_sarif
+
+        findings = list(result.findings)
+        note = ""
+        # CI 里必须只报改动范围，否则历史遗留会把 PR 刷红（见 _filter_to_diff 注释）
+        if getattr(args, "diff", ""):
+            findings, note = _filter_to_diff(findings, repo, args.diff)
+        write_sarif(findings, args.sarif, repo=str(repo), rules=rule_metadata())
+        print(f"SARIF 已写入：{args.sarif}（{len(findings)} 条）")
+        if note:
+            print(f"  {note}")
 
     return 1 if result.severity_counts["blocker"] else 0
 

@@ -727,10 +727,12 @@ def to_findings(report: ScanReport) -> list:
             severity=hit.rule.severity,
             file=hit.path,
             line=hit.line,
-            title=f"{hit.rule.title}（{hit.rule.id}）",
+            # title 只放人类读的结论；规则 id 走独立字段，可被 SARIF / 记忆 / 统计使用
+            title=hit.rule.title,
             detail=hit.rule.detail,
             evidence=hit.evidence,
             suggestion=hit.rule.suggestion,
+            rule_id=hit.rule.id,
         )
         for hit in report.hits
     ]

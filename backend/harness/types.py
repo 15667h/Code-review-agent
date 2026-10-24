@@ -221,6 +221,14 @@ class Finding:
     detail: str
     evidence: str
     suggestion: str = ""
+    #: 产出这条发现的规则 id（如 ``SEC001``）。模型自行发现的留空。
+    #:
+    #: 为什么必须是独立字段而不是塞进 title：
+    #: ① SARIF 需要按规则归类（GitHub 界面上能按规则筛选，并记住「这条规则我忽略过」）；
+    #: ② 跨 Agent 记忆去重需要按规则 id 归一；
+    #: ③ 趋势统计要看「哪条规则命中最多」。
+    #: 之前是 ``title = f"{title}（{rule_id}）"``，信息在，但不可机读。
+    rule_id: str = ""
     id: str = field(default_factory=lambda: _new_id("F"))
     # 用于去重：同一文件同一行同一标题只保留一条
     fingerprint: str = ""
@@ -239,6 +247,7 @@ class Finding:
             "detail": self.detail,
             "evidence": self.evidence,
             "suggestion": self.suggestion,
+            "rule_id": self.rule_id,
         }
 
 
