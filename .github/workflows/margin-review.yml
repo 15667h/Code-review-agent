@@ -107,12 +107,17 @@ jobs:
           BASE_SHA: ${{ github.event.pull_request.base.sha || inputs.base }}
         run: |
           set -euo pipefail
-          cd backend
-          if [ -n "${BASE_SHA:-}" ]; then
-            python -m harness -r . --scan-only --out /tmp/rules.md --sarif "$GITHUB_WORKSPACE/results-rules.sarif"
-          else
-            python -m harness -r . --scan-only --out /tmp/rules.md --sarif "$GITHUB_WORKSPACE/results-rules.sarif"
-          fi
+          # 审查根必须是**仓库根**，不是 backend/。
+          #
+          # 实测踩过：先 cd backend 再 -r . ，扫描范围就只有 backend/ 之下，
+          # 于是 scripts/、.github/ 以及任何仓库根的改动都被完全漏掉 ——
+          # 冒烟测试里那个 src 样本就是这么消失的，而日志看起来「扫完了、没问题」。
+          # 用 PYTHONPATH 而不是 cd backend：`-r .` 必须指向仓库根。
+          # cd 进 backend 会让审查根变成 backend/，仓库根的改动全部漏扫。
+          export PYTHONPATH="$GITHUB_WORKSPACE/backend"
+          python -m harness -r . --scan-only \
+            --out /tmp/rules.md \
+            --sarif "$GITHUB_WORKSPACE/results-rules.sarif"
 
       # ---- 上传 SARIF：结果会出现在 Security → Code scanning ----
       #
@@ -136,8 +141,14 @@ jobs:
         if: steps.size.outputs.skip != 'true'
         env:
           LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
-          LLM_BASE_URL: ${{ vars.LLM_BASE_URL }}
-          LLM_MODEL: ${{ vars.LLM_MODEL }}
+          # BASE_URL / MODEL 给默认值：接官方端点时只需要配一个 secret。
+          # 换别的服务（自建 vLLM / 其他厂商）时用 vars 覆盖即可，
+          # 不必为了改端点去改 workflow 本体。
+          LLM_BASE_URL: ${{ vars.LLM_BASE_URL || 'https://api.deepseek.com' }}
+          LLM_MODEL: ${{ vars.LLM_MODEL || 'deepseek-flash' }}
+          # 审查是「只读」动作：不开高风险权限，模型就不会白费轮次去试 run_command。
+          # 那两轮在实测里被 HighRiskBlocked 拒掉，纯粹浪费。
+          AUDIT_TOOL_CHOICE: ${{ vars.AUDIT_TOOL_CHOICE || 'auto' }}
           BASE_SHA: ${{ github.event.pull_request.base.sha || inputs.base }}
         run: |
           set -euo pipefail
@@ -146,7 +157,9 @@ jobs:
             echo "ran=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          cd backend
+          # 同规则扫描：审查根是仓库根，否则只看到 backend/ 之下的改动。
+          cd "$GITHUB_WORKSPACE"
+          export PYTHONPATH="$GITHUB_WORKSPACE/backend"
           # --diff 让模型只审改动；--sarif 输出供 Security 页使用。
           # 退出码 1 表示有阻断级发现 —— 这里刻意不 `|| true`，
           # 而是用 continue-on-error 在外面接住，保持退出码语义不被污染。

@@ -212,6 +212,69 @@ def _iter_lines(source: str, language: str = "python") -> Iterator[tuple[int, st
         yield lineno, _code_part(line, prefixes)
 
 
+#: 一行的「数据形态」判定：只由字面量与分隔符组成，没有函数调用。
+#:
+#: 用来排除**规则自己的关键词表**这类纯数据行。实测案例：
+#:
+#:     "sql": ("sql", "execute(", "cursor", "f\"select", "select *", "insert into"),
+#:
+#: 这行被 SEC002（SQL 拼接）自己命中，报成「阻断级 SQL 注入」——
+#: 检测器在扫自己的配置表，纯自我指涉，不是缺陷。
+_RE_LINE_IS_DATA = re.compile(
+    r"""^[\s\(\[\{,'"]*(?:"""
+    r"""[rbfuRBFU]?['"][^'"]*['"]"""      # 字符串字面量
+    r"""|[\d.]+"""                        # 数字
+    r"""|[\s:,\[\]\(\)\{\}\|\-]>"""       # 分隔符
+    r""")+[\s,\]\}\)]*$"""
+)
+
+#: 文档字符串开头：允许 r/b/u/f 前缀。
+#: 用字符类拼引号，避免与外部写入脚本的引号冲突。
+_DOC_QUOTE = chr(34) * 3
+_DOC_QUOTE_S = chr(39) * 3
+_RE_DOCSTRING_OPEN = re.compile(
+    r"^\s*[rbuRBU]?(?:" + _DOC_QUOTE + "|" + _DOC_QUOTE_S + ")"
+)
+
+
+#: 字符串字面量（含 r/b/u/f 前缀，支持反斜杠转义）。
+_STR_LITERAL = re.compile(r"""[rbfuRBFU]?('(?:\\.|[^'\\])*'|"(?:\\.|[^"\\])*")""")
+
+#: 去掉字符串后，如果只剩这些字符，这一行就是纯数据。
+#: 这个判据比「写一个匹配数据行的正则」稳得多 —— 后者要处理字典键、
+#: 转义引号、嵌套括号，实测两处真实数据行都漏判了。
+_RE_ONLY_STRUCTURE = re.compile(r"^[\s:,\[\]\(\)\{\}\|=\->]*$")
+
+
+def _is_data_line(code: str) -> bool:
+    """这一行是不是纯数据（字面量 + 结构分隔符，没有调用/赋值运算）。
+
+    ## 为什么用「剥掉字符串看剩下什么」而不是写一条数据行正则
+
+    第一版写了一条匹配「若干字面量 + 分隔符」的正则。实测两处真实数据行
+    都漏判了：
+
+        "sql": ("sql", "execute(", "f\"select", "select *", ...)   ← 字典键 + 转义引号
+        r"|child_process\\.exec\\s*\\(|..."                         ← 原始字符串里的反斜杠
+
+    正则越写越复杂，本质上是在重新实现一个词法分析器。
+    反过来做就简单了：**把字符串剥掉，看剩下的是什么**。
+    剩下一堆 `():,` 就是数据；剩下 `=` `[` 或标识符调用就是代码。
+
+    ## 排除的是什么
+
+    「检测器扫自己的关键词表」属于自我指涉：
+    表里的 `"select *"` 是**数据**，不是可执行的 SQL。
+    """
+    stripped = (code or "").strip()
+    if not stripped:
+        return False
+    remainder = _STR_LITERAL.sub("", stripped)
+    if not remainder.strip():
+        return True          # 整行只有字符串
+    return bool(_RE_ONLY_STRUCTURE.match(remainder))
+
+
 def _is_test_file(path: str) -> bool:
     """测试文件豁免：夹具里的假凭据、断言、open 都不该按生产标准报告。
 
@@ -393,6 +456,10 @@ def _detect_eval(path: str, source: str) -> Iterator[Hit]:
     """动态执行字符串代码（eval / exec 及等价物）。**词法安全，全语言可用**。"""
     lang = _lang_id(path)
     for lineno, line in _iter_lines(source, lang):
+        # 规则自己的正则源码里写着 `\bexec\s*\(` —— 那不是调用，是模式串。
+        # 判据：这一行如果只是字面量/分隔符（纯数据），跳过。
+        if _is_data_line(line):
+            continue
         if _RE_EVAL.search(line):
             yield lineno, line.strip()
 
@@ -416,6 +483,10 @@ def _detect_sql_concat(path: str, source: str) -> Iterator[Hit]:
         code = _code_part(line).strip()
         if not code or not _RE_SQL_STATEMENT.search(code):
             continue
+        # 纯数据行跳过：规则自己的关键词表里有 `"select *"`，
+        # 那不是 SQL 语句，是字符串数据（实测报成阻断级注入）。
+        if _is_data_line(code):
+            continue
         if _RE_SQL_FSTRING.search(code) or _RE_STRING_THEN_CONCAT.search(code):
             yield lineno, code
 
@@ -429,8 +500,42 @@ def _detect_assert_in_production(path: str, source: str) -> Iterator[Hit]:
             yield lineno, line.strip()
 
 
+def _iter_code_lines(source: str) -> Iterator[tuple[int, str]]:
+    """跳过**文档字符串与纯数据行**后的 (行号, 代码行)。
+
+    专门给「会被自己的文档命中」的规则用。实测案例：
+
+        detail="`x == True` 是值比较而非真值判断…"
+
+    这行是 PY003（与布尔常量直接比较）的**规则说明**，
+    被 PY003 自己命中 —— 检测器在扫自己的文档。
+
+    文档字符串的识别用最简状态机：遇到三引号开/关就翻转。
+    不追求覆盖所有 Python 写法（f-string 里嵌三引号等），
+    因为这里只是「减少自我指涉」，不是精确解析。
+    """
+    in_doc = False
+    for lineno, line in enumerate(source.splitlines(), start=1):
+        opened = _RE_DOCSTRING_OPEN.match(line)
+        if opened and not in_doc:
+            # 同一行开了又关（docstring 只有一行）→ 整行都是文档
+            marker = _DOC_QUOTE if _DOC_QUOTE in line else _DOC_QUOTE_S
+            if line.count(marker) >= 2:
+                continue
+            in_doc = True
+            continue
+        if in_doc:
+            if _DOC_QUOTE in line or _DOC_QUOTE_S in line:
+                in_doc = False
+            continue
+        code = _code_part(line)
+        if _is_data_line(code):
+            continue
+        yield lineno, code
+
+
 def _detect_compare_to_boolean(path: str, source: str) -> Iterator[Hit]:
-    for lineno, line in _iter_python_lines(source):
+    for lineno, line in _iter_code_lines(source):
         stripped = line.strip()
         if stripped.startswith("#"):
             continue

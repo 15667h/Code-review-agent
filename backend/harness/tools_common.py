@@ -308,7 +308,10 @@ def _tool_git_diff(workspace: Workspace, runner: CommandRunner) -> Tool:
                 f"`{' '.join(argv)}` 没有输出：该范围没有差异，或这不是一个 git 仓库。\n"
                 "可尝试：staged=true 看暂存区，或 rev_range='origin/main...HEAD' 看分支差异。"
             )
-        rendered, truncated, saved = truncate_output(text, name="git-diff")
+        # 传 workspace：落盘到工作区内，read_file 才读得回来
+        rendered, truncated, saved = truncate_output(
+            text, name="git-diff", workspace=workspace
+        )
         return ToolResult.success(rendered, truncated=truncated, saved_to=saved)
 
     return Tool(
@@ -563,7 +566,9 @@ def _tool_run_command(workspace: Workspace, runner: CommandRunner) -> Tool:
         result = runner.run(argv, cwd=cwd or None)
         if not result.ok:
             return result
-        rendered, truncated, saved = truncate_output(str(result.data or ""), name="command")
+        rendered, truncated, saved = truncate_output(
+            str(result.data or ""), name="command", workspace=workspace
+        )
         return ToolResult.success(rendered, truncated=truncated, saved_to=saved)
 
     return Tool(
@@ -579,6 +584,9 @@ def _tool_run_command(workspace: Workspace, runner: CommandRunner) -> Tool:
 - 跑测试优先用 run_tests，做语法检查优先用 lint_file（参数更省心）。
 
 边界：
+- **本工具是高风险工具：未开启高风险权限时会被直接拒绝**（返回 `HighRiskBlocked`）。
+  实测：审查运行里模型连续两次尝试它，各白耗一轮才放弃。
+  所以先判断这件事是否已有专用工具可做 —— 大概率有。
 - `argv` 是数组，不走 shell；参数里出现 `; | & > < ` $` 等字符会被直接拒绝。
 - 首元素必须在白名单内，默认包含：python, pytest, ruff, pyright, mypy, eslint, npm, node, go, git。
 - 有超时限制；输出过长会截断并落盘。
@@ -797,7 +805,7 @@ def _tool_read_skill(workspace: Workspace) -> Tool:
             text = _extract_section(text, section) or text
 
         rendered, truncated, saved = truncate_output(
-            text, name=f"skill-{safe.replace('/', '-')}"
+            text, name=f"skill-{safe.replace('/', '-')}", workspace=workspace
         )
         return ToolResult.success(rendered, truncated=truncated, saved_to=saved)
 

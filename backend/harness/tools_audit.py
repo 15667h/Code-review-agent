@@ -44,7 +44,9 @@ def _tool_run_tests(workspace: Workspace, runner: CommandRunner) -> Tool:
         result = runner.run(argv)
         if not result.ok:
             return result
-        rendered, truncated, saved = truncate_output(str(result.data or ""), name="pytest")
+        rendered, truncated, saved = truncate_output(
+            str(result.data or ""), name="pytest", workspace=workspace
+        )
         return ToolResult.success(rendered, truncated=truncated, saved_to=saved)
 
     return Tool(
