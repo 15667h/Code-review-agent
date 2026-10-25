@@ -902,3 +902,85 @@ def test_shell_and_fixtures_are_scanned_together(tmp_path: Path) -> None:
     assert any(f.endswith(".sh") for f in files), f"sh 没命中：{files}"
 
 
+
+
+def test_shell_command_substitution_is_not_injection() -> None:
+    """``$(cmd)`` 本身不是注入 —— 它只是把命令输出取回来。
+
+    **实测误报**：第一次真实 PR 跑完，`arch-cases/fetch-cases.sh` 报了两条
+    「命令注入」，实际是这两行：
+
+        here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"     ← 取脚本所在目录
+        echo "→ $dest（$(find "$dest" -name '*.py' | wc -l) 个）"  ← 计数
+
+    两者都是标准写法。判据太宽会把正常脚本全报出来 ——
+    而这类噪音会让整个检查被关掉。
+    """
+    from harness.rules import scan_source
+
+    safe = [
+        'here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"',
+        'echo "  → $dest（$(find "$dest" -name "*.py" | wc -l) 个 Python 文件）"',
+        'cp -r "$SRC" "$DST"',
+        'echo "done"',
+    ]
+    for line in safe:
+        ids = {h.rule.id for h in scan_source("deploy.sh", line)}
+        assert "SEC003" not in ids, f"误报（命令替换不是注入）：{line}"
+
+
+def test_shell_really_executes_untrusted_content() -> None:
+    """真注入：把内容**当代码执行**，或**递给 shell**。"""
+    from harness.rules import scan_source
+
+    unsafe = [
+        'eval "$DEPLOY_CMD"',
+        "eval $X",
+        'source "$CONF"',
+        'sh -c "$(curl -s $URL)"',
+        'bash -c "$CMD"',
+    ]
+    for line in unsafe:
+        ids = {h.rule.id for h in scan_source("deploy.sh", line)}
+        assert "SEC003" in ids, f"漏报：{line}"
+
+
+def test_shell_command_substitution_is_not_injection() -> None:
+    """``$(cmd)`` 本身不是注入 —— 它只是把命令输出取回来。
+
+    **实测误报**：第一次真实 PR 跑完，`arch-cases/fetch-cases.sh` 报了两条
+    「命令注入」，实际是这两行：
+
+        here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"     ← 取脚本所在目录
+        echo "→ $dest（$(find "$dest" -name '*.py' | wc -l) 个）"  ← 计数
+
+    两者都是标准写法。判据太宽会把正常脚本全报出来 ——
+    而这类噪音会让整个检查被关掉。
+    """
+    from harness.rules import scan_source
+
+    safe = [
+        'here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"',
+        'echo "  → $dest（$(find "$dest" -name "*.py" | wc -l) 个 Python 文件）"',
+        'cp -r "$SRC" "$DST"',
+        'echo "done"',
+    ]
+    for line in safe:
+        ids = {h.rule.id for h in scan_source("deploy.sh", line)}
+        assert "SEC003" not in ids, f"误报（命令替换不是注入）：{line}"
+
+
+def test_shell_really_executes_untrusted_content() -> None:
+    """真注入：把内容**当代码执行**，或**递给 shell**。"""
+    from harness.rules import scan_source
+
+    unsafe = [
+        'eval "$DEPLOY_CMD"',
+        "eval $X",
+        'source "$CONF"',
+        'sh -c "$(curl -s $URL)"',
+        'bash -c "$CMD"',
+    ]
+    for line in unsafe:
+        ids = {h.rule.id for h in scan_source("deploy.sh", line)}
+        assert "SEC003" in ids, f"漏报：{line}"

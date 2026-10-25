@@ -102,6 +102,7 @@ jobs:
       # 这一层刻意跑在模型之前：规则命中是**可复现的事实**，
       # 而模型结论可能波动。两者一起上传到 Security 页，人是能分辨来源的。
       - name: 规则扫描（确定性，无需模型）
+        id: rules
         if: steps.size.outputs.skip != 'true'
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha || inputs.base }}
@@ -115,9 +116,22 @@ jobs:
           # 用 PYTHONPATH 而不是 cd backend：`-r .` 必须指向仓库根。
           # cd 进 backend 会让审查根变成 backend/，仓库根的改动全部漏扫。
           export PYTHONPATH="$GITHUB_WORKSPACE/backend"
+          # **忽略退出码**：发现阻断级问题时 harness 返回 1，但这一步不该因此中断 job。
+          #
+          # 实测事故：第一次真实 PR 跑完，规则扫描报了 78 条（含 blocker），
+          # 退出码 1 → 整个 job 失败 → 后面的「上传 SARIF」与「AI 审查」全被跳过。
+          # 日志里只能看到「错误：流程完成，出口代码1」，而用户以为是 AI 审查没触发。
+          #
+          # 正确做法：这一层只负责**产出结果**，成败由末尾一个显式的门禁步骤判定。
+          # 那样「有阻断项」既能让 check 变红，又不会吞掉后面的步骤。
           python -m harness -r . --scan-only \
             --out /tmp/rules.md \
-            --sarif "$GITHUB_WORKSPACE/results-rules.sarif"
+            --sarif "$GITHUB_WORKSPACE/results-rules.sarif" || true
+
+          # 记下「有没有阻断级问题」，供末尾的门禁步骤使用。
+          # 从 SARIF 里数 error 级结果 —— 那是 harness 对 blocker 的映射。
+          blockers=$(grep -c '"level": "error"' "$GITHUB_WORKSPACE/results-rules.sarif" || true)
+          echo "blockers=${blockers:-0}" >> "$GITHUB_OUTPUT"
 
       # ---- 上传 SARIF：结果会出现在 Security → Code scanning ----
       #
@@ -161,8 +175,12 @@ jobs:
           cd "$GITHUB_WORKSPACE"
           export PYTHONPATH="$GITHUB_WORKSPACE/backend"
           # --diff 让模型只审改动；--sarif 输出供 Security 页使用。
-          # 退出码 1 表示有阻断级发现 —— 这里刻意不 `|| true`，
-          # 而是用 continue-on-error 在外面接住，保持退出码语义不被污染。
+          #
+          # 用 `set +e` 手动接住退出码，而不是靠外面 continue-on-error：
+          # 需要一个**明确的成功标记**，才能在评论里区分
+          # 「没配 key」「跑了但失败」「跑了且成功」三种情况。
+          # 只靠 continue-on-error 的话，失败与成功在后续步骤里长得一样。
+          set +e
           python -m harness \
             -r . \
             --diff "$BASE_SHA" \
@@ -170,7 +188,17 @@ jobs:
             --out /tmp/ai-review.md \
             --sarif "$GITHUB_WORKSPACE/results-ai.sarif" \
             --max-iterations 30
-          echo "ran=true" >> "$GITHUB_OUTPUT"
+          code=$?
+          set -e
+          echo "harness 退出码：$code"
+          # 退出码 0 = 无阻断；1 = 有阻断级发现（结果仍然有效）；其他 = 真失败
+          if [ "$code" -le 1 ]; then
+            echo "ran=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "ran=false" >> "$GITHUB_OUTPUT"
+            echo "failed=true" >> "$GITHUB_OUTPUT"
+            echo "::warning::AI 审查失败，退出码 $code（不是「有阻断级问题」）"
+          fi
         continue-on-error: true
 
       - name: 上传 AI 审查 SARIF
@@ -188,6 +216,7 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
           AI_RAN: ${{ steps.ai.outputs.ran }}
+          AI_FAILED: ${{ steps.ai.outputs.failed }}
           RULE_LINES: ${{ steps.size.outputs.lines }}
         run: |
           set -euo pipefail
@@ -210,9 +239,34 @@ jobs:
               cat /tmp/ai-review.md
               echo ""
               echo "</details>"
+            elif [ "${AI_FAILED:-false}" = "true" ]; then
+              echo "> **AI 审查执行失败**（步骤跑过但出错）。到 Actions 日志里看 \`AI 审查\` 那一步的具体报错。"
             elif [ "${AI_RAN:-false}" != "true" ]; then
               echo "> AI 审查未运行：未配置 \`LLM_API_KEY\`。规则扫描结果仍然有效。"
             fi
           } > /tmp/comment.md
           gh pr comment "$PR_NUMBER" --body-file /tmp/comment.md
         continue-on-error: true
+
+      # ---- 末尾门禁：只负责判成败，不吞掉任何步骤 ----
+      #
+      # 为什么把「失败」集中到这里而不是让规则扫描那步失败：
+      # 实测事故 —— 规则扫描返回退出码 1，整个 job 立刻失败，
+      # 后续的「上传 SARIF」与「AI 审查」全被跳过。
+      # 用户看到的是「AI 审查没触发」，真实原因是流程在半路就断了。
+      #
+      # 现在：中间步骤一律不让 job 失败，最后用这一步决定 check 红不红。
+      # 这样「有阻断级问题」既能让 PR 变红，又不影响结果的产出与上传。
+      - name: 门禁（有阻断级问题则失败）
+        if: steps.size.outputs.skip != 'true'
+        env:
+          BLOCKERS: ${{ steps.rules.outputs.blockers }}
+          AI_RAN: ${{ steps.ai.outputs.ran }}
+        run: |
+          set -euo pipefail
+          echo "规则扫描阻断级：${BLOCKERS:-0} 条；AI 审查已运行：${AI_RAN:-false}"
+          if [ "${BLOCKERS:-0}" -gt 0 ]; then
+            echo "::error::发现 ${BLOCKERS} 条阻断级问题，见 Security → Code scanning"
+            exit 1
+          fi
+          echo "没有阻断级问题。"
