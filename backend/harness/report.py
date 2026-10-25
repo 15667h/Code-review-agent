@@ -138,6 +138,7 @@ _MARKDOWN_RENDERERS: dict[str, Callable[..., str]] = {
     "blueprint": lambda result, **kw: render_blueprint_markdown(result, **kw),
     "test_plan": lambda result, **kw: render_test_plan_markdown(result, **kw),
     "roadmap": lambda result, **kw: render_roadmap_markdown(result, **kw),
+    "threat_model": lambda result, **kw: render_threat_model_markdown(result, **kw),
 }
 
 
@@ -240,6 +241,170 @@ def render_markdown(result: AuditResult, *, repo: str = "", model: str = "") -> 
 # 测试助手：产出渲染
 # =============================================================================
 # 策划助手：产出渲染
+# =============================================================================
+# 安全狩猎：产出渲染
+# =============================================================================
+
+_CATEGORY_LABEL = {
+    "authz": "越权 / 权限缺失",
+    "race": "并发竞态",
+    "boundary": "业务边界",
+    "injection": "注入（逻辑型）",
+    "crypto": "密码学误用",
+    "consistency": "状态一致性",
+}
+
+#: 渲染顺序：越权和竞态排前面 —— 它们最常被利用、修复代价也最大。
+_CATEGORY_ORDER = ["authz", "race", "boundary", "crypto", "consistency", "injection"]
+
+
+def render_threat_model_markdown(result: AuditResult, *, repo: str = "", model: str = "") -> str:
+    """威胁模型的 Markdown 渲染。
+
+    每条都必须露出 **攻击路径** 与 **影响** —— 这两项缺任何一项，
+    这份「威胁」就只是一句感觉，评审无法复核也无法排期。
+    """
+    threats = result.artifacts.get("threat", [])
+
+    def get(obj, key, default=""):
+        return obj.get(key) if isinstance(obj, dict) else getattr(obj, key, default)
+
+    lines: list[str] = []
+    lines.append("# 安全狩猎报告")
+    lines.append("")
+    lines.append(f"- **狩猎目标**：{result.goal}")
+    if repo:
+        lines.append(f"- **仓库路径**：`{repo}`")
+    if model:
+        lines.append(f"- **驱动模型**：`{model}`")
+    lines.append(f"- **迭代轮数**：{result.iterations}")
+    lines.append(f"- **威胁总数**：{len(threats)}")
+    lines.append("")
+
+    if not threats:
+        lines.append("本次没有登记任何逻辑级威胁。")
+        if result.stop_reason != "final_answer":
+            lines.append(f"（结束原因：`{result.stop_reason}` —— 可能说明运行没有正常收尾。）")
+        lines.append("")
+        lines.append("> 注意：「没报」不等于「没问题」。狩猎依赖威胁模型 ——")
+        lines.append("> 如果目标里没给出角色与权限关系，越权类问题很难被找到。")
+        return "\n".join(lines)
+
+    # ---- 按类别分组 ----
+    by_cat: dict[str, list] = {}
+    for t in threats:
+        by_cat.setdefault(str(get(t, "category", "?")), []).append(t)
+
+    lines.append("| 类别 | 数量 |")
+    lines.append("|---|---|")
+    for cat in _CATEGORY_ORDER:
+        if cat in by_cat:
+            lines.append(f"| {_CATEGORY_LABEL.get(cat, cat)} | {len(by_cat[cat])} |")
+    for cat in by_cat:
+        if cat not in _CATEGORY_ORDER:
+            lines.append(f"| {cat} | {len(by_cat[cat])} |")
+    lines.append("")
+
+    # ---- 先给总表：让人一眼看出最该先处理什么 ----
+    lines.append("## 威胁一览")
+    lines.append("")
+    lines.append("| 类别 | 威胁 | 位置 |")
+    lines.append("|---|---|---|")
+    ordered: list = []
+    for cat in _CATEGORY_ORDER + [c for c in by_cat if c not in _CATEGORY_ORDER]:
+        ordered.extend(by_cat.get(cat, []))
+    for t in ordered:
+        lines.append(
+            f"| {_CATEGORY_LABEL.get(str(get(t, 'category')), str(get(t, 'category')))} "
+            f"| {get(t, 'title')} "
+            f"| `{get(t, 'file')}:{get(t, 'line')}` |"
+        )
+    lines.append("")
+
+    # ---- 逐条 ----
+    lines.append("## 详情")
+    lines.append("")
+    for t in ordered:
+        cat = str(get(t, "category"))
+        lines.append(f"### [{_CATEGORY_LABEL.get(cat, cat)}] {get(t, 'title')}")
+        lines.append("")
+        lines.append(f"- **位置**：`{get(t, 'file')}:{get(t, 'line')}`")
+        actor = get(t, "actor")
+        if actor:
+            lines.append(f"- **谁能触发**：{actor}")
+        # 攻击路径紧跟「谁能触发」：这两条合起来才是完整的可重放描述
+        path = get(t, "attack_path")
+        if path:
+            lines.append(f"- **攻击路径**：{path}")
+        else:
+            lines.append("- **攻击路径**：（未给出 —— 这条还不可复核）")
+        impact = get(t, "impact")
+        if impact:
+            lines.append(f"- **影响**：{impact}")
+        pre = get(t, "preconditions")
+        if pre:
+            lines.append(f"- **触发前提**：{pre}")
+        variants = get(t, "variants", []) or []
+        if variants:
+            lines.append(f"- **同类位置**：{'、'.join(f'`{v}`' for v in variants)}")
+        ev = get(t, "evidence")
+        if ev:
+            lines.append(f"- **依据**：`{ev}`")
+        overlap = get(t, "overlaps_rule")
+        if overlap:
+            lines.append(f"- **注**：与规则 `{overlap}` 重叠，可考虑合并")
+        lines.append("")
+
+    if result.warnings:
+        lines.append("## 运行提示")
+        lines.append("")
+        for w in result.warnings:
+            lines.append(f"- {w}")
+        lines.append("")
+
+    return "\n".join(lines)
+
+
+def render_threat_model_terminal(result: AuditResult, *, color: bool = True) -> str:
+    """终端版：类别分组，每条的「路径 → 影响」压成两行。"""
+
+    def paint(text: str, code: str) -> str:
+        return f"{code}{text}{_RESET}" if color else text
+
+    threats = result.artifacts.get("threat", [])
+
+    def get(obj, key, default=""):
+        return obj.get(key) if isinstance(obj, dict) else getattr(obj, key, default)
+
+    lines: list[str] = []
+    lines.append(paint(f"安全狩猎 · {len(threats)} 条威胁", _BOLD))
+    lines.append(f"目标：{result.goal}")
+    if not threats:
+        lines.append("本次没有登记任何逻辑级威胁。")
+        return "\n".join(lines)
+
+    by_cat: dict[str, list] = {}
+    for t in threats:
+        by_cat.setdefault(str(get(t, "category", "?")), []).append(t)
+
+    for cat in _CATEGORY_ORDER + [c for c in by_cat if c not in _CATEGORY_ORDER]:
+        if cat not in by_cat:
+            continue
+        lines.append("")
+        lines.append(paint(
+            f"{_CATEGORY_LABEL.get(cat, cat)}（{len(by_cat[cat])} 条）", _BOLD))
+        for t in by_cat[cat]:
+            loc = f"{get(t, 'file')}:{get(t, 'line')}"
+            lines.append(f"  {get(t, 'title')}  ({loc})")
+            actor = get(t, "actor")
+            path = get(t, "attack_path")
+            if path:
+                prefix = f"[{actor}] " if actor else ""
+                lines.append(f"    路径：{prefix}{path}")
+            lines.append(f"    影响：{get(t, 'impact') or '（未给出）'}")
+    return "\n".join(lines)
+
+
 # =============================================================================
 
 
@@ -686,6 +851,7 @@ _TERMINAL_RENDERERS: dict[str, Callable[..., str]] = {
     "blueprint": lambda result, **kw: render_blueprint_terminal(result, **kw),
     "test_plan": lambda result, **kw: render_test_plan_terminal(result, **kw),
     "roadmap": lambda result, **kw: render_roadmap_terminal(result, **kw),
+    "threat_model": lambda result, **kw: render_threat_model_terminal(result, **kw),
 }
 
 

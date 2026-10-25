@@ -638,6 +638,88 @@ PLAN_ROLES: dict[str, str] = {
     "risk": "风险与前提：哪些假设一旦不成立，整个计划要重来",
 }
 
+
+# =============================================================================
+# 威胁域（安全狩猎助手的产出）
+# =============================================================================
+#
+# 第五种产出。与「发现」的区别不在格式，在**能靠什么得到**：
+#
+# - 规则引擎只能抓**模式级**问题（硬编码密钥、eval、命令注入）——
+#   这些东西写一条正则就能识别。
+# - 真正危险的是**逻辑级**问题：越权、IDOR、状态机绕过、并发竞态、业务边界。
+#   它们没有可匹配的文本模式，只有理解「这个系统的业务规则应该是什么」之后
+#   才能发现。
+#
+# 实测数据：8 个靶场 34 条标注里，规则最多覆盖 5 条。其余全在逻辑层。
+# 所以这个产出必须带**攻击路径**——没有路径的「这里可能不安全」等于没报。
+
+
+@dataclass(slots=True)
+class Threat:
+    """一条逻辑级安全威胁。
+
+    ``attack_path`` 是核心字段：**谁能做什么，最后拿到什么**。
+    写不出这条链，说明只是感觉「这里不太对」，不是发现。
+    """
+
+    title: str
+    file: str
+    line: int
+    #: 威胁类别。决定评级参考与修复方向。
+    category: str
+    #: 谁能触发（角色/前置条件）。例如「任意已登录用户」「未认证的任意请求方」。
+    actor: str = ""
+    #: **攻击路径**：步骤化的「做什么 → 发生什么」。
+    #: 必须具体到能照着重放，不能写「可能被利用」。
+    attack_path: str = ""
+    #: 受影响的资产（能读到/改到/拿到什么）。空说明还没想清楚危害。
+    impact: str = ""
+    #: 触发前提（配置、并发时机、数据状态）。这些让结论可复核。
+    preconditions: str = ""
+    #: 同类问题还有哪些位置（同一缺陷的扩散面）
+    variants: list[str] = field(default_factory=list)
+    #: 证据：读了哪处代码得出这个结论
+    evidence: str = ""
+    #: 与规则命中是否重叠（规则已报的，这里不该重复报）
+    overlaps_rule: str = ""
+    id: str = field(default_factory=lambda: _new_id("T"))
+    fingerprint: str = ""
+
+    def __post_init__(self) -> None:
+        if not self.fingerprint:
+            # 去重用「位置 + 标题」，不含攻击路径措辞 ——
+            # 同一个漏洞用不同话术描述两次不该算两条。
+            self.fingerprint = f"threat:{self.file}:{self.line}:{self.title}".lower().strip()
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "id": self.id,
+            "title": self.title,
+            "file": self.file,
+            "line": self.line,
+            "category": self.category,
+            "actor": self.actor,
+            "attack_path": self.attack_path,
+            "impact": self.impact,
+            "preconditions": self.preconditions,
+            "variants": self.variants,
+            "evidence": self.evidence,
+            "overlaps_rule": self.overlaps_rule,
+        }
+
+
+#: 威胁类别。定义放这里而不是散在 prompt 里：校验与渲染都要用。
+#: 每类的「怎么判定」写在 description 里 —— 这是给人和模型共同看的判据。
+THREAT_CATEGORIES: dict[str, str] = {
+    "authz": "越权 / 权限缺失：身份校验缺失、恒真、只在部分入口校验、IDOR（按 id 取数据不校验归属）",
+    "race": "并发竞态：读-改-写非原子、锁作用域错误（锁实例而每请求新建）、锁覆盖不全、两步之间可被打断",
+    "boundary": "业务边界：金额/数量未校验上下界、用应付代替实收、分页负数、状态机允许非法跃迁",
+    "injection": "注入（逻辑型）：路径穿越、模板注入等非 SQL 的注入面",
+    "crypto": "密码学误用：非常量时间比较、写死密钥、缺算法字段、默认密钥回落",
+    "consistency": "状态一致性：多处状态各自更新导致整体不一致（退款不改订单状态、库存与账目失衡）",
+}
+
 # =============================================================================
 # 产出的序列化往返
 # =============================================================================
@@ -654,6 +736,7 @@ ARTIFACT_TYPES: dict[str, type] = {
     "open_question": OpenQuestion,
     "test_case": TestCase,
     "plan_step": PlanStep,
+    "threat": Threat,
 }
 
 

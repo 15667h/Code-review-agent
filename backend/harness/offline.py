@@ -30,6 +30,7 @@ AUDIT_AGENT = "review"
 DESIGN_AGENT = "architect"
 TEST_AGENT = "tester"
 PLAN_AGENT = "planner"
+HUNT_AGENT = "hunter"
 
 def _last_tool_output(messages: Sequence[Message]) -> str:
     for message in reversed(messages):
@@ -64,6 +65,32 @@ def _parse_file_list(text: str) -> list[str]:
     return files
 
 _GAP_ENTRY = re.compile(r"^-\s+`([^`]+)`\s+\(([^:)]+):(\d+)")
+
+#: 鉴权面清点里「无鉴权入口」的行格式：``- `app/api.py:47`  def handle_x(...)``
+_UNGUARDED_ENTRY = re.compile(r"^-\s+`([^`:]+):(\d+)`\s+(.+)$")
+
+
+def _parse_unguarded(text: str) -> list[tuple[str, int, str]]:
+    """解析 check_authz_surface 输出里的「无鉴权入口」清单。
+
+    只取 ``### 没有鉴权信号的入口`` 这一节下的条目 ——
+    「同文件鉴权不一致」那一节是分析后的结论，不是原始清单，
+    两节都取会把同一入口报两遍。
+    """
+    out: list[tuple[str, int, str]] = []
+    in_section = False
+    for line in text.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("###"):
+            # 进入「无鉴权」节；遇到下一节就停
+            in_section = "没有鉴权信号" in stripped or "无鉴权" in stripped
+            continue
+        if not in_section:
+            continue
+        match = _UNGUARDED_ENTRY.match(stripped)
+        if match:
+            out.append((match.group(1).strip(), int(match.group(2)), match.group(3).strip()))
+    return out
 
 
 def _parse_gap_list(text: str) -> list[tuple[str, str, int]]:
@@ -139,6 +166,8 @@ class HeuristicModel:
             return self._complete_test(messages)
         if self.agent == PLAN_AGENT:
             return self._complete_plan(messages)
+        if self.agent == HUNT_AGENT:
+            return self._complete_hunt(messages)
         return self._complete_audit(messages)
 
     # ------------------------------------------------------------------ #
@@ -240,6 +269,101 @@ class HeuristicModel:
                 f"离线模式按文件拆出 {len(self.files)} 步，每步都给了完成条件与验证命令。"
                 "局限：步骤是按文件机械划分的，**没有识别真实依赖顺序**；"
                 "真实模型运行时会读代码后按依赖排序。"
+            )
+        }), reasoning="收尾。")
+
+    def _complete_hunt(self, messages: Sequence[Message]) -> Decision:
+        """狩猎助手的离线路径：鉴权面清点 → 为缺鉴权的入口登记威胁。
+
+        ## 离线能做什么、不能做什么
+
+        能：机械清点出入口，把「同一文件里鉴权不一致」这类**结构性信号**
+        转成威胁条目，并给出可重放的攻击路径骨架。
+
+        不能：判断校验逻辑**本身对不对**（比如权限函数恒返回 True）。
+        那需要读懂业务语义。所以离线产出的每一条都在 preconditions 里
+        写明了「需要人工确认校验是否真的生效」。
+        """
+        self.step += 1
+        last = _last_tool_output(messages)
+
+        # 1) 先建威胁模型的框架
+        if self.step == 1:
+            return _call(
+                ToolCall("update_todo", {
+                    "todos": [
+                        {"text": "清点对外入口与鉴权信号", "status": "in_progress"},
+                        {"text": "对缺鉴权的入口登记威胁", "status": "pending"},
+                        {"text": "收尾汇总", "status": "pending"},
+                    ]
+                }),
+                reasoning="离线模式：用机械清点代替人工通读。",
+            )
+
+        # 2) 鉴权面清点
+        if self.step == 2:
+            return _call(
+                ToolCall("check_authz_surface", {"path": ".", "limit": 20}),
+                reasoning="先拿到客观的入口清单，而不是靠 grep 猜。",
+            )
+
+        # 3) 解析清单，挑出「没有鉴权信号」的入口
+        if self.step == 3:
+            self.gaps = _parse_unguarded(last)
+            if not self.gaps:
+                return _call(ToolCall("finish", {
+                    "summary": "鉴权面清点没有找到「缺鉴权信号」的入口，"
+                               "或这个仓库不是 Web 服务。离线模式到此为止。"
+                               "注意：这不等于没有越权 —— 权限函数逻辑错误这类问题"
+                               "只有读懂业务语义才能发现，需要真实模型或人工复核。"
+                }), reasoning="没有可报的入口。")
+            return _call(ToolCall("update_todo", {
+                "todos": [
+                    {"text": f"清点对外入口（{len(self.gaps)} 个缺鉴权）", "status": "completed"},
+                    {"text": "对缺鉴权的入口登记威胁", "status": "in_progress"},
+                    {"text": "收尾汇总", "status": "pending"},
+                ]
+            }), reasoning=f"找到 {len(self.gaps)} 个候选。")
+
+        # 4) 逐个登记
+        if self.reported_gap_index < len(self.gaps):
+            rel, line, name = self.gaps[self.reported_gap_index]
+            self.reported_gap_index += 1
+            route = name.replace("def ", "").split("(")[0].strip()
+            return _call(
+                ToolCall("record_threat", {
+                    "title": f"{route} 入口没有权限校验",
+                    "file": rel,
+                    "line": line,
+                    "category": "authz",
+                    "actor": "任意能访问该入口的请求方",
+                    "attack_path": (
+                        f"直接向 {route} 对应的接口发请求 → 服务端未校验调用者身份/角色 "
+                        f"→ 返回或修改本不该由该身份触达的数据"
+                    ),
+                    "impact": (
+                        "可越权读取或修改本不属于该身份的数据；"
+                        "具体范围取决于该入口操作的对象（离线模式未读实现，需人工确认）"
+                    ),
+                    "preconditions": (
+                        "离线模式只检测到「入口附近没有鉴权代码」，"
+                        "**未验证**权限校验是否在更外层（中间件/网关）完成。"
+                        "需人工确认：该入口的实现里有没有按身份过滤数据。"
+                    ),
+                    "evidence": f"{rel}:{line}",
+                }),
+                reasoning=f"登记 {route}。",
+            )
+
+        # 5) 收尾
+        return _call(ToolCall("finish", {
+            "summary": (
+                f"鉴权面清点找到 {len(self.gaps)} 个缺鉴权信号的入口，已登记为 authz 威胁。"
+                "**这些是基于结构信号的候选，不是已确认的漏洞** —— "
+                "每条都写了需要人工确认的前提。"
+                "离线模式无法判断：权限函数逻辑错误（如恒返回 True）、"
+                "跨文件的归属校验缺失、并发竞态、业务边界。"
+                "这些问题需要真实模型读懂业务语义，或人工审计。"
             )
         }), reasoning="收尾。")
 
