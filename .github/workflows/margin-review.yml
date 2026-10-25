@@ -141,8 +141,14 @@ jobs:
         if: steps.size.outputs.skip != 'true'
         env:
           LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
-          LLM_BASE_URL: ${{ vars.LLM_BASE_URL }}
-          LLM_MODEL: ${{ vars.LLM_MODEL }}
+          # BASE_URL / MODEL 给默认值：接官方端点时只需要配一个 secret。
+          # 换别的服务（自建 vLLM / 其他厂商）时用 vars 覆盖即可，
+          # 不必为了改端点去改 workflow 本体。
+          LLM_BASE_URL: ${{ vars.LLM_BASE_URL || 'https://api.deepseek.com' }}
+          LLM_MODEL: ${{ vars.LLM_MODEL || 'deepseek-flash' }}
+          # 审查是「只读」动作：不开高风险权限，模型就不会白费轮次去试 run_command。
+          # 那两轮在实测里被 HighRiskBlocked 拒掉，纯粹浪费。
+          AUDIT_TOOL_CHOICE: ${{ vars.AUDIT_TOOL_CHOICE || 'auto' }}
           BASE_SHA: ${{ github.event.pull_request.base.sha || inputs.base }}
         run: |
           set -euo pipefail
