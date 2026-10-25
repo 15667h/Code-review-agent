@@ -54,12 +54,23 @@ def truncate_output(
     *,
     name: str = "output",
     save_dir: Path | None = None,
+    workspace: Any = None,
     max_lines: int = MAX_LINES,
     max_chars: int = MAX_CHARS,
 ) -> tuple[str, bool, str | None]:
     """按书中的策略截断：保留头 50 行 + 尾 50 行，中间落盘。
 
     返回 ``(用于上下文的文本, 是否被截断, 落盘路径)``。
+
+    ## 落盘位置必须在工作区内
+
+    原实现落到系统临时目录，然后提示模型「用 read_file 读取该路径」——
+    而 ``read_file`` 有工作区边界校验，**永远读不到那里**。
+    实测后果：一次 PR 审查里 `git_diff` 输出被截断，模型按提示去读，
+    拿到 ``PathEscape``，白丢一轮，而且错误信息里还泄露了绝对路径。
+
+    所以调用方传 ``workspace`` 时，落盘到工作区内的 ``.margin-tmp/``；
+    不传才退回临时目录（仅供离线脚本/测试使用）。
     """
     lines = text.splitlines()
     line_over = len(lines) > max_lines
@@ -68,6 +79,9 @@ def truncate_output(
         return text, False, None
 
     target_dir = save_dir or Path(tempfile.gettempdir()) / "margin-harness"
+    # 传了 workspace 就落到它内部 —— 否则 read_file 读不回来（见函数注释）。
+    if save_dir is None and workspace is not None:
+        target_dir = Path(workspace.root) / ".margin-tmp"
     target_dir.mkdir(parents=True, exist_ok=True)
     safe_name = re.sub(r"[^A-Za-z0-9_.-]", "_", name)[:60] or "output"
     saved = target_dir / f"{safe_name}.txt"
@@ -76,10 +90,19 @@ def truncate_output(
     head = lines[:HEAD_LINES]
     tail = lines[-TAIL_LINES:]
     omitted = max(0, len(lines) - HEAD_LINES - TAIL_LINES)
+    # 给模型看的路径：工作区内用相对路径（read_file 直接可用），
+    # 否则给绝对路径（但那种情况下 read_file 读不回来，所以要标注）。
+    if workspace is not None and save_dir is None:
+        try:
+            shown = saved.relative_to(Path(workspace.root)).as_posix()
+            hint = f"[完整内容已保存至 {shown}，可用 read_file 读取]"
+        except ValueError:
+            hint = f"[完整内容已保存至 {saved}]"
+    else:
+        hint = f"[完整内容已保存至 {saved}]"
     marker = (
         f"\n... [省略 {omitted} 行 / 共 {len(lines)} 行，"
-        f"完整输出已保存至 {saved}] ...\n"
-        f"[如需完整内容，请用 read_file 读取该路径]"
+        f"{hint}] ...\n"
     )
     rendered = "\n".join(head) + marker + "\n" + "\n".join(tail)
     return rendered, True, str(saved)

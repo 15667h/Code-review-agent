@@ -333,6 +333,27 @@ def _filter_to_diff(findings: list, repo: Path, base: str) -> tuple[list, str]:
     )
 
 
+def _line_is_in_files(warning_line: str, files: set[str]) -> bool:
+    """判断一条「疑似漏报」的文案是否指向本次改动的文件。
+
+    ``cross_check`` 产出的每行形如 ``app/api.py:71 SEC001 硬编码密钥``。
+    这里按**路径前缀**精确比对，不用裸子串包含：
+
+    - 子串 ``"app/api.py" in "x/app/api.py.bak"`` 为真 → 误判
+    - 反过来 ``"api.py" in "app/api.py"`` 也为真 → 缩窄成文件名时同样误判
+
+    所以取行首的 ``file:line`` 段，与改动集合做集合比较。
+    """
+    head = warning_line.split()[0] if warning_line.split() else ""
+    # 去掉行号后缀：`app/api.py:71` → `app/api.py`
+    path = head.rsplit(":", 1)[0].replace("\\", "/") if ":" in head else head
+    if path in files:
+        return True
+    # 某些规则可能输出绝对路径或带 ./ 前缀，做一次归一后再比
+    norm = path.lstrip("./")
+    return norm in files
+
+
 def _run_agent(repo: Path, args: argparse.Namespace, config: Config) -> int:
     workspace = resolve_workspace(repo)
     verbose = not args.quiet
@@ -392,9 +413,48 @@ def _run_agent(repo: Path, args: argparse.Namespace, config: Config) -> int:
     if not args.no_cross_check and "finding" in result.artifacts:
         report = scan_tree(repo)
         missed = cross_check(result.findings, report)
+        # 增量模式下必须把「疑似漏报」也限制在改动范围内。
+        #
+        # 实测后果（真实 PR 审查）：--diff 只审一个文件，但这里的 scan_tree
+        # 扫的是**全仓**，于是把 12 条与本次改动毫无关系的规则命中
+        # 全列成「疑似漏报」。评审看到的第一反应是「这工具在胡说」——
+        # 而它其实什么都没错，只是比错了范围。
+        diff_base = getattr(args, "diff", "")
+        if diff_base and missed:
+            # 过滤失败时**必须退回「不过滤」而不是清空**。
+            #
+            # 这是模型在我第一版代码里抓到的真 bug：
+            #   changed = {...} 失败 → 空集 → 所有 missed 被过滤掉 → 静默无输出
+            # 用户看到「没有疑似漏报」，实际是「比较失败了」——
+            # 静默失败比明确失败危险得多。
+            filtered: list[str] | None = None
+            try:
+                from .diffmode import collect_diff
+
+                diff_report = collect_diff(repo, diff_base)
+                if diff_report.ok and diff_report.hunks:
+                    changed = {h.file for h in diff_report.hunks}
+                    # 精确比对路径，不用子串：`app/api.py` 是 `x/app/api.py.bak`
+                    # 的子串，会误判。
+                    filtered = [
+                        line for line in missed
+                        if any(_line_is_in_files(line, changed))
+                    ]
+                else:
+                    result.warnings.append(
+                        f"交叉验证未能按 `--diff {diff_base}` 收窄范围"
+                        f"（{diff_report.error or 'diff 为空'}），以下为全仓比对结果"
+                    )
+            except Exception as exc:  # noqa: BLE001 - 但要说出来，不能静默
+                result.warnings.append(
+                    f"交叉验证收窄范围失败（{exc}），以下为全仓比对结果"
+                )
+            if filtered is not None:
+                missed = filtered
         if missed:
+            scope = f"（仅限本次 `--diff {diff_base}` 范围）" if diff_base else ""
             result.warnings.append(
-                "确定性规则命中但本次未报告的位置（疑似漏报，需人工复核）：\n"
+                f"确定性规则命中但本次未报告的位置{scope}（疑似漏报，需人工复核）：\n"
                 + "\n".join(missed[:12])
             )
 

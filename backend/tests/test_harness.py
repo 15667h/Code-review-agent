@@ -149,8 +149,38 @@ def test_truncate_keeps_head_and_tail(tmp_path: Path) -> None:
     assert "line 1" in rendered
     assert "line 400" in rendered
     assert "line 200" not in rendered
-    assert "省略" in rendered and "read_file" in rendered
+    assert "省略" in rendered
+    # save_dir 分支给的是绝对路径：那种情况下 read_file 读不回来
+    # （工作区边界校验），所以**不该**提示用 read_file。
+    assert str(tmp_path) in rendered
     assert Path(saved).read_text(encoding="utf-8") == text
+
+
+def test_truncate_saves_inside_workspace_and_is_readable(tmp_path: Path) -> None:
+    """传 workspace 时落盘到工作区内，且提示里给的是**相对路径**。
+
+    实测事故：原实现落到系统临时目录，然后提示「用 read_file 读取该路径」——
+    而 read_file 有工作区边界校验，永远读不到那里。真实 PR 审查里
+    模型照着提示去读，拿到 PathEscape，白丢一轮。
+
+    所以这里要同时验证两件事：文件在工作区内、提示里是相对路径。
+    """
+
+    class _WS:
+        root = tmp_path
+
+    text = "\n".join(f"line {i}" for i in range(1, 401))
+    rendered, truncated, saved = truncate_output(text, name="big", workspace=_WS())
+
+    assert truncated is True
+    saved_path = Path(saved)
+    # ① 落在工作区内
+    assert tmp_path in saved_path.parents
+    # ② 提示里是相对路径，read_file 可直接用
+    assert ".margin-tmp/big.txt" in rendered
+    assert "read_file" in rendered
+    # ③ 绝对路径不该出现在提示里（避免泄露本机路径）
+    assert str(tmp_path) not in rendered
 
 
 def test_truncate_passthrough_for_small_output(tmp_path: Path) -> None:
