@@ -708,3 +708,131 @@ def test_debug_print_rule_ignores_entry_points() -> None:
     # 库代码里的 print 仍然要报
     ids = {h.rule.id for h in scan_source("backend/harness/core.py", "    print('debug x')")}
     assert "QUAL001" in ids
+
+
+def test_scanner_does_not_flag_its_own_keyword_tables() -> None:
+    """**检测器不许扫自己的配置数据**。
+
+    实测事故：PR 上真实报了三条「阻断级」漏洞，全是自我指涉：
+
+    - `guardrails.py` 的关键词元组里有 `"select *"` → 被 SEC002 报成 SQL 注入
+    - `rules.py` 的正则源码里有 `exec\\s*\\(` → 被 SEC003 报成动态执行
+    - `rules.py` 的规则描述里有 `x == True` → 被 PY003 报成布尔比较
+
+    这类假阳性在 PR 上看起来和真漏洞一模一样，杀伤力比普通误报更大 ——
+    它直接消耗评审对系统的信任。
+
+    判据：把字符串字面量剥掉，剩下的如果只有 `():,` 之类结构符号，就是数据。
+    """
+    from harness.rules import _is_data_line, scan_source
+
+    data_lines = [
+        '    "sql": ("sql", "execute(", "f\\"select", "select *", "insert into"),',
+        r'    r"|child_process\\.exec\\s*\\(|\\bexec\\s*\\(",',
+    ]
+    for line in data_lines:
+        assert _is_data_line(line), f"未识别为数据行：{line}"
+        ids = {h.rule.id for h in scan_source("harness/guardrails.py", line)}
+        assert not (ids & {"SEC002", "SEC003"}), f"自我指涉误报：{line} → {ids}"
+
+
+def test_data_line_detection_does_not_swallow_real_code() -> None:
+    """反向保障：真实代码行不能被误判成数据。
+
+    只测「不报」的话，把 _is_data_line 改成恒 True 也能通过。
+    """
+    from harness.rules import _is_data_line
+
+    code_lines = [
+        '    q = "SELECT * FROM users WHERE id = " + uid',
+        '    return eval(user_input)',
+        '    detail="x == True 是值比较",',
+        '    print("done")',
+        '    sql = "SELECT * FROM t"',
+    ]
+    for line in code_lines:
+        assert not _is_data_line(line), f"代码行被误判为数据：{line}"
+
+
+def test_docstrings_do_not_trigger_their_own_rule() -> None:
+    """规则描述里写着 ``x == True``，不能被自己的规则命中。
+
+    文档字符串整体跳过 —— 它不是可执行代码。
+    """
+    from harness.rules import scan_source
+
+    src = (
+        '"""说明：``x == True`` 是值比较而非真值判断。"""\n'
+        "\n"
+        "\n"
+        "def f(flag):\n"
+        "    return flag == True\n"
+    )
+    hits = [h for h in scan_source("a.py", src) if h.rule.id == "PY003"]
+    # 只有第 5 行的真实代码该被报，文档字符串那行不该
+    assert len(hits) == 1
+    assert hits[0].line == 5
+
+
+def test_scanner_does_not_flag_its_own_keyword_tables() -> None:
+    """**检测器不许扫自己的配置数据**。
+
+    实测事故：PR 上真实报了三条「阻断级」漏洞，全是自我指涉：
+
+    - `guardrails.py` 的关键词元组里有 `"select *"` → 被 SEC002 报成 SQL 注入
+    - `rules.py` 的正则源码里有 `exec\\s*\\(` → 被 SEC003 报成动态执行
+    - `rules.py` 的规则描述里有 `x == True` → 被 PY003 报成布尔比较
+
+    这类假阳性在 PR 上看起来和真漏洞一模一样，杀伤力比普通误报更大 ——
+    它直接消耗评审对系统的信任。
+
+    判据：把字符串字面量剥掉，剩下的如果只有 `():,` 之类结构符号，就是数据。
+    """
+    from harness.rules import _is_data_line, scan_source
+
+    data_lines = [
+        '    "sql": ("sql", "execute(", "f\\"select", "select *", "insert into"),',
+        r'    r"|child_process\.exec\s*\(|\bexec\s*\(",',
+    ]
+    for line in data_lines:
+        assert _is_data_line(line), f"未识别为数据行：{line}"
+        ids = {h.rule.id for h in scan_source("harness/guardrails.py", line)}
+        assert not (ids & {"SEC002", "SEC003"}), f"自我指涉误报：{line} → {ids}"
+
+
+def test_data_line_detection_does_not_swallow_real_code() -> None:
+    """反向保障：真实代码行不能被误判成数据。
+
+    只测「不报」的话，把 _is_data_line 改成恒 True 也能通过。
+    """
+    from harness.rules import _is_data_line
+
+    code_lines = [
+        '    q = "SELECT * FROM users WHERE id = " + uid',
+        '    return eval(user_input)',
+        '    detail="x == True 是值比较",',
+        '    print("done")',
+        '    sql = "SELECT * FROM t"',
+    ]
+    for line in code_lines:
+        assert not _is_data_line(line), f"代码行被误判为数据：{line}"
+
+
+def test_docstrings_do_not_trigger_their_own_rule() -> None:
+    """规则描述里写着 ``x == True``，不能被自己的规则命中。
+
+    文档字符串整体跳过 —— 它不是可执行代码。
+    """
+    from harness.rules import scan_source
+
+    src = (
+        '"""说明：``x == True`` 是值比较而非真值判断。"""\n'
+        "\n"
+        "\n"
+        "def f(flag):\n"
+        "    return flag == True\n"
+    )
+    hits = [h for h in scan_source("a.py", src) if h.rule.id == "PY003"]
+    # 只有第 5 行的真实代码该被报，文档字符串那行不该
+    assert len(hits) == 1
+    assert hits[0].line == 5
