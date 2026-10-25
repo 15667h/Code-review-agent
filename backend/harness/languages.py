@@ -323,6 +323,25 @@ _add(Language(
     limits="无 AST：不支持符号图、跨文件调用追踪、测试覆盖分析。",
 ))
 
+#: Shell 单独列出来 —— 它是最容易被漏掉的一类「代码」。
+#:
+#: 漏掉它的代价很具体：CI 配置、部署脚本、容器启动脚本都是 shell，
+#: 而这里恰恰反复出现 `eval`、`curl ... | sh`、明文 token、未引用的变量。
+#: 本项目的第一次语言清点就漏了 .sh —— 一个含 `eval "$CMD"` 的部署脚本
+#: 在扫描报告里完全不存在，看起来像「这个仓库没有 shell 脚本」。
+_add(Language(
+    id="shell",
+    display="Shell",
+    suffixes=(".sh", ".bash", ".zsh", ".ksh"),
+    level=LEVEL_SHALLOW,
+    line_comment=("#",),
+    test_patterns=(r"(^|/)tests?/", r"\.bats$", r"test_.*\.sh$"),
+    func_keywords=("function ",),
+    class_keywords=(),
+    string_delims=('"', "'"),
+    limits="无 AST：不支持符号图、跨文件调用追踪、测试覆盖分析。",
+))
+
 
 # =============================================================================
 # 后缀索引与查询

@@ -63,6 +63,19 @@ _RE_EVAL = re.compile(
     r"(?:\beval\s*\(|\bexec\s*\(|\bexecSync\s*\(|\bvm\.runIn"
     r"|\bFunction\s*\(|setTimeout\s*\(\s*['\"]|new\s+Function\s*\(|\bchild_process\b)"
 )
+
+#: Shell 里的动态执行。**没有括号**，与 C 风格调用不同 ——
+#: `eval "$DEPLOY_CMD"` 用 `eval\s*\(` 永远匹配不上。
+#:
+#: 实测：补上 .sh 支持后，deploy.sh 里的 `eval "$DEPLOY_CMD"` 仍然漏报，
+#: 因为正则在等左括号。这类脚本承担的往往是部署与 CI 动作，
+#: 一次命令注入的后果比应用层更直接。
+_RE_SHELL_EVAL = re.compile(
+    r"(?:^|[\s;&|])(?:eval|source|\.)\s+(?:\"|\$|')"     # eval "$x" / eval $x / source "$y"
+    r"|`[^`]*\$"                                          # 反引号里插变量
+    r"|\$\([^)]*\$"                                       # $( ) 里插变量
+)
+
 #: 多语言赋值形态的密钥。
 #:
 #: ## 判据拆成两步（一条大正则试过，静默漏报）
@@ -455,12 +468,15 @@ def _detect_hardcoded_secret(path: str, source: str) -> Iterator[Hit]:
 def _detect_eval(path: str, source: str) -> Iterator[Hit]:
     """动态执行字符串代码（eval / exec 及等价物）。**词法安全，全语言可用**。"""
     lang = _lang_id(path)
+    is_shell = lang == "shell"
     for lineno, line in _iter_lines(source, lang):
         # 规则自己的正则源码里写着 `\bexec\s*\(` —— 那不是调用，是模式串。
         # 判据：这一行如果只是字面量/分隔符（纯数据），跳过。
         if _is_data_line(line):
             continue
-        if _RE_EVAL.search(line):
+        # Shell 走单独判据：`eval "$X"` 没有括号（见 _RE_SHELL_EVAL 注释）
+        pattern = _RE_SHELL_EVAL if is_shell else _RE_EVAL
+        if pattern.search(line):
             yield lineno, line.strip()
 
 

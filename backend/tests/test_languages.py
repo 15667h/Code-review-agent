@@ -836,3 +836,69 @@ def test_docstrings_do_not_trigger_their_own_rule() -> None:
     # 只有第 5 行的真实代码该被报，文档字符串那行不该
     assert len(hits) == 1
     assert hits[0].line == 5
+
+
+def test_shell_scripts_are_supported() -> None:
+    """Shell 脚本必须被扫描 —— 它是最容易被漏掉的一类「代码」。
+
+    **实测事故**：第一次语言清点漏了 .sh。一个含 `eval "$DEPLOY_CMD"` 的
+    部署脚本在扫描报告里完全不存在，看起来像「这个仓库没有 shell 脚本」。
+
+    代价很具体：CI 配置、部署脚本、容器启动脚本都是 shell，
+    而这里反复出现 `eval`、`curl | sh`、明文 token —— 且这些脚本
+    承担的往往是不可逆动作，一次命令注入的后果比应用层更直接。
+    """
+    from harness.languages import for_path
+
+    for name in ("deploy.sh", "setup.bash", "init.zsh"):
+        lang = for_path(name)
+        assert lang is not None, f"{name} 没有注册"
+        assert lang.id == "shell"
+
+
+def test_shell_eval_without_parens_is_detected() -> None:
+    """Shell 的 `eval "$X"` 没有括号，用 C 风格的 `eval\\s*\\(` 永远匹配不上。
+
+    实测：补上 .sh 支持后，`eval "$DEPLOY_CMD"` 仍然漏报 ——
+    因为正则在等左括号。Shell 走单独的判据。
+    """
+    from harness.rules import scan_source
+
+    positives = [
+        'eval "$DEPLOY_CMD"',
+        "eval $X",
+        'source "$CONF"',
+        'sh -c "$(curl $URL)"',
+    ]
+    for line in positives:
+        ids = {h.rule.id for h in scan_source("deploy.sh", line)}
+        assert "SEC003" in ids, f"漏报 shell 动态执行：{line}"
+
+
+def test_shell_does_not_false_positive_on_plain_commands() -> None:
+    """反向保障：普通 shell 命令不能被误判成动态执行。"""
+    from harness.rules import scan_source
+
+    negatives = ['echo "done"', "cd /app", "python main.py", 'cp -r "$SRC" "$DST"']
+    for line in negatives:
+        ids = {h.rule.id for h in scan_source("deploy.sh", line)}
+        assert "SEC003" not in ids, f"误报：{line}"
+
+
+def test_shell_and_fixtures_are_scanned_together(tmp_path: Path) -> None:
+    """混合语言仓库要一次扫全：ts / js / sh 都不能漏。"""
+    from harness.rules import scan_tree
+
+    # 变量名必须含敏感词才会被 SEC001 命中（判据是「疑似凭据名 + 字面量」）。
+    # 我第一次写成 `const k = ...`，然后误以为漏扫 —— 其实是判据没命中。
+    (tmp_path / "a.ts").write_text('const token = "ghp_ts_123456789";\n', encoding="utf-8")
+    (tmp_path / "b.js").write_text('const api_key = "sk_live_js_123456";\n', encoding="utf-8")
+    (tmp_path / "c.sh").write_text('#!/bin/bash\neval "$CMD"\n', encoding="utf-8")
+
+    report = scan_tree(tmp_path)
+    assert report.scanned_files == 3, f"只扫了 {report.scanned_files} 个"
+    files = {h.path for h in report.hits}
+    assert any(f.endswith(".js") for f in files), f"js 没命中：{files}"
+    assert any(f.endswith(".sh") for f in files), f"sh 没命中：{files}"
+
+
