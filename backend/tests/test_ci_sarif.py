@@ -372,3 +372,37 @@ def test_scan_only_exit_code_reflects_the_pr_not_the_repo(git_repo: Path) -> Non
         "--sarif", str(git_repo / "out2.sarif"),
     ])
     assert code == 1, "PR 引入了阻断级问题，退出码应为 1"
+
+
+def test_cross_check_narrowing_does_not_crash(git_repo: Path, capsys) -> None:
+    """``--diff`` 下的交叉验证收窄不能抛异常。
+
+    **实测事故**：我写成了 ``any(_line_is_in_files(line, changed))`` ——
+    函数返回 ``bool``，``any(bool)`` 抛 ``'bool' object is not iterable``。
+    而那段被 try 包着，错误变成一条 warning 就到头了，
+    表面看「收窄失败但流程正常」，实际是整个过滤没生效。
+
+    这类错误的特点：**程序不崩、结果不对**。用测试钉住。
+    """
+    from harness.__main__ import _line_is_in_files
+
+    files = {"app/a.py", "app/b.py"}
+    assert _line_is_in_files("app/a.py:12 SEC001 硬编码密钥", files) is True
+    assert _line_is_in_files("app/c.py:3 SEC001 硬编码密钥", files) is False
+
+
+def test_line_is_in_files_uses_exact_path_not_substring() -> None:
+    """路径比对必须是精确的，不能是子串。
+
+    子串会误判：``"app/api.py" in "x/app/api.py.bak"`` 为真。
+    那会让「这次没改这个文件」的命中被当成「改了」而保留下来，
+    疑似漏报清单里出现无关条目。
+    """
+    from harness.__main__ import _line_is_in_files
+
+    files = {"app/api.py"}
+    assert _line_is_in_files("app/api.py:10 SEC001 x", files) is True
+    # .bak 不该匹配
+    assert _line_is_in_files("app/api.py.bak:10 SEC001 x", files) is False
+    # 另一个目录下的同名文件不该匹配
+    assert _line_is_in_files("vendor/app/api.py:10 SEC001 x", files) is False

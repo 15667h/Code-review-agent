@@ -438,7 +438,7 @@ def _run_agent(repo: Path, args: argparse.Namespace, config: Config) -> int:
                     # 的子串，会误判。
                     filtered = [
                         line for line in missed
-                        if any(_line_is_in_files(line, changed))
+                        if _line_is_in_files(line, changed)
                     ]
                 else:
                     result.warnings.append(
