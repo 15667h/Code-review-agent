@@ -63,19 +63,34 @@ _RE_EVAL = re.compile(
     r"(?:\beval\s*\(|\bexec\s*\(|\bexecSync\s*\(|\bvm\.runIn"
     r"|\bFunction\s*\(|setTimeout\s*\(\s*['\"]|new\s+Function\s*\(|\bchild_process\b)"
 )
-#: 多语言赋值形态的密钥：``const api_key = "..."`` / ``var password = "..."`` /
-#: ``$token = "..."`` / ``private String secret = "..."``。
+#: 多语言赋值形态的密钥。
 #:
-#: **判据拆成两步，不要写成一条大正则。** 上一版试图用一条正则同时完成
-#: 「跳到标识符」+「检查标识符含敏感词」+「匹配字面量」，结果
-#: ``[A-Za-z_$][\w$]*`` 贪婪吃掉了整个 ``api_key``，后面的敏感词分支永远匹配不上 ——
-#: JS/TS/Go 的密钥全部漏报（实测发现）。改成：
-#: ① 用一条简单的正则找出「赋值语句」并捕获左侧标识符与右侧字面量；
-#: ② 在 Python 里判断标识符是否含敏感词。这样每条规则都简单可验证。
+#: ## 判据拆成两步（一条大正则试过，静默漏报）
+#:
+#: 第一版试图用一条正则同时做「跳到标识符 + 检查敏感词 + 匹配字面量」，
+#: 结果 ``[A-Za-z_$][\w$]*`` 贪婪吃掉整个 ``api_key``，敏感词分支永远匹配不上 ——
+#: JS/TS/Go 的密钥全部漏报。
+#:
+#: ## 只有 ``=`` 是赋值，``:`` 不是（这个区别是致命误报源）
+#:
+#: 第二版把 ``:`` 也当赋值，结果 ``scripts/auth.js`` 里这种 UI 映射表全部误报：
+#:
+#:     var CODE_FIELD = {
+#:       password_empty: 'password',      ← 对象字面量的键，不是变量
+#:       password_short: 'password',
+#:     };
+#:
+#: 实测在这个仓库里报了 **204 条**假密钥 —— 这种噪音会让整个检查被关掉。
+#:
+#: 所以规则改为：**必须出现 ``=``**。``:`` 只在一种情况下算赋值：
+#: TypeScript/Java 的类型注解形态 ``const key: string = "..."``
+#: —— 那种也带 ``=``，所以统一要求 ``=`` 就够了。
 _RE_ASSIGN_LITERAL = re.compile(
     r"""^\s*(?:(?:const|let|var|final|val|private|public|protected|static|readonly|def)\s+)*"""
-    r"""(?:[\w.<>\[\]]+\s+)*"""                      # 可能的类型声明（Java/C#：String key =）
-    r"""([A-Za-z_$][\w$.]*)\s*[:=]\s*"""
+    r"""(?:[\w.<>\[\]]+\s+)*"""                 # 可能的类型声明（Java/C#：String key =）
+    r"""([A-Za-z_$][\w$.]*)\s*"""                # 名字（可含点：this.apiKey）
+    r"""(?::\s*[\w<>\[\].|\s]+)?"""            # TS 类型注解（可选）
+    r"""\s*=\s*"""                               # **必须是等号**
     r"""(['"`])((?:(?!\2).){6,})\2""",
 )
 
@@ -84,6 +99,15 @@ _SECRET_NAME_WORDS = (
     "password", "passwd", "pwd", "secret", "token",
     "apikey", "api_key", "accesskey", "access_key",
     "privatekey", "private_key", "credential",
+)
+
+#: 这些后缀说明标识符是「描述/标签」而不是「凭据本身」。
+#: ``password_empty`` / ``token_label`` 是 UI 文案键，不是密钥值。
+_SECRET_NAME_SUFFIX_DENY = (
+    "_empty", "_invalid", "_short", "_long", "_taken", "_bad", "_msg",
+    "_message", "_label", "_text", "_hint", "_title", "_name", "_field",
+    "_placeholder", "_regex", "_pattern", "_min", "_max", "_len", "_length",
+    "_type", "_url", "_path", "_id", "_count",
 )
 
 #: 危险反序列化：各语言都有等价物，输入可控时等同 RCE
@@ -109,9 +133,28 @@ _RE_OPEN_NO_WITH = re.compile(r"^\s*(?!.*\bwith\b).*\bopen\s*\([^)]*\)\s*(?!.*\b
 # SQL 拼接的两种形态：f-string 内联插值，以及字符串用 + / % / .format 拼接。
 # 关键：不能只看 execute(...) 的参数 —— 真实代码常常先把 SQL 赋给变量再执行，
 # 只看调用点会整类漏报。
-_RE_SQL_KEYWORD = re.compile(
-    r"\b(?:SELECT|INSERT|UPDATE|DELETE|FROM|WHERE|JOIN)\b", re.IGNORECASE
+#: SQL **语句形态**，而不只是「出现了某个关键字」。
+#:
+#: 实测教训：原来的判据是「行内有 SELECT/INSERT/.../FROM/WHERE/JOIN 任一 + 有拼接」，
+#: 结果 Markdown 表格的 ``f"| from | x |" + ...`` 全部误报 —— 本项目跑出 34 条假 SEC002。
+#: ``FROM`` 是个普通英文词，单独出现毫无区分度。
+#:
+#: 真实 SQL 一定有「动词 + 表/列」的结构。所以判据改成两种形态之一：
+#: ① ``SELECT ... FROM`` / ``INSERT INTO`` / ``UPDATE x SET`` / ``DELETE FROM``
+#: ② ``WHERE`` 后接一个看似列名的标识符
+#: 这样 Markdown 表格、日志模板、普通英文句子都不会命中。
+_RE_SQL_STATEMENT = re.compile(
+    r"(?:"
+    r"\bSELECT\b[\s\S]{0,200}?\bFROM\b"
+    r"|\bINSERT\s+INTO\b"
+    r"|\bUPDATE\s+[A-Za-z_][\w.]*\s+SET\b"
+    r"|\bDELETE\s+FROM\b"
+    r"|\bWHERE\s+[A-Za-z_][\w.]*\s*(?:=|>|<|LIKE|IN\b|IS\b)"
+    r")",
+    re.IGNORECASE,
 )
+#: 兼容旧名字（外部可能引用）
+_RE_SQL_KEYWORD = _RE_SQL_STATEMENT
 # 判据之一是「字符串字面量之后紧跟拼接运算符」。
 # 最初写成「在字符串内部匹配 SQL 关键字、再要求后面有运算符」，实测会因贪婪
 # 量词的回溯而漏报（`"SELECT ... = '" + name + "'"` 这类行匹配不上）。
@@ -317,7 +360,12 @@ def _looks_like_secret_assign(line: str) -> bool:
     name = m.group(1).lower()
     # 取最后一段：this.apiKey / self.token / config.secret
     leaf = name.rsplit(".", 1)[-1]
-    return any(word in leaf for word in _SECRET_NAME_WORDS)
+    if not any(word in leaf for word in _SECRET_NAME_WORDS):
+        return False
+    # 排除「描述/标签」类名字：password_empty / token_label 是 UI 文案键。
+    # 不加这一步会在真实仓库里报几百条假密钥（实测 scripts/auth.js 有 5 条连报），
+    # 噪音大到让人直接关掉检查。
+    return not any(leaf.endswith(suffix) for suffix in _SECRET_NAME_SUFFIX_DENY)
 
 
 def _detect_hardcoded_secret(path: str, source: str) -> Iterator[Hit]:
@@ -329,7 +377,13 @@ def _detect_hardcoded_secret(path: str, source: str) -> Iterator[Hit]:
         return
     lang = _lang_id(path)
     for lineno, line in _iter_lines(source, lang):
-        if not (_RE_SECRET.match(line) or _looks_like_secret_assign(line)):
+        # **只保留一条判据**（_looks_like_secret_assign）。
+        #
+        # 之前这里同时用旧的 Python 专用正则 `_RE_SECRET` 和新的通用判据，
+        # 结果新判据的后缀排除（`_url` / `_min` / `_empty`）被旧正则绕过了 ——
+        # `token_url = 'https://x'` 仍然被报出来。
+        # 两套判据并存 = 两套例外规则，迟早对不上。
+        if not _looks_like_secret_assign(line):
             continue
         redacted = re.sub(r"""(['"`])[^'"`]{6,}\1""", r"\1***\1", line.rstrip())
         yield lineno, redacted
@@ -360,7 +414,7 @@ def _detect_open_without_with(path: str, source: str) -> Iterator[Hit]:
 def _detect_sql_concat(path: str, source: str) -> Iterator[Hit]:
     for lineno, line in _iter_python_lines(source):
         code = _code_part(line).strip()
-        if not code or not _RE_SQL_KEYWORD.search(code):
+        if not code or not _RE_SQL_STATEMENT.search(code):
             continue
         if _RE_SQL_FSTRING.search(code) or _RE_STRING_THEN_CONCAT.search(code):
             yield lineno, code
@@ -440,16 +494,33 @@ def _detect_weak_hash(path: str, source: str) -> Iterator[Hit]:
             yield lineno, line.strip()
 
 
-def _detect_debug_print(path: str, source: str) -> Iterator[Hit]:
-    """生产代码里的调试输出。**全语言可用**。
+#: 这些位置的 ``print`` 是**正常输出**，不是遗留调试。
+#:
+#: 实测教训：第一版只豁免了 ``scripts/`` ``tools/`` ``examples/``，
+#: 在本项目上跑出 **106 条 QUAL001**（占全部命中的 54%），其中
+#: ``__main__.py`` 一个文件 38 条、``eval/run_eval.py`` 31 条 ——
+#: 这些文件（CLI 入口、评估脚本）的 print 就是它们的**主要功能**。
+#:
+#: 判据不是「哪个目录」，而是「这个文件的角色」：
+#: 入口/脚本/报告生成器 → 输出是产品行为；库代码 → 输出是调试残留。
+_PRINT_OK_PATTERNS = (
+    "__main__.py", "__main__", "cli.py", "manage.py", "conftest.py",
+    "/eval/", "/scripts/", "/tools/", "/examples/", "/bin/", "/fixtures/",
+    "/bench", "make_report", "make_review", "make_arch", "run_eval", "run_bench",
+    "setup.py",
+)
 
-    测试文件与脚本（``scripts/``、``tools/``、``examples/``）豁免 ——
-    那些地方的 print 是正常输出，不是遗留调试。
+
+def _detect_debug_print(path: str, source: str) -> Iterator[Hit]:
+    """库代码里的调试输出。**全语言可用**。
+
+    豁免「输出即功能」的文件：CLI 入口、评估/报告脚本、示例与夹具。
+    在这些地方报 ``print`` 是纯噪音 —— 而噪音会让整个检查被关掉。
     """
     if _is_test_file(path):
         return
-    normalized = path.replace("\\", "/").lower()
-    if any(seg in normalized for seg in ("/scripts/", "/tools/", "/examples/", "/bin/", "/cli")):
+    normalized = "/" + path.replace("\\", "/").lower()
+    if any(pat in normalized for pat in _PRINT_OK_PATTERNS):
         return
     lang = _lang_id(path)
     for lineno, line in _iter_lines(source, lang):

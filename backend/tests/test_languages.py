@@ -502,3 +502,209 @@ def test_is_source_file_filters_non_code(tmp_path: Path) -> None:
     assert not _is_source_file("README.md")
     assert not _is_source_file("package.json")
     assert not _is_source_file("node_modules/x/index.js")
+
+
+# =============================================================================
+# 规则误报：真实仓库上跑出来的教训
+# =============================================================================
+
+
+def test_secret_rule_ignores_ui_label_maps() -> None:
+    """``password_empty: 'password'`` 是 UI 映射表的键，不是密钥。
+
+    **实测事故**：把 ``:`` 也当赋值后，本项目 ``scripts/auth.js`` 的文案映射表
+    被报成 **204 条**假硬编码密钥 —— 噪音大到让人直接关掉整个检查。
+
+    判据要两条同时成立：① 必须是 ``=`` 赋值；② 变量名不能是描述/标签类
+    （``_empty`` / ``_label`` / ``_msg`` …）。
+    """
+    from harness.rules import scan_source
+
+    negatives = [
+        "    password_empty: 'password',",
+        "    password_short: 'password',",
+        "    token_label: '令牌',",
+        "    password_min = '8'",
+        "    token_url = 'https://x'",
+    ]
+    for line in negatives:
+        ids = {h.rule.id for h in scan_source("app.js", line)}
+        assert "SEC001" not in ids, f"误报：{line}"
+
+
+def test_secret_rule_still_catches_real_assignments() -> None:
+    """排除描述名后，真实赋值不能一起被误杀。"""
+    from harness.rules import scan_source
+
+    positives = [
+        ("a.js", "const api_key = 'sk_live_real_123456'"),
+        ("a.py", "API_KEY = 'sk_python_real_123456'"),
+        ("a.go", "var password = 'goreal123456'"),
+        ("a.ts", "let token = 'ghp_real123456789'"),
+    ]
+    for path, line in positives:
+        ids = {h.rule.id for h in scan_source(path, line)}
+        assert "SEC001" in ids, f"漏报：{line}"
+
+
+def test_sql_rule_ignores_markdown_tables() -> None:
+    """Markdown 表格里的 ``from`` 不是 SQL。
+
+    **实测事故**：原判据是「行内有 SELECT/FROM/WHERE 任一 + 有拼接」，
+    结果本项目 ``eval/make_report.py`` 的 Markdown 表格拼接被报成
+    **34 条**假 SQL 注入。``FROM`` 是普通英文词，单独出现毫无区分度。
+
+    修法：要求 SQL **语句形态**（``SELECT ... FROM`` / ``INSERT INTO`` /
+    ``UPDATE x SET`` / ``DELETE FROM`` / ``WHERE col =``），而不是关键字命中。
+    """
+    from harness.rules import scan_source
+
+    negatives = [
+        ('    f"| **平均 F1** | " + " | ".join(x)', "Markdown 表格"),
+        ('    label = "| from | to |" + row', "表头"),
+        ('    msg = "received from " + sender', "英文句子"),
+    ]
+    for line, note in negatives:
+        ids = {h.rule.id for h in scan_source("eval/make_report.py", line)}
+        assert "SEC002" not in ids, f"误报（{note}）：{line}"
+
+
+def test_sql_rule_still_catches_real_injection() -> None:
+    from harness.rules import scan_source
+
+    positives = [
+        '    q = "SELECT * FROM users WHERE id = " + uid',
+        '    q = f"DELETE FROM orders WHERE id={oid}"',
+        '    q = "INSERT INTO t (a) VALUES (" + v + ")"',
+        '    q = "UPDATE users SET name = " + n',
+    ]
+    for line in positives:
+        ids = {h.rule.id for h in scan_source("app.py", line)}
+        assert "SEC002" in ids, f"漏报：{line}"
+
+
+def test_debug_print_rule_ignores_entry_points() -> None:
+    """CLI 入口与评估脚本里的 print 是**主要功能**，不是调试残留。
+
+    **实测事故**：只豁免 ``scripts/`` ``tools/`` ``examples/`` 时，
+    本项目跑出 106 条 QUAL001（占全部命中 54%），
+    其中 ``__main__.py`` 一个文件 38 条、``eval/run_eval.py`` 31 条。
+    """
+    from harness.rules import scan_source
+
+    ok_paths = [
+        "backend/harness/__main__.py",
+        "backend/eval/run_eval.py",
+        "backend/eval/make_report.py",
+        "scripts/deploy.py",
+    ]
+    for path in ok_paths:
+        ids = {h.rule.id for h in scan_source(path, "    print('done')")}
+        assert "QUAL001" not in ids, f"{path} 的 print 不该报"
+
+    # 库代码里的 print 仍然要报
+    ids = {h.rule.id for h in scan_source("backend/harness/core.py", "    print('debug x')")}
+    assert "QUAL001" in ids
+
+
+# =============================================================================
+# 规则误报：真实仓库上跑出来的教训
+# =============================================================================
+
+
+def test_secret_rule_ignores_ui_label_maps() -> None:
+    """``password_empty: 'password'`` 是 UI 映射表的键，不是密钥。
+
+    **实测事故**：把 ``:`` 也当赋值后，本项目 ``scripts/auth.js`` 的文案映射表
+    被报成 **204 条**假硬编码密钥 —— 噪音大到让人直接关掉整个检查。
+
+    判据要两条同时成立：① 必须是 ``=`` 赋值；② 变量名不能是描述/标签类
+    （``_empty`` / ``_label`` / ``_msg`` …）。
+    """
+    from harness.rules import scan_source
+
+    negatives = [
+        "    password_empty: 'password',",
+        "    password_short: 'password',",
+        "    token_label: '令牌',",
+        "    password_min = '8'",
+        "    token_url = 'https://x'",
+    ]
+    for line in negatives:
+        ids = {h.rule.id for h in scan_source("app.js", line)}
+        assert "SEC001" not in ids, f"误报：{line}"
+
+
+def test_secret_rule_still_catches_real_assignments() -> None:
+    """排除描述名后，真实赋值不能一起被误杀。"""
+    from harness.rules import scan_source
+
+    positives = [
+        ("a.js", "const api_key = 'sk_live_real_123456'"),
+        ("a.py", "API_KEY = 'sk_python_real_123456'"),
+        ("a.go", "var password = 'goreal123456'"),
+        ("a.ts", "let token = 'ghp_real123456789'"),
+    ]
+    for path, line in positives:
+        ids = {h.rule.id for h in scan_source(path, line)}
+        assert "SEC001" in ids, f"漏报：{line}"
+
+
+def test_sql_rule_ignores_markdown_tables() -> None:
+    """Markdown 表格里的 ``from`` 不是 SQL。
+
+    **实测事故**：原判据是「行内有 SELECT/FROM/WHERE 任一 + 有拼接」，
+    结果本项目 ``eval/make_report.py`` 的 Markdown 表格拼接被报成
+    **34 条**假 SQL 注入。``FROM`` 是普通英文词，单独出现毫无区分度。
+
+    修法：要求 SQL **语句形态**（``SELECT ... FROM`` / ``INSERT INTO`` /
+    ``UPDATE x SET`` / ``DELETE FROM`` / ``WHERE col =``），而不是关键字命中。
+    """
+    from harness.rules import scan_source
+
+    negatives = [
+        ('    f"| **平均 F1** | " + " | ".join(x)', "Markdown 表格"),
+        ('    label = "| from | to |" + row', "表头"),
+        ('    msg = "received from " + sender', "英文句子"),
+    ]
+    for line, note in negatives:
+        ids = {h.rule.id for h in scan_source("eval/make_report.py", line)}
+        assert "SEC002" not in ids, f"误报（{note}）：{line}"
+
+
+def test_sql_rule_still_catches_real_injection() -> None:
+    from harness.rules import scan_source
+
+    positives = [
+        '    q = "SELECT * FROM users WHERE id = " + uid',
+        '    q = f"DELETE FROM orders WHERE id={oid}"',
+        '    q = "INSERT INTO t (a) VALUES (" + v + ")"',
+        '    q = "UPDATE users SET name = " + n',
+    ]
+    for line in positives:
+        ids = {h.rule.id for h in scan_source("app.py", line)}
+        assert "SEC002" in ids, f"漏报：{line}"
+
+
+def test_debug_print_rule_ignores_entry_points() -> None:
+    """CLI 入口与评估脚本里的 print 是**主要功能**，不是调试残留。
+
+    **实测事故**：只豁免 ``scripts/`` ``tools/`` ``examples/`` 时，
+    本项目跑出 106 条 QUAL001（占全部命中 54%），
+    其中 ``__main__.py`` 一个文件 38 条、``eval/run_eval.py`` 31 条。
+    """
+    from harness.rules import scan_source
+
+    ok_paths = [
+        "backend/harness/__main__.py",
+        "backend/eval/run_eval.py",
+        "backend/eval/make_report.py",
+        "scripts/deploy.py",
+    ]
+    for path in ok_paths:
+        ids = {h.rule.id for h in scan_source(path, "    print('done')")}
+        assert "QUAL001" not in ids, f"{path} 的 print 不该报"
+
+    # 库代码里的 print 仍然要报
+    ids = {h.rule.id for h in scan_source("backend/harness/core.py", "    print('debug x')")}
+    assert "QUAL001" in ids
